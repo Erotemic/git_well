@@ -24,17 +24,20 @@ import ubelt as ub
 import scriptconfig as scfg
 # from packaging.version import LegacyVersion
 from packaging.version import parse as Version
-from scriptconfig.modal import ModalCLI
+try:
+    from rich import print as rich_print
+except Exception:
+    rich_print = print
 
 
 class UpdateDevBranch(scfg.DataConfig):
-    __command__ = 'update'
-    repo_dpath = scfg.Value('.', help='location of the repo')
+    __command__ = 'upgrade'
+    repo_dpath = scfg.Value('.', position=1, help='location of the repo')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         config = cls.cli(cmdline=cmdline, data=kwargs)
-        print('config = {}'.format(ub.urepr(dict(config), nl=1)))
+        rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         repo = git.Repo(config['repo_dpath'])
 
         versioned_dev_branches = dev_branches(repo)

@@ -242,4 +242,13 @@ if __name__ == "__main__":
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
     ]
+    setupkw["entry_points"] = {
+        "console_scripts": [
+            "git-well = git_well.__main__:main",
+            "git-sync = git_well.git_sync:main",
+            "git-branch-upgrade = git_well.git_branch_upgrade:main",
+            "git-branch-cleanup = git_well.git_branch_cleanup:main",
+            "git-squash-streaks = git_well.git_squash_streaks:main",
+        ],
+    }
     setup(**setupkw)

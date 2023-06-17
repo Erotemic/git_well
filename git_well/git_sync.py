@@ -7,6 +7,10 @@ from os.path import relpath
 import os
 import ubelt as ub
 import scriptconfig as scfg
+try:
+    from rich import print as rich_print
+except Exception:
+    rich_print = print
 
 
 def getcwd():
@@ -217,7 +221,6 @@ def git_sync(host, remote=None, message='wip [skip ci]',
             print(command)
 
 
-
 class GitSyncCLI(scfg.DataConfig):
     """
     Sync a git repo with a remote server via ssh
@@ -237,8 +240,9 @@ class GitSyncCLI(scfg.DataConfig):
     force = scfg.Value(False, isflag=True, help='Force push and hard reset the remote.')
 
 
-def main():
-    args = GitSyncCLI.cli()
+def main(cmdline=True, **kwargs):
+    args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
+    rich_print('args = {}'.format(ub.urepr(args, nl=1)))
     # import argparse
     # parser = argparse.ArgumentParser(description='Sync a git repo with a remote server via ssh')
     # parser.add_argument('host', nargs=1, help='Server to sync to via ssh (e.g. user@servername.edu)')
@@ -258,10 +262,9 @@ def main():
     #     message='wip [skip ci]',
     # )
     # args = parser.parse_args()
-    ns = args.__dict__.copy()
+    ns = dict(args).copy()
     ns['host'] = ns['host'][0]
 
-    from git_sync.core import git_sync
     git_sync(**ns)
 
 

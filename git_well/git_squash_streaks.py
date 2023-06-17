@@ -6,7 +6,6 @@ Requirements:
     pip install ubelt
     pip install GitPython
 """
-from __future__ import print_function, unicode_literals
 import sys
 import re
 import os
@@ -15,7 +14,6 @@ import warnings
 import email.utils
 import ubelt as ub
 import itertools as it
-import ubelt as ub
 import scriptconfig as scfg
 
 

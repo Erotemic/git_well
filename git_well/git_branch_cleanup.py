@@ -2,9 +2,8 @@
 import git
 import ubelt as ub
 import scriptconfig as scfg
+from .git_branch_upgrade import find_merged_branches, dev_branches
 # from packaging.version import LegacyVersion
-from packaging.version import parse as Version
-from scriptconfig.modal import ModalCLI
 
 
 class CleanDevBranchConfig(scfg.DataConfig):
@@ -25,7 +24,11 @@ class CleanDevBranchConfig(scfg.DataConfig):
         kwargs = {}
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
-        print('config = {}'.format(ub.urepr(dict(config), nl=1)))
+        try:
+            from rich import print as rich_print
+        except Exception:
+            rich_print = print
+        rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
         repo = git.Repo(config.repo_dpath)
 
@@ -46,6 +49,7 @@ class CleanDevBranchConfig(scfg.DataConfig):
                 repo.git.branch(*remove_branches, '-D')
 
 __cli__ = CleanDevBranchConfig
+main = __cli__.main
 
 
 if __name__ == '__main__':

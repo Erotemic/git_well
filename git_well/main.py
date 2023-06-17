@@ -4,6 +4,7 @@ from git_well import git_branch_upgrade
 from git_well import git_branch_cleanup
 from git_well import git_sync
 
+
 class GitWellModalCLI(scfg.ModalCLI):
     branch_upgrade = git_branch_upgrade.__cli__
     squash_streaks = git_squash_streaks.__cli__
