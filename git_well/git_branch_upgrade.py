@@ -77,9 +77,9 @@ class UpdateDevBranch(scfg.DataConfig):
                 repo.git.checkout(latest.name)
 
 
-def find_merged_branches(repo):
+def find_merged_branches(repo, main_branch='main'):
     # git branch --merged main
-    main_branch = 'main'
+    # main_branch = 'main'
     merged_branches = [p.strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
     merged_branches = ub.oset(merged_branches) - {main_branch}
     return merged_branches

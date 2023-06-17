@@ -30,14 +30,20 @@ class CleanDevBranchConfig(scfg.DataConfig):
             rich_print = print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
-        repo = git.Repo(config.repo_dpath)
+        resolved_repo = ub.Path(config.repo_dpath).resolve()
+        print(f'resolved_repo={resolved_repo}')
+        repo = git.Repo(resolved_repo)
 
+        # TODO: fix * prefixed in front of branch
         versioned_dev_branches = dev_branches(repo)
         local_dev_branches = [b for b in versioned_dev_branches if b['remote'] is None]
         versioned_branch_names = list(ub.unique([b['branch_name'] for b in local_dev_branches]))
         remove_branches = versioned_branch_names[0:-keep_last]
 
-        merged_branches = find_merged_branches(repo)
+        try:
+            merged_branches = find_merged_branches(repo, 'main')
+        except Exception:
+            merged_branches = find_merged_branches(repo, 'origin/main')
         remove_branches = list(ub.oset(remove_branches) | ub.oset(merged_branches) - {'release'})
 
         print('remove_branches = {}'.format(ub.repr2(remove_branches, nl=1)))
