@@ -2,8 +2,7 @@
 import git
 import ubelt as ub
 import scriptconfig as scfg
-from .git_branch_upgrade import find_merged_branches, dev_branches
-# from packaging.version import LegacyVersion
+from git_well._utils import find_merged_branches, dev_branches, rich_print
 
 
 class CleanDevBranchConfig(scfg.DataConfig):
@@ -24,10 +23,6 @@ class CleanDevBranchConfig(scfg.DataConfig):
         kwargs = {}
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
-        try:
-            from rich import print as rich_print
-        except Exception:
-            rich_print = print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
         resolved_repo = ub.Path(config.repo_dpath).resolve()
@@ -50,8 +45,8 @@ class CleanDevBranchConfig(scfg.DataConfig):
         if not remove_branches:
             print('Local devbranches are already clean')
         else:
-            from rich import prompt
-            if prompt.Confirm.ask('Remove dev branches?'):
+            from ._utils import confirm
+            if confirm('Remove dev branches?'):
                 repo.git.branch(*remove_branches, '-D')
 
 __cli__ = CleanDevBranchConfig

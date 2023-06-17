@@ -1,6 +1,33 @@
 The git_well Module
 ===================
 
+Git Well is a collection of git command line tools and is also a Python
+module..
+
+Installing this module installs the ``git-well`` command, which is a modal CLI
+into several new git commands. These git commands are also exposed as
+standalone "git" executables.
+
+In other words after you:
+
+.. code:: bash
+
+   pip install git-well
+
+
+Then you can run
+
+.. code:: bash
+
+   # Show all the commands exposed by this repo.
+   git well --help
+
+   git well sync --help
+
+   # OR
+
+   git sync
+
 
 
 |Pypi| |PypiDownloads| |GithubActions| |Codecov|
