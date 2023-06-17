@@ -608,8 +608,8 @@ def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
 def commits_between(repo, start, stop):
     """
     Args:
-        start (git.Commit): toplogically (chronologically) first commit
-        stop (git.Commit): toplogically (chronologically) last commit
+        start (git.Commit): toplogically first (i.e. chronologically older) commit
+        stop (git.Commit): toplogically last (i.e. chronologically newer) commit
 
     Returns:
         list of git.Commit: between commits
@@ -641,13 +641,14 @@ def commits_between(repo, start, stop):
     Example:
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
-        >>> repo = git.Repo()
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> stop = repo.head.commit
         >>> start = stop.parents[0].parents[0].parents[0].parents[0]
         >>> commits = commits_between(repo, start, stop)
-        >>> assert commits[0] == start
-        >>> assert commits[-1] == stop
-        >>> assert len(commits) == 4
+        >>> assert commits[0] == stop
+        >>> assert commits[-1] == start
+        >>> assert len(commits) == 5
     """
     import binascii
     argstr = '{start}^..{stop}'.format(start=start, stop=stop)
