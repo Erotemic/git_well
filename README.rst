@@ -1,6 +1,9 @@
 The git_well Module
 ===================
 
+
+|Pypi| |PypiDownloads| |GithubActions| |Codecov|
+
 Git Well is a collection of git command line tools and is also a Python
 module..
 
@@ -30,7 +33,10 @@ Then you can run
 
 
 
-|Pypi| |PypiDownloads| |GithubActions| |Codecov|
+The tools in this module are derived from:
+
+* https://github.com/Erotemic/git-sync
+* https://github.com/Erotemic/local/tree/main/git_tools
 
 
 

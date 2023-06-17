@@ -7,6 +7,9 @@ def make_dummy_git_repo():
     import git
     repo = git.Repo.init(repo_dpath, initial_branch='main')
 
+    repo.git.config('user.email', 'demo.user@zombo.com', local=True)
+    repo.git.config('user.name', 'Demo User', local=True)
+
     fpath = (repo_dpath / 'data1.txt')
     fpath.write_text('data')
 

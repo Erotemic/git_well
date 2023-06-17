@@ -80,11 +80,14 @@ class SquashStreakCLI(scfg.DataConfig):
             together. Only squash commits from these authors.  Set to
             <config> to use your git config
             '''))
-    dry = scfg.Value(False, isflag=True, mutex_group=1, short_alias=['n'], help=ub.paragraph(
+    dry = scfg.Value(True, isflag=True, mutex_group=1, short_alias=['n'], help=ub.paragraph(
             '''
             if True this only executes a dry run, that prints the chains
-            that would be squashed (Default: False)
+            that would be squashed (Default: True)
             '''))
+
+    force = scfg.Value(None, isflag=True, mutex_group=1, help='turn dry mode off')
+
     verbose = scfg.Value(None, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
 
     # TODO: scriptconfig needs to be extended to handle these argparse
@@ -93,6 +96,12 @@ class SquashStreakCLI(scfg.DataConfig):
     # dry = scfg.Value(True, alias=['force'], mutex_group=1, short_alias=['f'], help='opposite of --dry', isflag=True)
     # nargs=0)
     # quiet = scfg.Value(None, alias=['quiet'], mutex_group=2, short_alias=['q'], help='suppress output', nargs=0)
+
+    def __post_init__(self):
+        if self.force is not None:
+            self.dry = not self.force
+        else:
+            self.force = not self.dry
 
 
 def print_exc(exc_info=None):
@@ -186,13 +195,18 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
     """
     Finds start and end points that can be safely squashed between
 
+    CommandLine:
+        xdoctest -m git_well.git_squash_streaks find_pseudo_chain
+
     Example:
-        >>> import sys, ubelt
-        >>> sys.path.append(ubelt.expandpath('~/local/git_tools'))
-        >>> from git_squash_streaks import *  # NOQA
-        >>> repo = git.Repo()
+        >>> # xdoctest +REQUIRES(LINUX)
+        >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> head = repo.commit('HEAD')
         >>> pseudo_chain = find_pseudo_chain(head)
+        >>> print('pseudo_chain = {}'.format(ub.urepr(pseudo_chain, nl=1)))
     """
     import networkx as nx
 
@@ -280,15 +294,19 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
 def git_nx_graph(head, oldest_commit, preserve_tags=False):
     """
     Example:
-        >>> from git_squash_streaks import *  # NOQA
+        >>> # xdoctest +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
-        >>> from git_well.git_squash_streaks import _squash_between
-        >>> #head = git.Repo().head.commit
-        >>> repo = git.Repo()
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> head = repo.commit('HEAD')
         >>> oldest_commit = 'master'
         >>> oldest_commit = None
         >>> graph = git_nx_graph(head, oldest_commit)
+
+    Ignore:
+        from xdev.util_networkx import write_network_text
+        write_network_text(graph)
 
     """
     repo = head.repo
@@ -407,6 +425,7 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
             any tag with a name in the set.
 
     Example:
+        >>> # xdoctest +REQUIRES(LINUX)
         >>> # assuming you are in a git repo
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well.git_squash_streaks import _squash_between
@@ -639,6 +658,7 @@ def commits_between(repo, start, stop):
         <p2> __/
 
     Example:
+        >>> # xdoctest +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
         >>> repo_dpath = demo.make_dummy_git_repo()
