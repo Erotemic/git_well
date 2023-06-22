@@ -199,7 +199,7 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
         xdoctest -m git_well.git_squash_streaks find_pseudo_chain
 
     Example:
-        >>> # xdoctest +REQUIRES(LINUX)
+        >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
         >>> repo_dpath = demo.make_dummy_git_repo()
@@ -294,7 +294,7 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
 def git_nx_graph(head, oldest_commit, preserve_tags=False):
     """
     Example:
-        >>> # xdoctest +REQUIRES(LINUX)
+        >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
         >>> repo_dpath = demo.make_dummy_git_repo()
@@ -425,7 +425,7 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
             any tag with a name in the set.
 
     Example:
-        >>> # xdoctest +REQUIRES(LINUX)
+        >>> # xdoctest: +REQUIRES(LINUX)
         >>> # assuming you are in a git repo
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well.git_squash_streaks import _squash_between
@@ -658,7 +658,7 @@ def commits_between(repo, start, stop):
         <p2> __/
 
     Example:
-        >>> # xdoctest +REQUIRES(LINUX)
+        >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
         >>> repo_dpath = demo.make_dummy_git_repo()
