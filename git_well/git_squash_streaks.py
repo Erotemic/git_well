@@ -2,23 +2,106 @@
 # PYTHON_ARGCOMPLETE_OK
 # -*- coding: utf-8 -*-
 """
+This git-squash-streaks command
+
 Requirements:
     pip install ubelt
     pip install GitPython
+    pip install scriptconfig
 """
 import sys
 import re
 import os
-import git
 import warnings
 import email.utils
-import ubelt as ub
 import itertools as it
+
+import ubelt as ub
+import git
 import scriptconfig as scfg
 
 
 EXPERIMENTAL_PSEUDO_CHAIN = 0
 EXPERIMENTAL_REBASE = 0
+
+
+class SquashStreakCLI(scfg.DataConfig):
+    """
+    Squashes consecutive commits that meet a specified criteiron.
+    """
+    __command__ = "squash_streaks"
+
+    timedelta = scfg.Value('sameday', type=str, help=ub.paragraph(
+            '''
+            strategy mode or max number of seconds to determine how far
+            appart two commits can be before they are squashed.
+            (Default: 'sameday'). Valid values: ['sameday', 'alltime',
+            'none', <n_seconds:float>]
+            '''))
+    custom_streak = scfg.Value(None, help=ub.paragraph(
+            '''
+            hack to specify one custom streak: older newer
+            '''), nargs=2)
+    pattern = scfg.Value(None, type=str, help=ub.paragraph(
+            '''
+            instead of squashing messages with the same name, squash
+            only if they match this pattern (Default: None). Default of
+            None means that squash two commits if they have the same
+            message.
+            '''))
+    tags = scfg.Value(False, isflag=True, help='experimental')
+
+    preserve_tags = scfg.Value(True, isflag=True, help=ub.paragraph(
+            '''
+            if True the chain is not allowed to extend past any tags. If
+            a set, then we will not procede past any tag with a name in
+            the set.
+            '''))
+    oldest_commit = scfg.Value(None, help=ub.paragraph(
+            '''
+            if specified we will only squash commits toplogically after
+            this commit in the graph.
+            '''))
+    inplace = scfg.Value(False, isflag=True, help=ub.paragraph(
+            '''
+            if True changes will be applied directly to the current
+            branch otherwise a temporary branch will be created. Then
+            you must manually reset the current branch to this branch
+            and delete the temp branch. (Default: False)
+            '''))
+    auto_rollback = scfg.Value(False, isflag=True, help=ub.paragraph(
+            '''
+            if True the repo will be reset to a clean state if any
+            errors occur. (Default: True)
+            '''))
+    authors = scfg.Value(None, type=str, help=ub.paragraph(
+            '''
+            "level-set" of authors who's commits can be squashed
+            together. Only squash commits from these authors.  Set to
+            <config> to use your git config
+            '''))
+    dry = scfg.Value(True, isflag=True, mutex_group=1, short_alias=['n'], help=ub.paragraph(
+            '''
+            if True this only executes a dry run, that prints the chains
+            that would be squashed (Default: True)
+            '''))
+
+    force = scfg.Value(None, isflag=True, mutex_group=1, short_alias=['f'], help='turn dry mode off')
+
+    verbose = scfg.Value(True, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
+
+    # TODO: scriptconfig needs to be extended to handle these argparse
+    # use-cases
+
+    # dry = scfg.Value(True, alias=['force'], mutex_group=1, short_alias=['f'], help='opposite of --dry', isflag=True)
+    # nargs=0)
+    # quiet = scfg.Value(None, alias=['quiet'], mutex_group=2, short_alias=['q'], help='suppress output', nargs=0)
+
+    def __post_init__(self):
+        if self.force is not None:
+            self.dry = not self.force
+        else:
+            self.force = not self.dry
 
 
 def print_exc(exc_info=None):
@@ -112,13 +195,18 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
     """
     Finds start and end points that can be safely squashed between
 
+    CommandLine:
+        xdoctest -m git_well.git_squash_streaks find_pseudo_chain
+
     Example:
-        >>> import sys, ubelt
-        >>> sys.path.append(ubelt.expandpath('~/local/git_tools'))
-        >>> from git_squash_streaks import *  # NOQA
-        >>> repo = git.Repo()
+        >>> # xdoctest: +REQUIRES(LINUX)
+        >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> head = repo.commit('HEAD')
         >>> pseudo_chain = find_pseudo_chain(head)
+        >>> print('pseudo_chain = {}'.format(ub.urepr(pseudo_chain, nl=1)))
     """
     import networkx as nx
 
@@ -206,15 +294,19 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
 def git_nx_graph(head, oldest_commit, preserve_tags=False):
     """
     Example:
-        >>> import sys, ubelt
-        >>> sys.path.append(ubelt.expandpath('~/local/git_tools'))
-        >>> from git_squash_streaks import *  # NOQA
-        >>> #head = git.Repo().head.commit
-        >>> repo = git.Repo()
+        >>> # xdoctest: +REQUIRES(LINUX)
+        >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> head = repo.commit('HEAD')
         >>> oldest_commit = 'master'
         >>> oldest_commit = None
         >>> graph = git_nx_graph(head, oldest_commit)
+
+    Ignore:
+        from xdev.util_networkx import write_network_text
+        write_network_text(graph)
 
     """
     repo = head.repo
@@ -333,8 +425,14 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
             any tag with a name in the set.
 
     Example:
+        >>> # xdoctest: +REQUIRES(LINUX)
         >>> # assuming you are in a git repo
-        >>> chain = find_chain(git.Repo().head.commit)
+        >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> from git_well.git_squash_streaks import _squash_between
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
+        >>> chain = find_chain(repo.head.commit)
     """
     chain = []
     commit = head
@@ -529,8 +627,8 @@ def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
 def commits_between(repo, start, stop):
     """
     Args:
-        start (git.Commit): toplogically (chronologically) first commit
-        stop (git.Commit): toplogically (chronologically) last commit
+        start (git.Commit): toplogically first (i.e. chronologically older) commit
+        stop (git.Commit): toplogically last (i.e. chronologically newer) commit
 
     Returns:
         list of git.Commit: between commits
@@ -560,13 +658,17 @@ def commits_between(repo, start, stop):
         <p2> __/
 
     Example:
-        >>> repo = git.Repo()
+        >>> # xdoctest: +REQUIRES(LINUX)
+        >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> from git_well import demo
+        >>> repo_dpath = demo.make_dummy_git_repo()
+        >>> repo = git.Repo(repo_dpath)
         >>> stop = repo.head.commit
         >>> start = stop.parents[0].parents[0].parents[0].parents[0]
         >>> commits = commits_between(repo, start, stop)
-        >>> assert commits[0] == start
-        >>> assert commits[-1] == stop
-        >>> assert len(commits) == 4
+        >>> assert commits[0] == stop
+        >>> assert commits[-1] == start
+        >>> assert len(commits) == 5
     """
     import binascii
     argstr = '{start}^..{stop}'.format(start=start, stop=stop)
@@ -940,90 +1042,23 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
             print('Or, to automatically accept changes run with --inplace')
 
 
-def _autoparse_desc(func):
-    try:
-        # TODO: can we autogenerate the entire argument parser from the
-        # docstring? or at least sectinons of it?
-        # Parse docstrings for help strings
-        from xdoctest.docstr import docscrape_google as scrape
-        docstr = func.__doc__
-        help_dict = {}
-        for argdict in scrape.parse_google_args(docstr):
-            help_dict[argdict['name']] = argdict['desc']
-        description = scrape.split_google_docblocks(docstr)[0][1][0].strip()
-        description = description.replace('\n', ' ')
-    except ImportError:
-        from collections import defaultdict
-        help_dict = defaultdict(lambda: '')
-        description = ''
-    return description, help_dict
-
-
-
-class SquashStreakCLI(scfg.DataConfig):
-    """
-    Squashes consecutive commits that meet a specified criteiron.
-    """
-    __command__ = "squash_streaks"
-
-    timedelta = scfg.Value(None, type=str, help=ub.paragraph(
-            '''
-            strategy mode or max number of seconds to determine how far
-            appart two commits can be before they are squashed.
-            (Default: 'sameday'). Valid values: ['sameday', 'alltime',
-            'none', <n_seconds:float>]
-            '''))
-    custom_streak = scfg.Value(None, help=ub.paragraph(
-            '''
-            hack to specify one custom streak: older newer
-            '''), nargs=2)
-    pattern = scfg.Value(None, type=str, help=ub.paragraph(
-            '''
-            instead of squashing messages with the same name, squash
-            only if they match this pattern (Default: None). Default of
-            None means that squash two commits if they have the same
-            message.
-            '''))
-    tags = scfg.Value(False, isflag=True, help='experimental')
-
-    preserve_tags = scfg.Value(True, isflag=True, help=ub.paragraph(
-            '''
-            if True the chain is not allowed to extend past any tags. If
-            a set, then we will not procede past any tag with a name in
-            the set.
-            '''))
-    oldest_commit = scfg.Value(None, help=ub.paragraph(
-            '''
-            if specified we will only squash commits toplogically after
-            this commit in the graph.
-            '''))
-    inplace = scfg.Value(False, isflag=True, help=ub.paragraph(
-            '''
-            if True changes will be applied directly to the current
-            branch otherwise a temporary branch will be created. Then
-            you must manually reset the current branch to this branch
-            and delete the temp branch. (Default: False)
-            '''))
-    auto_rollback = scfg.Value(False, isflag=True, help=ub.paragraph(
-            '''
-            if True the repo will be reset to a clean state if any
-            errors occur. (Default: True)
-            '''))
-    authors = scfg.Value(None, type=str, help=ub.paragraph(
-            '''
-            "level-set" of authors who's commits can be squashed
-            together. Only squash commits from these authors.  Set to
-            <config> to use your git config
-            '''))
-    dry = scfg.Value(False, isflag=True, mutex_group=1, short_alias=['n'], help=ub.paragraph(
-            '''
-            if True this only executes a dry run, that prints the chains
-            that would be squashed (Default: False)
-            '''))
-    # dry = scfg.Value(True, alias=['force'], mutex_group=1, short_alias=['f'], help='opposite of --dry', isflag=True)
-    verbose = scfg.Value(None, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
-    # nargs=0)
-    # quiet = scfg.Value(None, alias=['quiet'], mutex_group=2, short_alias=['q'], help='suppress output', nargs=0)
+# def _autoparse_desc(func):
+#     try:
+#         # TODO: can we autogenerate the entire argument parser from the
+#         # docstring? or at least sectinons of it?
+#         # Parse docstrings for help strings
+#         from xdoctest.docstr import docscrape_google as scrape
+#         docstr = func.__doc__
+#         help_dict = {}
+#         for argdict in scrape.parse_google_args(docstr):
+#             help_dict[argdict['name']] = argdict['desc']
+#         description = scrape.split_google_docblocks(docstr)[0][1][0].strip()
+#         description = description.replace('\n', ' ')
+#     except ImportError:
+#         from collections import defaultdict
+#         help_dict = defaultdict(lambda: '')
+#         description = ''
+#     return description, help_dict
 
 
 # commandline entry point
@@ -1097,11 +1132,6 @@ def git_squash_streaks():
     # )
 
     args = SquashStreakCLI.cli()
-
-    # if argcomplete:
-    #     argcomplete.autocomplete(parser)
-    # args = parser.parse_args()
-    # Postprocess args
     ns = dict(args).copy()
     if ns.pop('tags'):
         do_tags()
@@ -1136,6 +1166,8 @@ def git_squash_streaks():
             ns['authors'].update({'joncrall', 'Jon Crall'})
     else:
         ns['authors'] = {a.strip() for a in ns['authors'].split(',')}
+
+    ns.pop('force')
 
     print(ub.repr2(ns, nl=1))
 
