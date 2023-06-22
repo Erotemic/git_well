@@ -6,7 +6,10 @@ from git_well._utils import find_merged_branches, dev_branches, rich_print
 
 
 class CleanDevBranchConfig(scfg.DataConfig):
-    __command__ = 'clean'
+    """
+    Cleanup branches that have been merged into main.
+    """
+    __command__ = 'branch_cleanup'
 
     repo_dpath = scfg.Value('.', help='location of the repo')
     keep_last = scfg.Value(1, help='previous number of dev branches to keep')

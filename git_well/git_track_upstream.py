@@ -16,8 +16,11 @@ from git_well._utils import rich_print
 
 class TrackUpstreamCLI(scfg.DataConfig):
     """
-    Upgrade to the latest "dev" branch. I.e. search for the branch
-    ``dev/<version>`` with the greatest semantic version.
+    Set the branch upstream with sensible defaults if possible.
+
+    A quick script that executes
+    ``git branch --set-upstream-to=<remote>/<branch> <branch>``
+    with sensible defaults
     """
     __command__ = 'track_upstream'
     repo_dpath = scfg.Value('.', position=1, help='location of the repo')

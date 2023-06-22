@@ -30,7 +30,7 @@ class UpdateDevBranch(scfg.DataConfig):
     Upgrade to the latest "dev" branch. I.e. search for the branch
     ``dev/<version>`` with the greatest semantic version.
     """
-    __command__ = 'upgrade'
+    __command__ = 'branch_upgrade'
     repo_dpath = scfg.Value('.', position=1, help='location of the repo')
 
     @classmethod

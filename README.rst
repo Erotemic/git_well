@@ -32,6 +32,24 @@ Then you can run
    git sync
 
 
+Top Level CLI:
+
+.. code::
+
+    usage: git-well [-h] {branch_upgrade,squash_streaks,sync,branch_cleanup,track_upstream} ...
+
+    options:
+      -h, --help            show this help message and exit
+
+    commands:
+      {branch_upgrade,squash_streaks,sync,branch_cleanup,track_upstream}
+                            specify a command to run
+        branch_upgrade      Upgrade to the latest "dev" branch. I.e. search for the branch
+        squash_streaks      Squashes consecutive commits that meet a specified criteiron.
+        sync                Sync a git repo with a remote server via ssh
+        branch_cleanup      Cleanup branches that have been merged into main.
+        track_upstream      Set the branch upstream with sensible defaults if possible.
+
 
 The tools in this module are derived from:
 
