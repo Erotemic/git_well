@@ -31,7 +31,7 @@ class SquashStreakCLI(scfg.DataConfig):
     """
     __command__ = "squash_streaks"
 
-    timedelta = scfg.Value(None, type=str, help=ub.paragraph(
+    timedelta = scfg.Value('sameday', type=str, help=ub.paragraph(
             '''
             strategy mode or max number of seconds to determine how far
             appart two commits can be before they are squashed.
@@ -86,9 +86,9 @@ class SquashStreakCLI(scfg.DataConfig):
             that would be squashed (Default: True)
             '''))
 
-    force = scfg.Value(None, isflag=True, mutex_group=1, help='turn dry mode off')
+    force = scfg.Value(None, isflag=True, mutex_group=1, short_alias=['f'], help='turn dry mode off')
 
-    verbose = scfg.Value(None, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
+    verbose = scfg.Value(True, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
 
     # TODO: scriptconfig needs to be extended to handle these argparse
     # use-cases
@@ -1166,6 +1166,8 @@ def git_squash_streaks():
             ns['authors'].update({'joncrall', 'Jon Crall'})
     else:
         ns['authors'] = {a.strip() for a in ns['authors'].split(',')}
+
+    ns.pop('force')
 
     print(ub.repr2(ns, nl=1))
 
