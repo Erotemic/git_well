@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
 """
 A git tool for handling the dev/<version> branch patterns
 
@@ -19,10 +20,8 @@ Requires:
     packaging
     ubelt
 """
-import git
 import ubelt as ub
 import scriptconfig as scfg
-from git_well._utils import dev_branches, rich_print
 
 
 class UpdateDevBranch(scfg.DataConfig):
@@ -36,7 +35,9 @@ class UpdateDevBranch(scfg.DataConfig):
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         config = cls.cli(cmdline=cmdline, data=kwargs)
+        from git_well._utils import dev_branches, rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
+        import git
         repo = git.Repo(config['repo_dpath'])
 
         versioned_dev_branches = dev_branches(repo)

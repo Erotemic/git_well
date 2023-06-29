@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 from os.path import normpath
 from os.path import realpath
 from os.path import expanduser
@@ -7,10 +6,6 @@ from os.path import relpath
 import os
 import ubelt as ub
 import scriptconfig as scfg
-try:
-    from rich import print as rich_print
-except Exception:
-    rich_print = print
 
 
 def getcwd():
@@ -241,6 +236,7 @@ class GitSyncCLI(scfg.DataConfig):
 
 def main(cmdline=True, **kwargs):
     args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
+    from git_well._utils import rich_print
     rich_print('args = {}'.format(ub.urepr(args, nl=1)))
     # import argparse
     # parser = argparse.ArgumentParser(description='Sync a git repo with a remote server via ssh')

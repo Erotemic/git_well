@@ -1,11 +1,12 @@
 import ubelt as ub
-from packaging.version import parse as Version
 
 
-try:
-    from rich import print as rich_print
-except Exception:
-    rich_print = print
+def rich_print(*args, **kwargs):
+    try:
+        from rich import print as print_
+    except Exception:
+        print_ = print
+    return print_(*args, **kwargs)
 
 
 def find_merged_branches(repo, main_branch='main'):
@@ -17,6 +18,7 @@ def find_merged_branches(repo, main_branch='main'):
 
 
 def dev_branches(repo):
+    from packaging.version import parse as Version
     branch_infos = []
     for line in repo.git.branch('-r').split('\n'):
         line = line.strip().split('->')[-1].strip()

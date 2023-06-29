@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Requirements:
     pip install GitPython
@@ -8,10 +7,8 @@ A quick script that executes
 ``git branch --set-upstream-to=<remote>/<branch> <branch>``
 with sensible defaults
 """
-import git as pygit
 import ubelt as ub
 import scriptconfig as scfg
-from git_well._utils import rich_print
 
 
 class TrackUpstreamCLI(scfg.DataConfig):
@@ -28,6 +25,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         config = cls.cli(cmdline=cmdline, data=kwargs)
+        from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
         repo_root = find_git_root(config['repo_dpath'])
@@ -37,6 +35,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
 
         # Find the repo root.
         import os
+        import git as pygit
         repo = pygit.Repo(os.fspath(repo_root))
 
         assert not repo.active_branch.is_remote()

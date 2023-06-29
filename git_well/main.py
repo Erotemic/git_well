@@ -1,17 +1,15 @@
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 import scriptconfig as scfg
-from git_well import git_squash_streaks
-from git_well import git_branch_upgrade
-from git_well import git_branch_cleanup
-from git_well import git_track_upstream
-from git_well import git_sync
 
 
 class GitWellModalCLI(scfg.ModalCLI):
-    branch_upgrade = git_branch_upgrade.__cli__
-    squash_streaks = git_squash_streaks.__cli__
-    sync = git_sync.__cli__
-    branch_cleanup = git_branch_cleanup.__cli__
-    track_upstream = git_track_upstream.__cli__
+    from git_well.git_squash_streaks import __cli__ as squash_streaks
+    from git_well.git_branch_upgrade import __cli__ as branch_upgrade
+    from git_well.git_sync import __cli__ as sync
+    from git_well.git_branch_cleanup import __cli__ as branch_cleanup
+    from git_well.git_track_upstream import __cli__ as track_upstream
+    from git_well.git_rebase_add_continue import __cli__ as rebase_add_continue
 
 
 def main():
@@ -22,6 +20,6 @@ def main():
 if __name__ == '__main__':
     """
     CommandLine:
-        python ~/code/git_well/git_well/main.py
+        python ~/code/git_well/git_well/main.py --help
     """
     main()

@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
-# -*- coding: utf-8 -*-
 """
 This git-squash-streaks command
 
@@ -10,14 +9,10 @@ Requirements:
     pip install scriptconfig
 """
 import sys
-import re
 import os
 import warnings
-import email.utils
 import itertools as it
-
 import ubelt as ub
-import git
 import scriptconfig as scfg
 
 
@@ -427,6 +422,7 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
     Example:
         >>> # xdoctest: +REQUIRES(LINUX)
         >>> # assuming you are in a git repo
+        >>> import git
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well.git_squash_streaks import _squash_between
         >>> from git_well import demo
@@ -506,6 +502,7 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
             only if they match this pattern (Default: None), None means
             the consecutive messages should match.
     """
+    import re
     if len(chain) == 0:
         raise ValueError('No continuous commits exist')
 
@@ -602,6 +599,7 @@ def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
     If the temporary branch exists, it is deleted, so make sure you choose your
     suffix so that it never conflicts with any real branches.
     """
+    import git
     orig_branchname = repo.active_branch.name
     if orig_branchname.endswith(suffix):
         raise Exception('Already in temp branch {}'.format(orig_branchname))
@@ -671,6 +669,7 @@ def commits_between(repo, start, stop):
         >>> assert len(commits) == 5
     """
     import binascii
+    import git
     argstr = '{start}^..{stop}'.format(start=start, stop=stop)
     hexshas = repo.git.rev_list(argstr).splitlines()
     binshas = [binascii.unhexlify(h) for h in hexshas]
@@ -687,6 +686,8 @@ def _squash_between(repo, start, stop, dry=False, verbose=True):
     inplace squash between, use external function that sets up temp branches to
     use this directly from the commandline.
     """
+    import git
+    import email.utils
     if len(start.parents) != 1:
         raise AssertionError('cant handle')
     # assert start.authored_datetime < stop.authored_datetime
@@ -756,7 +757,7 @@ def _squash_between(repo, start, stop, dry=False, verbose=True):
                 above = stop.hexsha + '..' + old_head.hexsha
                 if 0:
                     above_commits = commits_between(repo, stop, old_head)
-                    print('above_commits = {}'.format(ub.repr2(above_commits, si=True)))
+                    print('above_commits = {}'.format(ub.urepr(above_commits, si=True)))
                     print('above = {!r}'.format(above))
 
                 if EXPERIMENTAL_REBASE:
@@ -783,6 +784,7 @@ def _squash_between(repo, start, stop, dry=False, verbose=True):
 
 
 def do_tags(verbose=True, inplace=False, dry=True, auto_rollback=False):
+    import git
     if verbose:
         if dry:
             print('squashing streaks (DRY RUN)')
@@ -936,6 +938,7 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
         oldest_commit (str, default=None): if specified we will only squash
             commits toplogically after this commit in the graph.
     """
+    import git
     if verbose:
         if dry:
             print('squashing streaks (DRY RUN)')
@@ -984,8 +987,8 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
         if verbose:
             # ISO_8601 = '%Y-%m-%d %H:%M:%S %z'  # NOQA
             # ts_start = start.authored_datetime.
-            # print(ub.repr2([(c.message.strip(), c.author.name, c.authored_datetime.strftime(ISO_8601)) for c in chain]))
-            # print(ub.repr2(chain, nl=1))
+            # print(ub.urepr([(c.message.strip(), c.author.name, c.authored_datetime.strftime(ISO_8601)) for c in chain]))
+            # print(ub.urepr(chain, nl=1))
             print('Found chain of length {!r}'.format(len(chain)))
 
         streaks = find_streaks(chain, authors=authors, timedelta=timedelta,
@@ -1137,6 +1140,8 @@ def git_squash_streaks():
         do_tags()
         return
 
+    import git
+
     try:
         ns['timedelta'] = float(ns['timedelta'])
     except ValueError:
@@ -1169,7 +1174,7 @@ def git_squash_streaks():
 
     ns.pop('force')
 
-    print(ub.repr2(ns, nl=1))
+    print(ub.urepr(ns, nl=1))
 
     squash_streaks(**ns)
 

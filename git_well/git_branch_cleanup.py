@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-import git
+# PYTHON_ARGCOMPLETE_OK
 import ubelt as ub
 import scriptconfig as scfg
-from git_well._utils import find_merged_branches, dev_branches, rich_print
 
 
 class CleanDevBranchConfig(scfg.DataConfig):
@@ -26,10 +25,12 @@ class CleanDevBranchConfig(scfg.DataConfig):
         kwargs = {}
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
+        from git_well._utils import find_merged_branches, dev_branches, rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
         resolved_repo = ub.Path(config.repo_dpath).resolve()
         print(f'resolved_repo={resolved_repo}')
+        import git
         repo = git.Repo(resolved_repo)
 
         # TODO: fix * prefixed in front of branch
