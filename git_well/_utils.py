@@ -72,3 +72,14 @@ def confirm(msg):
             else:
                 print('invalid response')
     return ret
+
+
+def find_git_root(dpath):
+    cwd = ub.Path(dpath).resolve()
+    parts = cwd.parts
+    for i in reversed(range(0, len(parts))):
+        p = ub.Path(*parts[0:i])
+        cand = p / '.git'
+        if cand.exists():
+            return p
+    raise Exception('cannt find git root')

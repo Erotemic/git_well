@@ -10,6 +10,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.git_branch_cleanup import __cli__ as branch_cleanup
     from git_well.git_track_upstream import __cli__ as track_upstream
     from git_well.git_rebase_add_continue import __cli__ as rebase_add_continue
+    from git_well.git_remote_protocol import __cli__ as remote_protocol
 
 
 def main():
