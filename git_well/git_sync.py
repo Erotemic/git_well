@@ -8,6 +8,34 @@ import ubelt as ub
 import scriptconfig as scfg
 
 
+class GitSyncCLI(scfg.DataConfig):
+    """
+    Sync a git repo with a remote server via ssh
+    """
+    __command__ = 'sync'
+    host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
+            '''
+            Server to sync to via ssh (e.g. user@servername.edu)
+            '''), nargs=1)
+    remote = scfg.Value(None, position=2, help='The git remote to use (e.g. origin)', nargs='?')
+    forward_ssh_agent = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
+            '''
+            Enable forwarding of the ssh authentication agent connection
+            '''))
+    dry = scfg.Value(False, isflag=True, short_alias=['n'], help='Perform a dry run')
+    message = scfg.Value('wip [skip ci]', type=str, short_alias=['m'], help='Specify a custom commit message')
+    force = scfg.Value(False, isflag=True, help='Force push and hard reset the remote.')
+
+
+def main(cmdline=True, **kwargs):
+    args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
+    from git_well._utils import rich_print
+    rich_print('args = {}'.format(ub.urepr(args, nl=1)))
+    ns = dict(args).copy()
+    ns['host'] = ns['host'][0]
+    git_sync(**ns)
+
+
 def getcwd():
     """
     Workaround to get the working directory without dereferencing symlinks.
@@ -222,44 +250,32 @@ def git_sync(host, remote=None, message='wip [skip ci]',
         command = part.format(**kw)
         if not dry:
             result = ub.cmd(command, verbose=2)
-            retcode = result['ret']
+            retcode = result.returncode
             if command.startswith('git commit') and retcode == 1:
                 pass
             elif retcode != 0:
                 print(f'command={command}')
+                if command.startswith('git push'):
+                    if 'refusing to update checked out branch:' in result.stderr:
+                        from rich import prompt
+                        ans = prompt.Confirm.ask(ub.paragraph(
+                            '''
+                            The remote needs to be configured to allow pushes
+                            to a checked out branch. Do you want to do this?
+                            '''))
+                        if ans:
+                            reconfig_remote_part = ' && '.join([
+                                f'cd {remote_cwd}',
+                                'git config --local receive.denyCurrentBranch warn',
+                            ])
+                            reconfig_command = f'ssh {ssh_flags} {host} "' + reconfig_remote_part + '"'
+                            ub.cmd(reconfig_command, verbose=2)
+                            print('Now rerun the command')
+
                 print('git-sync cannot continue. retcode={}'.format(retcode))
                 break
         else:
             print(command)
-
-
-class GitSyncCLI(scfg.DataConfig):
-    """
-    Sync a git repo with a remote server via ssh
-    """
-    __command__ = 'sync'
-    host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
-            '''
-            Server to sync to via ssh (e.g. user@servername.edu)
-            '''), nargs=1)
-    remote = scfg.Value(None, position=2, help='The git remote to use (e.g. origin)', nargs='?')
-    forward_ssh_agent = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
-            '''
-            Enable forwarding of the ssh authentication agent connection
-            '''))
-    dry = scfg.Value(False, isflag=True, short_alias=['n'], help='Perform a dry run')
-    message = scfg.Value('wip [skip ci]', type=str, short_alias=['m'], help='Specify a custom commit message')
-    force = scfg.Value(False, isflag=True, help='Force push and hard reset the remote.')
-
-
-def main(cmdline=True, **kwargs):
-    args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
-    from git_well._utils import rich_print
-    rich_print('args = {}'.format(ub.urepr(args, nl=1)))
-    ns = dict(args).copy()
-    ns['host'] = ns['host'][0]
-
-    git_sync(**ns)
 
 
 __cli__ = GitSyncCLI
