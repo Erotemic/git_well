@@ -69,6 +69,8 @@ def main(cmdline=1, **kwargs):
         config_text = config_text.replace(task['old'], task['new'])
     repo.config_fpath.write_text(config_text)
 
+__config__ = GitRemoteProtocol
+
 if __name__ == '__main__':
     """
     CommandLine:
