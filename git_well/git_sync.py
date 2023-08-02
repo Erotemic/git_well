@@ -238,25 +238,6 @@ def main(cmdline=True, **kwargs):
     args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
     from git_well._utils import rich_print
     rich_print('args = {}'.format(ub.urepr(args, nl=1)))
-    # import argparse
-    # parser = argparse.ArgumentParser(description='Sync a git repo with a remote server via ssh')
-    # parser.add_argument('host', nargs=1, help='Server to sync to via ssh (e.g. user@servername.edu)')
-    # parser.add_argument('remote', nargs='?', help='The git remote to use (e.g. origin)')
-    # parser.add_argument('-A', dest='forward_ssh_agent', action='store_true',
-    #                     help='Enable forwarding of the ssh authentication agent connection')
-    # parser.add_argument(*('-n', '--dry'), dest='dry', action='store_true',
-    #                     help='Perform a dry run')
-    # parser.add_argument(*('-m', '--message'), type=str,
-    #                     help='Specify a custom commit message')
-    # parser.add_argument('--force', default=False, action='store_true',
-    #                     help='Force push and hard reset the remote.')
-
-    # parser.set_defaults(
-    #     dry=False,
-    #     remote=None,
-    #     message='wip [skip ci]',
-    # )
-    # args = parser.parse_args()
     ns = dict(args).copy()
     ns['host'] = ns['host'][0]
 
