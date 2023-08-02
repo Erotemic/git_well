@@ -99,7 +99,8 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         if remote is None:
             remote = config.host
 
-        remote_path = f'ssh://{host}:{remote_gitdir}'
+        # remote_path = f'ssh://{host}:{remote_gitdir}'
+        remote_path = f'{host}:{remote_gitdir}'
         add_command = f'git remote add {remote} {remote_path}'
         ub.cmd(add_command, verbose=3, check=True)
 
