@@ -1,2 +1,5 @@
-# Add requirements here, use the script for help (erotemic needs to publish this script)
+# Add requirements here, use the script for help 
 # python ~/local/tools/supported_python_versions_pip.py pygments
+
+argcomplete>=1.0
+rich_argparse>=1.1.0 ; python_version >= '3.7'

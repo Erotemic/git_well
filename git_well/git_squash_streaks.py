@@ -196,6 +196,7 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
     Example:
         >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
+        >>> import git
         >>> from git_well import demo
         >>> repo_dpath = demo.make_dummy_git_repo()
         >>> repo = git.Repo(repo_dpath)
@@ -292,6 +293,7 @@ def git_nx_graph(head, oldest_commit, preserve_tags=False):
         >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
+        >>> import git
         >>> repo_dpath = demo.make_dummy_git_repo()
         >>> repo = git.Repo(repo_dpath)
         >>> head = repo.commit('HEAD')
@@ -659,6 +661,7 @@ def commits_between(repo, start, stop):
         >>> # xdoctest: +REQUIRES(LINUX)
         >>> from git_well.git_squash_streaks import *  # NOQA
         >>> from git_well import demo
+        >>> import git
         >>> repo_dpath = demo.make_dummy_git_repo()
         >>> repo = git.Repo(repo_dpath)
         >>> stop = repo.head.commit
