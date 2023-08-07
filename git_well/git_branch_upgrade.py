@@ -38,7 +38,10 @@ class UpdateDevBranch(scfg.DataConfig):
         from git_well._utils import dev_branches, rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         import git
-        repo = git.Repo(config['repo_dpath'])
+        from git_well._utils import find_git_root
+        repo_root = find_git_root(config['repo_dpath'])
+
+        repo = git.Repo(repo_root)
 
         versioned_dev_branches = dev_branches(repo)
         if len(versioned_dev_branches) == 0:

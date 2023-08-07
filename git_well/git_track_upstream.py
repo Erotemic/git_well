@@ -28,6 +28,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
         from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
+        from git_well._utils import find_git_root
         repo_root = find_git_root(config['repo_dpath'])
 
         if repo_root is None:
@@ -57,17 +58,6 @@ class TrackUpstreamCLI(scfg.DataConfig):
             ref = valid_refs[0]
             print('Chose sensible default tracking ref = {!r}'.format(ref))
             repo.active_branch.set_tracking_branch(ref)
-
-
-def find_git_root(dpath):
-    cwd = ub.Path(dpath).resolve()
-    parts = cwd.parts
-    for i in reversed(range(0, len(parts))):
-        p = ub.Path(*parts[0:i])
-        cand = p / '.git'
-        if cand.exists():
-            return p
-    return None
 
 
 def unique_remotes_with_branch(repo, branch):

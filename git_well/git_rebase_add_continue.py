@@ -105,7 +105,7 @@ class GitRebaseAddContinue(scfg.DataConfig):
         conflict_patterns = [
             re.compile('^' + ('<' * 7) + ' HEAD$', flags=re.MULTILINE),
             re.compile('^' + ('>' * 7) + ' HEAD$', flags=re.MULTILINE),
-            re.compile('^' + ('=' * 7) + '$', flags=re.MULTILINE),
+            # re.compile('^' + ('=' * 7) + '$', flags=re.MULTILINE),
             re.compile('^' + ('>' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE),
             re.compile('^' + ('<' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE),
         ]
