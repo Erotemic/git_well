@@ -12,7 +12,7 @@ def rich_print(*args, **kwargs):
 def find_merged_branches(repo, main_branch='main'):
     # git branch --merged main
     # main_branch = 'main'
-    merged_branches = [p.strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
+    merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
     merged_branches = ub.oset(merged_branches) - {main_branch}
     return merged_branches
 
@@ -146,7 +146,6 @@ def find_git_root(dpath):
     for i in reversed(range(0, len(parts) + 1)):
         p = ub.Path(*parts[0:i])
         cand = p / '.git'
-        print(f'cand={cand}')
         if cand.exists():
             found = p
             break

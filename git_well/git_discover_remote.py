@@ -42,12 +42,17 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
     def main(cls, cmdline=1, **kwargs):
         """
         Example:
-            >>> # xdoctest: +SKIP
-            >>> from git_well.git_discover_remote import *  # NOQA
+            >>> from git_well.git_discover_remote import GitDiscoverRemoteCLI
+            >>> from git_well.repo import Repo
+            >>> cls = GitDiscoverRemoteCLI
+            >>> repo = Repo.demo()
+            >>> # TODO: make a plausible scenario
             >>> cmdline = 0
             >>> kwargs = dict()
-            >>> cls = GitDiscoverRemoteCLI
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> kwargs['repo_dpath'] = repo
+            >>> import pytest
+            >>> with pytest.raises(Exception):
+            >>>     cls.main(cmdline=cmdline, **kwargs)
         """
         from git_well._utils import rich_print
         config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
