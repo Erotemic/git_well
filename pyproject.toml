@@ -21,6 +21,16 @@ dev_status = "planning"
 remote_host = "https://github.com"
 remote_group = "Erotemic"
 
+[tool.xcookie.entry_points]
+console_scripts = [
+    "git-well = git_well.__main__:main",
+    "git-sync = git_well.git_sync:main",
+    "git-branch-upgrade = git_well.git_branch_upgrade:main",
+    "git-branch-cleanup = git_well.git_branch_cleanup:main",
+    "git-squash-streaks = git_well.git_squash_streaks:main",
+    "git-track-upstream = git_well.git_track_upstream:main",
+]
+
 [tool.pytest.ini_options]
 addopts = "-p no:doctest --xdoctest --xdoctest-style=google --ignore-glob=setup.py --ignore-glob=dev --ignore-glob=docs"
 norecursedirs = ".git ignore build __pycache__ dev _skbuild docs"
