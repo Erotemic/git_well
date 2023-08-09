@@ -59,7 +59,7 @@ def dev_branches(repo):
 def confirm(msg):
     try:
         from rich import prompt
-        ret = prompt.Confirm.ask('Remove dev branches?')
+        ret = prompt.Confirm.ask(msg)
     except ImportError:
         while True:
             ans = input(msg + ' [y/n]')
@@ -74,12 +74,82 @@ def confirm(msg):
     return ret
 
 
+def choice_prompt(msg, choices):
+    """
+    Ignore:
+        choice_prompt('which one?', choices=['a', 'b', 'c'])
+    """
+    try:
+        from rich.prompt import Prompt, InvalidResponse
+    except ImportError:
+        print('Rich is required here')
+        raise
+
+    class ChoiceWithIntPrompt(Prompt):
+        """
+        Assigns an integer to each choice.
+        """
+        def make_prompt(self, default):
+            prompt = self.prompt.copy()
+            prompt.end = ""
+
+            if self.show_choices and self.choices:
+                prompt.append('\n')
+                for idx, choice in enumerate(self.choices, start=1):
+                    try:
+                        int(choice)
+                    except ValueError:
+                        ...
+                    else:
+                        raise AssertionError('choices cannot be integers')
+
+                    prompt.append(f'{idx}. ', style='json.number')
+                    prompt.append(f'{choice}\n', style="prompt")
+            if (
+                default != ...
+                and self.show_default
+                and isinstance(default, (str, self.response_type))
+            ):
+                prompt.append(" ")
+                _default = self.render_default(default)
+                prompt.append(_default)
+
+            prompt.append(self.prompt_suffix)
+            return prompt
+
+        def process_response(self, value: str):
+            value = value.strip()
+            assert self.choices is not None
+            try:
+                return_value = self.response_type(value)
+            except ValueError:
+                raise InvalidResponse(self.validate_error_message)
+
+            try:
+                idx = int(return_value) - 1
+                return_value = self.choices[idx]
+            except Exception:
+                ...
+
+            if return_value not in self.choices:
+                raise InvalidResponse(self.illegal_choice_message)
+
+            return return_value
+
+    return ChoiceWithIntPrompt.ask(msg, choices=choices)
+
+
 def find_git_root(dpath):
     cwd = ub.Path(dpath).resolve()
     parts = cwd.parts
-    for i in reversed(range(0, len(parts))):
+    found = None
+    for i in reversed(range(0, len(parts) + 1)):
         p = ub.Path(*parts[0:i])
         cand = p / '.git'
+        print(f'cand={cand}')
         if cand.exists():
-            return p
-    raise Exception('cannt find git root')
+            found = p
+            break
+    if found is None:
+        raise Exception('cannot find git root')
+    return found
