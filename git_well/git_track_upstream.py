@@ -24,20 +24,27 @@ class TrackUpstreamCLI(scfg.DataConfig):
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
+        """
+        Example:
+            >>> from git_well.git_track_upstream import TrackUpstreamCLI
+            >>> from git_well.repo import Repo
+            >>> repo = Repo.demo()
+            >>> repo.cmd('git remote add origin https://github.com/Erotemic/git_well.git')
+            >>> # TODO: make this test work without the network
+            >>> repo.cmd('git fetch origin')
+            >>> repo.cmd('git reset --hard origin/main')
+            >>> cmdline = 0
+            >>> cls = TrackUpstreamCLI
+            >>> kwargs = cls()
+            >>> kwargs['repo_dpath'] = repo
+            >>> cls.main(cmdline=cmdline, **kwargs)
+        """
         config = cls.cli(cmdline=cmdline, data=kwargs)
         from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
-        from git_well._utils import find_git_root
-        repo_root = find_git_root(config['repo_dpath'])
-
-        if repo_root is None:
-            raise Exception('Could not find git repo')
-
-        # Find the repo root.
-        import os
-        import git as pygit
-        repo = pygit.Repo(os.fspath(repo_root))
+        from git_well.repo import Repo
+        repo = Repo.coerce(config['repo_dpath'])
 
         assert not repo.active_branch.is_remote()
         assert repo.active_branch.is_valid()

@@ -28,20 +28,34 @@ class UpdateDevBranch(scfg.DataConfig):
     """
     Upgrade to the latest "dev" branch. I.e. search for the branch
     ``dev/<version>`` with the greatest semantic version.
+
     """
     __command__ = 'branch_upgrade'
     repo_dpath = scfg.Value('.', position=1, help='location of the repo')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
+        """
+        Example:
+            >>> from git_well.git_branch_upgrade import UpdateDevBranch
+            >>> from git_well.repo import Repo
+            >>> cls = UpdateDevBranch
+            >>> repo = Repo.demo()
+            >>> repo.cmd('git checkout -b dev/1.0.0')
+            >>> repo.cmd('git checkout -b dev/2.1.0')
+            >>> repo.cmd('git checkout main')
+            >>> assert repo.active_branch.name == 'main'
+            >>> cmdline = 0
+            >>> kwargs = dict()
+            >>> kwargs['repo_dpath'] = repo
+            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> assert repo.active_branch.name == 'dev/2.1.0'
+        """
         config = cls.cli(cmdline=cmdline, data=kwargs)
         from git_well._utils import dev_branches, rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
-        import git
-        from git_well._utils import find_git_root
-        repo_root = find_git_root(config['repo_dpath'])
-
-        repo = git.Repo(repo_root)
+        from git_well.repo import Repo
+        repo = Repo.coerce(config['repo_dpath'])
 
         versioned_dev_branches = dev_branches(repo)
         if len(versioned_dev_branches) == 0:

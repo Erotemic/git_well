@@ -53,9 +53,11 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
-        from git_well._utils import find_git_root
+        from git_well.repo import Repo
         from os.path import expanduser, relpath, join
-        root_dpath = find_git_root(config.repo_dpath)
+
+        repo = Repo.coerce(config.repo_dpath)
+        root_dpath = repo.dpath
 
         host = config.host
         home = config.home

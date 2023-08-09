@@ -61,7 +61,7 @@ def main(cmdline=1, **kwargs):
     """
     Example:
         >>> from git_well.git_remote_protocol import GitRemoteProtocol
-        >>> from git_well._repo_ext import Repo
+        >>> from git_well.repo import Repo
         >>> repo = Repo.demo()
         >>> repo.cmd('git remote add origin https://github.com/Foobar/foobar.git')
         >>> cmdline = 0
@@ -78,7 +78,7 @@ def main(cmdline=1, **kwargs):
     Ignore:
         >>> # Test the interactive part
         >>> from git_well.git_remote_protocol import GitRemoteProtocol
-        >>> from git_well._repo_ext import Repo
+        >>> from git_well.repo import Repo
         >>> repo = Repo.demo()
         >>> repo.cmd('git remote add remote1 https://github.com/User1/foobar.git')
         >>> repo.cmd('git remote add remote2 https://github.com/User2/foobar.git')
@@ -90,7 +90,7 @@ def main(cmdline=1, **kwargs):
     config = GitRemoteProtocol.cli(cmdline=cmdline, data=kwargs, strict=True)
     from git_well._utils import rich_print
     rich_print('config = ' + ub.urepr(config, nl=1))
-    from git_well._repo_ext import Repo
+    from git_well.repo import Repo
     repo = Repo.coerce(config['repo_dpath'])
     repo.config_fpath
 

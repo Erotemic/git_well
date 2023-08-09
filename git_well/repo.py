@@ -67,12 +67,13 @@ class Repo(git.Repo):
     @classmethod
     def demo(cls):
         """
+        Create a demo repo for tests
 
         Returns:
             Repo
 
         Example:
-            >>> from git_well._repo_ext import *  # NOQA
+            >>> from git_well.repo import Repo
             >>> self = Repo.demo()
         """
         from git_well.demo import make_dummy_git_repo
