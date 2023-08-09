@@ -36,19 +36,24 @@ Top Level CLI:
 
 .. code::
 
-    usage: git-well [-h] {branch_upgrade,squash_streaks,sync,branch_cleanup,track_upstream} ...
+    usage: git-well [-h] {squash_streaks,branch_upgrade,sync,branch_cleanup,track_upstream,rebase_add_continue,remote_protocol,discover_remote} ...
 
     options:
       -h, --help            show this help message and exit
 
     commands:
-      {branch_upgrade,squash_streaks,sync,branch_cleanup,track_upstream}
+      {squash_streaks,branch_upgrade,sync,branch_cleanup,track_upstream,rebase_add_continue,remote_protocol,discover_remote}
                             specify a command to run
-        branch_upgrade      Upgrade to the latest "dev" branch. I.e. search for the branch
         squash_streaks      Squashes consecutive commits that meet a specified criteiron.
+        branch_upgrade      Upgrade to the latest "dev" branch. I.e. search for the branch
         sync                Sync a git repo with a remote server via ssh
         branch_cleanup      Cleanup branches that have been merged into main.
         track_upstream      Set the branch upstream with sensible defaults if possible.
+        rebase_add_continue
+                            A single step to make rebasing easier.
+        remote_protocol     Helper to change a remote from https to ssh / git for a specific user /
+        discover_remote     Attempt to discover a ssh remote based on an ssh host.
+
 
 
 The tools in this module are derived from:
