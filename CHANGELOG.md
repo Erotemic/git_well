@@ -6,10 +6,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Version 0.2.1] - 
 
+### Changed
+* git track-upstream will now ask which remote to use when it is ambiguous.
+* Improved `git-remote-protocol`
+
 ## [Version 0.2.0] - Released 2023-08-09
 
 ### Added
 * Add `git_rebase_add_continue`
+* Add `git_remote_protocol` (i.e. git permit)
 
 ## [Version 0.1.1] - Released 2023-06-22
 

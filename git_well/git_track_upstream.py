@@ -58,9 +58,15 @@ class TrackUpstreamCLI(scfg.DataConfig):
             branch = repo.active_branch
             unique_infos = unique_remotes_with_branch(repo, branch)
             if len(unique_infos) != 1:
-                raise Exception('Sensible defaults are ambiguous. Giving up')
-            # remote = unique_infos[0]['remote']
-            valid_refs = unique_infos[0]['valid_refs']
+                from git_well._utils import choice_prompt
+                print('unique_infos = {}'.format(ub.urepr(unique_infos, nl=2)))
+                name_to_info = {d['name']: d for d in unique_infos}
+                choices = list(name_to_info.keys())
+                ans = choice_prompt('Sensible defaults are ambiguous. Choose one.', choices=choices)
+                chosen = name_to_info[ans]
+            else:
+                chosen = unique_infos[0]
+            valid_refs = chosen['valid_refs']
             assert len(valid_refs) == 1
             ref = valid_refs[0]
             print('Chose sensible default tracking ref = {!r}'.format(ref))
