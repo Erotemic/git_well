@@ -59,7 +59,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
         else:
             print('tracking branch is not set.')
 
-        find_new = config.force or (tracking_branch is not None)
+        find_new = config.force or (tracking_branch is None)
         if find_new:
             print('Finding new tracking branch')
             branch = repo.active_branch
