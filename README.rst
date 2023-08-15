@@ -17,6 +17,29 @@ In other words after you:
 
    pip install git-well
 
+To get CLI argument completion install `autocomplete
+<https://pypi.org/project/argcomplete/>`_, and you can enable global
+auto-completion
+
+.. code:: bash
+
+    pip install argcomplete
+    mkdir -p ~/.bash_completion.d
+    activate-global-python-argcomplete --dest ~/.bash_completion.d
+    source ~/.bash_completion.d/python-argcomplete
+
+And add this to your .bashrc
+
+.. code:: bash
+
+    if [ -f "$HOME/.bash_completion.d/python-argcomplete" ]; then
+        # shellcheck disable=SC1091
+        source "$HOME"/.bash_completion.d/python-argcomplete
+    fi
+
+
+NOTE: if you know of a way to make this easier please let me know!
+
 
 Then you can run
 

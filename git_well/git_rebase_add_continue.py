@@ -135,14 +135,14 @@ class GitRebaseAddContinue(scfg.DataConfig):
             # References:
             #     ... [SO43489971] https://stackoverflow.com/questions/43489971/how-to-suppress-the-editor-for-git-rebase-continue
             info = ub.cmd('git -c core.editor=true rebase --continue', verbose=3,
-                          cwd=resolved_repo, system=True)
+                          cwd=repo.dpath, system=True)
         else:
             info = ub.cmd('git rebase --continue', verbose=3,
-                          cwd=resolved_repo, system=True)
+                          cwd=repo.dpath, system=True)
         if info['ret'] == 0:
             print('rebase is complete')
         else:
-            info = ub.cmd('git status', verbose=3, cwd=resolved_repo, system=True)
+            info = ub.cmd('git status', verbose=3, cwd=repo.dpath, system=True)
             print('rebase is still active')
 
 
