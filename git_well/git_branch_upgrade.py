@@ -52,7 +52,7 @@ class UpdateDevBranch(scfg.DataConfig):
             >>> assert repo.active_branch.name == 'dev/2.1.0'
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
-        from git_well._utils import dev_branches, rich_print
+        from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         from git_well.repo import Repo
         repo = Repo.coerce(config['repo_dpath'])
@@ -92,6 +92,64 @@ class UpdateDevBranch(scfg.DataConfig):
                 print('active_branch_name = {!r}'.format(active_branch_name))
                 print('latest = {!r}'.format(latest))
                 repo.git.checkout(latest.name)
+
+
+# def latest_branch(repo):
+#     available = []
+#     for remote in repo.remotes:
+#         for ref in remote.refs:
+#             available.append((ref.commit.committed_datetime, ref, remote))
+
+#     available = []
+#     for ref in repo.refs:
+#         if ref.tag is None:
+#             available.append((ref.commit.committed_datetime, ref))
+#     available = sorted(available, key=lambda x: x[0])
+
+#     repo.branches
+
+#     for line in repo.git.branch('-r').split('\n'):
+#         line = line.strip().split('->')[-1].strip()
+#         print(line)
+
+
+def dev_branches(repo):
+    from packaging.version import parse as Version
+    branch_infos = []
+    for line in repo.git.branch('-r').split('\n'):
+        line = line.strip().split('->')[-1].strip()
+        for remote in repo.remotes:
+            if line.startswith(remote.name):
+                info = {
+                    'remote': remote,
+                    'branch_name': line.lstrip(remote.name + '/'),
+                    'full_name': line,
+                }
+                branch_infos.append(info)
+
+    for branch in repo.branches:
+        info = {
+            'remote': None,
+            'branch': branch,
+            'branch_name': branch.name,
+            'datetime': branch.commit.committed_datetime,
+        }
+        branch_infos.append(info)
+
+    dev_infos = []
+    for info in branch_infos:
+        if info['branch_name'].startswith('dev/'):
+            vstr = info['branch_name'].split('/')[-1]
+            try:
+                info['version'] = Version(vstr)
+            except Exception:
+                ...
+            else:
+                # if not isinstance(info['version'], LegacyVersion):
+                dev_infos.append(info)
+
+    versioned_dev_branches = sorted(dev_infos, key=lambda x: x['version'])
+    return versioned_dev_branches
 
 
 main = UpdateDevBranch.main
