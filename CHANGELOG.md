@@ -6,6 +6,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Version 0.2.1] - 
 
+### Added
+* autoconf-gpg for auto-configuring which gpg key to sign commits with
+
 ### Changed
 * git track-upstream will now ask which remote to use when it is ambiguous.
 * Improved `git-remote-protocol`
