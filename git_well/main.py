@@ -15,6 +15,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.git_rebase_add_continue import __cli__ as rebase_add_continue
     from git_well.git_remote_protocol import __cli__ as remote_protocol
     from git_well.git_discover_remote import __cli__ as discover_remote
+    from git_well.git_autoconf_gpgsign import __cli__ as autoconf_gpgsign
 
 
 def main():

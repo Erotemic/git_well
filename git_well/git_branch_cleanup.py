@@ -36,7 +36,8 @@ class CleanDevBranchConfig(scfg.DataConfig):
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
         from git_well.repo import Repo
-        from git_well._utils import find_merged_branches, dev_branches, rich_print
+        from git_well._utils import rich_print
+        from git_well.git_branch_upgrade import dev_branches
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
         repo = Repo.coerce(config.repo_dpath)
@@ -48,9 +49,9 @@ class CleanDevBranchConfig(scfg.DataConfig):
         remove_branches = versioned_branch_names[0:-keep_last]
 
         try:
-            merged_branches = find_merged_branches(repo, 'main')
+            merged_branches = repo.find_merged_branches('main')
         except Exception:
-            merged_branches = find_merged_branches(repo, 'origin/main')
+            merged_branches = repo.find_merged_branches('origin/main')
         remove_branches = list(ub.oset(remove_branches) | ub.oset(merged_branches) - {'release'})
 
         print('remove_branches = {}'.format(ub.repr2(remove_branches, nl=1)))

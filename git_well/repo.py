@@ -79,3 +79,10 @@ class Repo(git.Repo):
         from git_well.demo import make_dummy_git_repo
         dpath = make_dummy_git_repo()
         return cls.coerce(dpath)
+
+    def find_merged_branches(repo, main_branch='main'):
+        # git branch --merged main
+        # main_branch = 'main'
+        merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
+        merged_branches = ub.oset(merged_branches) - {main_branch}
+        return merged_branches
