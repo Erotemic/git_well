@@ -36,8 +36,14 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
         for remote in repo.remotes:
             for url in list(remote.urls):
                 print(f'url={url}')
-                info = repo.cmd(f'git ls-remote {url}', env=env)
-                infos.append(info)
+                try:
+                    info = repo.cmd(f'git ls-remote {url}', env=env)
+                except Exception:
+                    ...
+                except KeyboardInterrupt:
+                    ...
+                else:
+                    infos.append(info)
 
         identify_file_cands = ub.oset()
         for info in infos:
@@ -65,7 +71,11 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
                 mintrust='u')
             gpg_candidates.extend(candidates)
 
-        assert len(gpg_candidates) == 1
+        if len(gpg_candidates) != 1:
+            print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
+            raise AssertionError('need to choose 1')
+
+        # assert len(gpg_candidates) == 1
         fpr = gpg_candidates[0]['fpr']
 
         # https://help.github.com/en/articles/signing-commits
