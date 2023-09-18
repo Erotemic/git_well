@@ -38,6 +38,8 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         expected location.
         '''))
 
+    remote_cwd = scfg.Value(None, help='path on the remote. inferred if not given')
+
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         """
@@ -75,7 +77,10 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
                 'We assume that you are running relative '
                 'to your home directory. rel_dpath={}, home={}').format(rel_dpath, home))
 
-        remote_cwd = rel_dpath
+        remote_cwd = config.remote_cwd
+        if remote_cwd is None:
+            remote_cwd = rel_dpath
+            print(f'remote_cwd={remote_cwd}')
         remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:
