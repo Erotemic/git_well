@@ -94,6 +94,12 @@ class GitURL(str):
                 info['group'] = parts[1].split('/')[0]
                 info['repo_name'] = parts[1].split('/')[1]
                 info['protocol'] = 'git'
+            elif '//' not in url and '@' not in url:
+                parts = url.split(':')
+                info['host'] = parts[0]
+                info['group'] = parts[1].split('/')[0]
+                info['repo_name'] = parts[1].split('/')[1]
+                info['protocol'] = 'ssh'
             else:
                 raise ValueError(url)
             info['url'] = url
