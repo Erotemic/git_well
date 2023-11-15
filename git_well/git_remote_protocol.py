@@ -4,7 +4,7 @@ import ubelt as ub
 
 
 # TODO: more protocols? ssh?
-VALID_PROTOCOLS = ['git', 'https']
+VALID_PROTOCOLS = ['git', 'https', 'ssh']
 
 
 class GitRemoteProtocol(scfg.DataConfig):
@@ -42,39 +42,37 @@ class GitURL(str):
     Represents a url to a git repo and can parse info about / modify the
     protocol
 
+    References:
+        https://git-scm.com/docs/git-clone#_git_urls
+
+    CommandLine:
+        xdoctest -m git_well.git_remote_protocol GitURL
+
     Example:
         >>> from git_well.git_remote_protocol import *  # NOQA
         >>> urls = [
         >>>     GitURL('https://foo.bar/user/repo.git'),
         >>>     GitURL('ssh://foo.bar/user/repo.git'),
+        >>>     GitURL('ssh://git@foo.bar/user/repo.git'),
         >>>     GitURL('git@foo.bar:group/repo.git'),
-        >>>     #GitURL('host:path/to/my/repo/.git'),
+        >>>     GitURL('host:path/to/my/repo/.git'),
         >>> ]
         >>> for url in urls:
         >>>     print('---')
         >>>     print(f'url = {url}')
         >>>     print(ub.urepr(url.info))
-        >>>     print(url.to_git())
-        >>>     print(url.to_https())
-        >>>     print(url.to_ssh())
-        ---
-        url = https://foo.bar/user/repo.git
-        {
-            'host': 'foo.bar',
-            'group': 'user',
-            'repo_name': 'repo.git',
-            'protocol': 'https',
-            'url': 'https://foo.bar/user/repo.git',
-        }
-        git@foo.bar:user/repo.git
-        https://foo.bar/user/repo.git
-        ssh://foo.bar/user/repo.git
-        ...
+        >>>     print('As git   : ' + url.to_git())
+        >>>     print('As ssh   : ' + url.to_ssh())
+        >>>     print('As https : ' + url.to_https())
     """
 
     def __init__(self, data):
         # note: inheriting from str so data is handled in __new__
         self._info = None
+
+    def _parse(self):
+        import parse
+        parse.Parser('ssh://{user}')
 
     @property
     def info(self):
@@ -135,7 +133,12 @@ class GitURL(str):
 
     def to_ssh(self):
         info = self.info
-        new_url = 'ssh://' + info['host']  + '/' + info['group'] + '/' + info['repo_name']
+        user = info.get('user', None)
+        if user is None:
+            user_part = ''
+        else:
+            user_part = user + '@'
+        new_url = 'ssh://' + user_part + info['host']  + '/' + info['group'] + '/' + info['repo_name']
         return self.__class__(new_url)
 
     def to_https(self):
@@ -180,7 +183,7 @@ def main(cmdline=1, **kwargs):
     repo.config_fpath
 
     new_protocol = config.protocol
-    if new_protocol not in {'git', 'https', 'ssh'}:
+    if new_protocol not in VALID_PROTOCOLS:
         raise KeyError(new_protocol)
 
     remote_urls = []
