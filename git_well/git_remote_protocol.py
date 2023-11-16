@@ -26,7 +26,7 @@ class GitRemoteProtocol(scfg.DataConfig):
         should be. (i.e. if there is only one, use that, otherwise ask).
         '''))
 
-    protocol = scfg.Value('git', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
+    protocol = scfg.Value('ssh', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
         '''
         The protocol to change to.
         '''))
@@ -44,18 +44,21 @@ class GitURL(str):
 
     Example:
         >>> from git_well.git_remote_protocol import *  # NOQA
-        >>> url1 = GitURL('https://foo.bar/user/repo.git')
-        >>> url2 = GitURL('git@foo.bar:group/repo.git')
-        >>> print(url1.to_git())
-        >>> print(url1.to_https())
-        >>> print(url2.to_git())
-        >>> print(url2.to_https())
-        git@foo.bar:user/repo.git
-        https://foo.bar/user/repo.git
-        git@foo.bar:group/repo.git
-        https://foo.bar/group/repo.git
-        >>> print(ub.urepr(url1.info))
-        >>> print(ub.urepr(url2.info))
+        >>> urls = [
+        >>>     GitURL('https://foo.bar/user/repo.git'),
+        >>>     GitURL('ssh://foo.bar/user/repo.git'),
+        >>>     GitURL('git@foo.bar:group/repo.git'),
+        >>>     #GitURL('host:path/to/my/repo/.git'),
+        >>> ]
+        >>> for url in urls:
+        >>>     print('---')
+        >>>     print(f'url = {url}')
+        >>>     print(ub.urepr(url.info))
+        >>>     print(url.to_git())
+        >>>     print(url.to_https())
+        >>>     print(url.to_ssh())
+        ---
+        url = https://foo.bar/user/repo.git
         {
             'host': 'foo.bar',
             'group': 'user',
@@ -63,13 +66,10 @@ class GitURL(str):
             'protocol': 'https',
             'url': 'https://foo.bar/user/repo.git',
         }
-        {
-            'host': 'foo.bar',
-            'group': 'group',
-            'repo_name': 'repo.git',
-            'protocol': 'git',
-            'url': 'git@foo.bar:group/repo.git',
-        }
+        git@foo.bar:user/repo.git
+        https://foo.bar/user/repo.git
+        ssh://foo.bar/user/repo.git
+        ...
     """
 
     def __init__(self, data):
@@ -82,18 +82,33 @@ class GitURL(str):
             url = self
             info = {}
             if url.startswith('https://'):
-                parts = url.split('https://')[1].split('/')
+                parts = url.split('https://')[1].split('/', 3)
                 info['host'] = parts[0]
                 info['group'] = parts[1]
                 info['repo_name'] = parts[2]
                 info['protocol'] = 'https'
             elif url.startswith('git@'):
-                url.split('git@')[1]
                 parts = url.split('git@')[1].split(':')
                 info['host'] = parts[0]
                 info['group'] = parts[1].split('/')[0]
                 info['repo_name'] = parts[1].split('/')[1]
                 info['protocol'] = 'git'
+            elif url.startswith('ssh://'):
+                parts = url.split('ssh://')[1].split('/', 3)
+                info['host'] = parts[0]
+                info['group'] = parts[1]
+                info['repo_name'] = parts[2]
+                info['protocol'] = 'ssh'
+            elif url.endswith('/.git'):
+                # An ssh protocol to an explicit directory
+                host, rest = url.split(':', 1)
+                parts = rest.rsplit('/',  2)
+                info['host'] = host
+                # info['group'] = parts[0]
+                info['group'] = None
+                info['repo_name'] = parts[1]
+                info['protocol'] = 'ssh-explicit'
+                ...
             else:
                 raise ValueError(url)
             info['url'] = url
@@ -103,6 +118,11 @@ class GitURL(str):
     def to_git(self):
         info = self.info
         new_url = 'git@' + info['host']  + ':' + info['group'] + '/' + info['repo_name']
+        return self.__class__(new_url)
+
+    def to_ssh(self):
+        info = self.info
+        new_url = 'ssh://' + info['host']  + '/' + info['group'] + '/' + info['repo_name']
         return self.__class__(new_url)
 
     def to_https(self):
@@ -119,9 +139,7 @@ def main(cmdline=1, **kwargs):
         >>> repo = Repo.demo()
         >>> repo.cmd('git remote add origin https://github.com/Foobar/foobar.git')
         >>> cmdline = 0
-        >>> kwargs = dict()
-        >>> kwargs['repo_dpath'] = repo
-        >>> GitRemoteProtocol.main(cmdline=cmdline, **kwargs)
+        >>> GitRemoteProtocol.main(cmdline=cmdline, repo_dpath=repo, protocol='git')
         >>> assert len(repo.remotes) == 1
         >>> assert list(repo.remotes[0].urls)[0] == 'git@github.com:Foobar/foobar.git'
         >>> GitRemoteProtocol.main(cmdline=cmdline, repo_dpath=repo, protocol='https')
@@ -149,7 +167,7 @@ def main(cmdline=1, **kwargs):
     repo.config_fpath
 
     new_protocol = config.protocol
-    if new_protocol not in {'git', 'https'}:
+    if new_protocol not in {'git', 'https', 'ssh'}:
         raise KeyError(new_protocol)
 
     remote_urls = []
@@ -181,6 +199,8 @@ def main(cmdline=1, **kwargs):
             if config.group == url.info['group']:
                 if new_protocol == 'git':
                     new_url = url.to_git()
+                elif new_protocol == 'ssh':
+                    new_url = url.to_ssh()
                 elif new_protocol == 'https':
                     new_url = url.to_https()
                 else:
