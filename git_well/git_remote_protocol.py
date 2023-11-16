@@ -4,7 +4,7 @@ import ubelt as ub
 
 
 # TODO: more protocols? ssh?
-VALID_PROTOCOLS = ['git', 'https']
+VALID_PROTOCOLS = ['git', 'https', 'ssh']
 
 
 class GitRemoteProtocol(scfg.DataConfig):
@@ -172,7 +172,7 @@ def main(cmdline=1, **kwargs):
     repo.config_fpath
 
     new_protocol = config.protocol
-    if new_protocol not in {'git', 'https', 'ssh'}:
+    if new_protocol not in VALID_PROTOCOLS:
         raise KeyError(new_protocol)
 
     remote_urls = []
