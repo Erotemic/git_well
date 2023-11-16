@@ -38,24 +38,33 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         expected location.
         '''))
 
+    remote_cwd = scfg.Value(None, help='path on the remote. inferred if not given')
+
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         """
         Example:
-            >>> # xdoctest: +SKIP
-            >>> from git_well.git_discover_remote import *  # NOQA
+            >>> from git_well.git_discover_remote import GitDiscoverRemoteCLI
+            >>> from git_well.repo import Repo
+            >>> cls = GitDiscoverRemoteCLI
+            >>> repo = Repo.demo()
+            >>> # TODO: make a plausible scenario
             >>> cmdline = 0
             >>> kwargs = dict()
-            >>> cls = GitDiscoverRemoteCLI
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> kwargs['repo_dpath'] = repo
+            >>> import pytest
+            >>> with pytest.raises(Exception):
+            >>>     cls.main(cmdline=cmdline, **kwargs)
         """
         from git_well._utils import rich_print
         config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
-        from git_well._utils import find_git_root
+        from git_well.repo import Repo
         from os.path import expanduser, relpath, join
-        root_dpath = find_git_root(config.repo_dpath)
+
+        repo = Repo.coerce(config.repo_dpath)
+        root_dpath = repo.dpath
 
         host = config.host
         home = config.home
@@ -68,7 +77,10 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
                 'We assume that you are running relative '
                 'to your home directory. rel_dpath={}, home={}').format(rel_dpath, home))
 
-        remote_cwd = rel_dpath
+        remote_cwd = config.remote_cwd
+        if remote_cwd is None:
+            remote_cwd = rel_dpath
+            print(f'remote_cwd={remote_cwd}')
         remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:

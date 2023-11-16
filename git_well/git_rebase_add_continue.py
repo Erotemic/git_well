@@ -21,25 +21,26 @@ class GitRebaseAddContinue(scfg.DataConfig):
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         """
-        import sys, ubelt
-        sys.path.append(ubelt.expandpath('~/code/git_well'))
-        from git_well.git_rebase_add_continue import *  # NOQA
-        cls = GitRebaseAddContinue
-        cmdline = 0
-        kwargs = {}
+        Example:
+            >>> from git_well.git_rebase_add_continue import GitRebaseAddContinue
+            >>> from git_well.repo import Repo
+            >>> cls = GitRebaseAddContinue
+            >>> repo = Repo.demo()
+            >>> # TODO: make a plausible scenario
+            >>> cmdline = 0
+            >>> kwargs = dict()
+            >>> kwargs['repo_dpath'] = repo
+            >>> import pytest
+            >>> with pytest.raises(RuntimeError):
+            >>>     cls.main(cmdline=cmdline, **kwargs)
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
         from git_well._utils import rich_print
+        from git_well.repo import Repo
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
-        resolved_repo = ub.Path(config.repo_dpath).resolve()
-        print(f'resolved_repo={resolved_repo}')
-        import git
-        repo = git.Repo(resolved_repo)
-
-        repo_dpath = resolved_repo
-
-        # status = repo.git.status()
-        info = ub.cmd('git status', verbose=3, cwd=resolved_repo)
+        repo = Repo.coerce(config.repo_dpath)
+        repo_dpath = repo.dpath
+        info = ub.cmd('git status', verbose=3, cwd=repo.dpath)
         status = info['out']
         # print(status)
 
@@ -134,14 +135,14 @@ class GitRebaseAddContinue(scfg.DataConfig):
             # References:
             #     ... [SO43489971] https://stackoverflow.com/questions/43489971/how-to-suppress-the-editor-for-git-rebase-continue
             info = ub.cmd('git -c core.editor=true rebase --continue', verbose=3,
-                          cwd=resolved_repo, system=True)
+                          cwd=repo.dpath, system=True)
         else:
             info = ub.cmd('git rebase --continue', verbose=3,
-                          cwd=resolved_repo, system=True)
+                          cwd=repo.dpath, system=True)
         if info['ret'] == 0:
             print('rebase is complete')
         else:
-            info = ub.cmd('git status', verbose=3, cwd=resolved_repo, system=True)
+            info = ub.cmd('git status', verbose=3, cwd=repo.dpath, system=True)
             print('rebase is still active')
 
 
