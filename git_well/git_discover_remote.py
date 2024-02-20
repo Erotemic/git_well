@@ -3,6 +3,10 @@ import scriptconfig as scfg
 import ubelt as ub
 
 
+# NOTE: SeeAlso
+# ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
+
+
 class GitDiscoverRemoteCLI(scfg.DataConfig):
     """
     Attempt to discover a ssh remote based on an ssh host.
@@ -12,12 +16,18 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
     """
     __command__ = 'discover_remote'
 
-    repo_dpath = scfg.Value('.', help='The path to the repo to run in')
+    repo_dpath = scfg.Value('.', help=ub.paragraph(
+        '''
+        The path to the repo to run in.
+        NOTE: due to behavior of ``getcwd``, if you are in a logical directory
+        that contains a symlink, it can be more stable to set this to the value
+        of the ``$PWD`` environment variable.
+        '''))
 
     host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
-            '''
-            SSH server to attempt to discover remote in.
-            '''))
+        '''
+        The name or address of the SSH server to attempt to discover remote in.
+        '''))
 
     remote = scfg.Value(None, help=ub.paragraph(
         '''
@@ -80,6 +90,8 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         remote_cwd = config.remote_cwd
         if remote_cwd is None:
             remote_cwd = rel_dpath
+            print(f'home={home}')
+            print(f'root_dpath={root_dpath}')
             print(f'remote_cwd={remote_cwd}')
         remote_gitdir = join(remote_cwd, '.git')
 

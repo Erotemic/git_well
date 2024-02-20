@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 * git track-upstream will now ask which remote to use when it is ambiguous.
 * Improved `git-remote-protocol`
+* `find_git_root` uses `absolute` instead of `resolve` so logical pathing is preserved.
 
 ## [Version 0.2.0] - Released 2023-08-09
 

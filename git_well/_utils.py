@@ -101,7 +101,7 @@ def choice_prompt(msg, choices):
 
 
 def find_git_root(dpath):
-    cwd = ub.Path(dpath).resolve()
+    cwd = ub.Path(dpath).absolute()
     parts = cwd.parts
     found = None
     for i in reversed(range(0, len(parts) + 1)):

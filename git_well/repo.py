@@ -3,6 +3,13 @@ import ubelt as ub
 
 
 class Repo(git.Repo):
+    """
+    Ignore:
+        from git_well.repo import *  # NOQA
+        repo = Repo.coerce('.')
+        print(f'repo={repo}')
+        ...
+    """
     # Extension of git.Repo
 
     def cmd(self, command, **kwargs):
