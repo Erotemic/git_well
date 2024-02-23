@@ -1071,7 +1071,7 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
 
 
 # commandline entry point
-def git_squash_streaks():
+def git_squash_streaks(cmdline=1, **kwargs):
     """
     git-squash-streaks
 
@@ -1140,7 +1140,7 @@ def git_squash_streaks():
     #     verbose=True,
     # )
 
-    args = SquashStreakCLI.cli()
+    args = SquashStreakCLI.cli(cmdline=cmdline, data=kwargs, strict=True)
     ns = dict(args).copy()
     if ns.pop('tags'):
         do_tags()

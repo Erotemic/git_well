@@ -6,8 +6,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Version 0.2.1] - 
 
+### Fixed
+* Fixed error in git-rebase-add-continue parsing submodule status
+* git-well squash-streaks now works from modal CLI
+
 ### Added
 * autoconf-gpg for auto-configuring which gpg key to sign commits with
+* more options to discover ssh remote
 
 ### Changed
 * git track-upstream will now ask which remote to use when it is ambiguous.
