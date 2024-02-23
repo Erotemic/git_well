@@ -71,12 +71,15 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
                 mintrust='u')
             gpg_candidates.extend(candidates)
 
-        if len(gpg_candidates) != 1:
+        unique_fprs = {cand['fpr'] for cand in gpg_candidates}
+
+        if len(unique_fprs) != 1:
+            print(f'unique_fprs = {ub.urepr(unique_fprs, nl=1)}')
             print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
             raise AssertionError('need to choose 1')
 
         # assert len(gpg_candidates) == 1
-        fpr = gpg_candidates[0]['fpr']
+        fpr = ub.peek(unique_fprs)
 
         # https://help.github.com/en/articles/signing-commits
         repo.cmd('git config --local commit.gpgsign true')
