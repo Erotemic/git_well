@@ -207,8 +207,10 @@ if __name__ == "__main__":
     )
     setupkw["extras_require"] = {
         "all": parse_requirements("requirements.txt", versions="loose"),
+        "runtime": parse_requirements("requirements/runtime.txt", versions="loose"),
         "tests": parse_requirements("requirements/tests.txt", versions="loose"),
         "optional": parse_requirements("requirements/optional.txt", versions="loose"),
+        "docs": parse_requirements("requirements/docs.txt", versions="loose"),
         "all-strict": parse_requirements("requirements.txt", versions="strict"),
         "runtime-strict": parse_requirements(
             "requirements/runtime.txt", versions="strict"
@@ -217,13 +219,13 @@ if __name__ == "__main__":
         "optional-strict": parse_requirements(
             "requirements/optional.txt", versions="strict"
         ),
+        "docs-strict": parse_requirements("requirements/docs.txt", versions="strict"),
     }
-
     setupkw["name"] = NAME
     setupkw["version"] = VERSION
     setupkw["author"] = "Jon Crall"
     setupkw["author_email"] = "erotemic@gmail.com"
-    setupkw["url"] = None
+    setupkw["url"] = "https://github.com/Erotemic/git_well"
     setupkw["description"] = "The git_well module"
     setupkw["long_description"] = parse_description()
     setupkw["long_description_content_type"] = "text/x-rst"
@@ -241,6 +243,7 @@ if __name__ == "__main__":
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ]
     setupkw["entry_points"] = {
         "console_scripts": [
