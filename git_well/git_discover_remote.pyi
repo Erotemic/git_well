@@ -10,6 +10,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
     home: Incomplete
     forward_ssh_agent: Incomplete
     test_remote: Incomplete
+    remote_cwd: Incomplete
 
     @classmethod
     def main(cls, cmdline: int = ..., **kwargs) -> None:

@@ -12,5 +12,9 @@ class GitRebaseAddContinue(scfg.DataConfig):
         ...
 
 
+def parsed_rebase_git_status(repo_dpath):
+    ...
+
+
 __cli__ = GitRebaseAddContinue
 main: Incomplete

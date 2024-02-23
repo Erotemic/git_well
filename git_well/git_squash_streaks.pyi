@@ -126,7 +126,7 @@ def squash_streaks(authors: set,
     ...
 
 
-def git_squash_streaks() -> None:
+def git_squash_streaks(cmdline: int = ..., **kwargs) -> None:
     ...
 
 

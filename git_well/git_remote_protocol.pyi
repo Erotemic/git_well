@@ -24,6 +24,9 @@ class GitURL(str):
     def to_git(self):
         ...
 
+    def to_ssh(self):
+        ...
+
     def to_https(self):
         ...
 
