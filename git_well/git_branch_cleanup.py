@@ -13,25 +13,34 @@ class CleanDevBranchConfig(scfg.DataConfig):
     repo_dpath = scfg.Value('.', help='location of the repo')
     keep_last = scfg.Value(1, help='previous number of dev branches to keep')
     remove_merged = scfg.Value(False, isflag=True, help='if True, remove other merged branhes as well')
+    yes = scfg.Value(False, isflag=True, short_alias=['-y'], help='if True, say yes to propmts')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         """
-        import sys, ubelt
-        sys.path.append(ubelt.expandpath('~/local/git_tools'))
-        from git_devbranch import *  # NOQA
-        cls = CleanDevBranchConfig
-        cmdline = 0
-        kwargs = {}
+        Example:
+            >>> from git_well.git_branch_cleanup import CleanDevBranchConfig
+            >>> from git_well.repo import Repo
+            >>> cls = CleanDevBranchConfig
+            >>> repo = Repo.demo()
+            >>> # TODO: add commits so they aren't all considerd the same branch
+            >>> repo.cmd('git checkout -b dev/1.0.0')
+            >>> repo.cmd('git checkout -b dev/2.1.0')
+            >>> repo.cmd('git checkout main')
+            >>> assert repo.active_branch.name == 'main'
+            >>> cmdline = 0
+            >>> kwargs = dict()
+            >>> kwargs['repo_dpath'] = repo
+            >>> kwargs['yes'] = True
+            >>> cls.main(cmdline=cmdline, **kwargs)
         """
         config = cls.cli(cmdline=cmdline, data=kwargs)
-        from git_well._utils import find_merged_branches, dev_branches, rich_print
+        from git_well.repo import Repo
+        from git_well._utils import rich_print
+        from git_well.git_branch_upgrade import dev_branches
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
-        resolved_repo = ub.Path(config.repo_dpath).resolve()
-        print(f'resolved_repo={resolved_repo}')
-        import git
-        repo = git.Repo(resolved_repo)
+        repo = Repo.coerce(config.repo_dpath)
 
         # TODO: fix * prefixed in front of branch
         versioned_dev_branches = dev_branches(repo)
@@ -40,9 +49,9 @@ class CleanDevBranchConfig(scfg.DataConfig):
         remove_branches = versioned_branch_names[0:-keep_last]
 
         try:
-            merged_branches = find_merged_branches(repo, 'main')
+            merged_branches = repo.find_merged_branches('main')
         except Exception:
-            merged_branches = find_merged_branches(repo, 'origin/main')
+            merged_branches = repo.find_merged_branches('origin/main')
         remove_branches = list(ub.oset(remove_branches) | ub.oset(merged_branches) - {'release'})
 
         print('remove_branches = {}'.format(ub.repr2(remove_branches, nl=1)))
@@ -50,7 +59,7 @@ class CleanDevBranchConfig(scfg.DataConfig):
             print('Local devbranches are already clean')
         else:
             from ._utils import confirm
-            if confirm('Remove dev branches?'):
+            if config.yes or confirm('Remove dev branches?'):
                 repo.git.branch(*remove_branches, '-D')
 
 __cli__ = CleanDevBranchConfig

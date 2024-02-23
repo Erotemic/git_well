@@ -2,10 +2,6 @@
 """
 Requirements:
     pip install GitPython
-
-A quick script that executes
-``git branch --set-upstream-to=<remote>/<branch> <branch>``
-with sensible defaults
 """
 import ubelt as ub
 import scriptconfig as scfg
@@ -15,29 +11,43 @@ class TrackUpstreamCLI(scfg.DataConfig):
     """
     Set the branch upstream with sensible defaults if possible.
 
-    A quick script that executes
-    ``git branch --set-upstream-to=<remote>/<branch> <branch>``
-    with sensible defaults
+    This script can auto-choose sensible default if there is only one remote
+    that also has the working branch. When there is an ambiguity the user will
+    be asked to choose from a list of available remotes with this branch.
+
+    Once the remote is found the script executes:
+
+    ..code:: bash
+
+        git branch --set-upstream-to=<remote>/<branch> <branch>
     """
     __command__ = 'track_upstream'
     repo_dpath = scfg.Value('.', position=1, help='location of the repo')
+    force = scfg.Value(False, isflag=True, short_alias=['-f'], help='if True, then choose a new tracking branch even if one is set')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
+        """
+        Example:
+            >>> from git_well.git_track_upstream import TrackUpstreamCLI
+            >>> from git_well.repo import Repo
+            >>> repo = Repo.demo()
+            >>> repo.cmd('git remote add origin https://github.com/Erotemic/git_well.git')
+            >>> # TODO: make this test work without the network
+            >>> repo.cmd('git fetch origin')
+            >>> repo.cmd('git reset --hard origin/main')
+            >>> cmdline = 0
+            >>> cls = TrackUpstreamCLI
+            >>> kwargs = cls()
+            >>> kwargs['repo_dpath'] = repo
+            >>> cls.main(cmdline=cmdline, **kwargs)
+        """
         config = cls.cli(cmdline=cmdline, data=kwargs)
         from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
-        from git_well._utils import find_git_root
-        repo_root = find_git_root(config['repo_dpath'])
-
-        if repo_root is None:
-            raise Exception('Could not find git repo')
-
-        # Find the repo root.
-        import os
-        import git as pygit
-        repo = pygit.Repo(os.fspath(repo_root))
+        from git_well.repo import Repo
+        repo = Repo.coerce(config['repo_dpath'])
 
         assert not repo.active_branch.is_remote()
         assert repo.active_branch.is_valid()
@@ -45,19 +55,32 @@ class TrackUpstreamCLI(scfg.DataConfig):
         print('tracking_branch = {}'.format(ub.repr2(tracking_branch, nl=1)))
 
         if tracking_branch is not None:
-            print('tracking_branch is already set. Doing nothing.')
+            print(f'tracking_branch is already set to {tracking_branch}.')
         else:
-            print('tracking branch is not set. Attempt to find sensible defaults')
+            print('tracking branch is not set.')
+
+        find_new = config.force or (tracking_branch is None)
+        if find_new:
+            print('Finding new tracking branch')
             branch = repo.active_branch
             unique_infos = unique_remotes_with_branch(repo, branch)
             if len(unique_infos) != 1:
-                raise Exception('Sensible defaults are ambiguous. Giving up')
-            # remote = unique_infos[0]['remote']
-            valid_refs = unique_infos[0]['valid_refs']
+                from git_well._utils import choice_prompt
+                print('unique_infos = {}'.format(ub.urepr(unique_infos, nl=2)))
+                name_to_info = {d['name']: d for d in unique_infos}
+                choices = list(name_to_info.keys())
+                ans = choice_prompt('Sensible defaults are ambiguous. Choose one.', choices=choices)
+                chosen = name_to_info[ans]
+            else:
+                chosen = unique_infos[0]
+                print('Chose sensible default: {!r}'.format(chosen))
+            valid_refs = chosen['valid_refs']
             assert len(valid_refs) == 1
             ref = valid_refs[0]
-            print('Chose sensible default tracking ref = {!r}'.format(ref))
+            print('Setting tracking branch to: {!r}'.format(ref))
             repo.active_branch.set_tracking_branch(ref)
+        else:
+            print('Doing nothing.')
 
 
 def unique_remotes_with_branch(repo, branch):

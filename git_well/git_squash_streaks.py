@@ -19,6 +19,10 @@ import scriptconfig as scfg
 EXPERIMENTAL_PSEUDO_CHAIN = 0
 EXPERIMENTAL_REBASE = 0
 
+__docstubs__ = """
+from git.objects.commit import Commit
+"""
+
 
 class SquashStreakCLI(scfg.DataConfig):
     """
@@ -287,7 +291,7 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
     return pseudo_chain
 
 
-def git_nx_graph(head, oldest_commit, preserve_tags=False):
+def git_nx_graph(head, oldest_commit=None, preserve_tags=False):
     """
     Example:
         >>> # xdoctest: +REQUIRES(LINUX)
@@ -390,7 +394,6 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
         - [ ] allow a chain to include branches if all messages on all branches
               conform to the chain pattern (e.g. wip)
 
-
         def search(node, current_path):
             if current_path:
                 pass
@@ -413,13 +416,13 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
                 #  * HANDLE CASE WHERE PATHS OVERLAPS
 
     Args:
-        head (git.Commit): starting point
+        head (Commit): starting point
 
         authors (set): valid authors
 
-        preserve_tags (bool, default=True): if True the chain is not allowed
+        preserve_tags (bool): if True the chain is not allowed
             to extend past any tags. If a set, then we will not procede past
-            any tag with a name in the set.
+            any tag with a name in the set. Defaults to True
 
     Example:
         >>> # xdoctest: +REQUIRES(LINUX)
@@ -496,12 +499,12 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
     and are within a timedelta threshold of each other.
 
     Args:
-        chain (list of commits): from `find_chain`
+        chain (List[Commit]): from `find_chain`
         authors (set): valid authors
-        timedelta (float or str): minimum time between commits in seconds
+        timedelta (float | str): minimum time between commits in seconds
             or a categorical value such as 'sameday' or 'alltime'
         pattern (str): instead of squashing messages with the same name, squash
-            only if they match this pattern (Default: None), None means
+            only if they match this pattern Defaults to None, None means
             the consecutive messages should match.
     """
     import re
@@ -627,11 +630,11 @@ def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
 def commits_between(repo, start, stop):
     """
     Args:
-        start (git.Commit): toplogically first (i.e. chronologically older) commit
-        stop (git.Commit): toplogically last (i.e. chronologically newer) commit
+        start (Commit): toplogically first (i.e. chronologically older) commit
+        stop (Commit): toplogically last (i.e. chronologically newer) commit
 
     Returns:
-        list of git.Commit: between commits
+        List[Commit]: between commits
 
     References:
         https://stackoverflow.com/questions/18679870/commits-between-2-hashes
@@ -938,7 +941,7 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
             to extend past any tags. If a set, then we will not procede past
             any tag with a name in the set.
 
-        oldest_commit (str, default=None): if specified we will only squash
+        oldest_commit (str | None): if specified we will only squash
             commits toplogically after this commit in the graph.
     """
     import git
@@ -1068,7 +1071,7 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
 
 
 # commandline entry point
-def git_squash_streaks():
+def git_squash_streaks(cmdline=1, **kwargs):
     """
     git-squash-streaks
 
@@ -1137,7 +1140,7 @@ def git_squash_streaks():
     #     verbose=True,
     # )
 
-    args = SquashStreakCLI.cli()
+    args = SquashStreakCLI.cli(cmdline=cmdline, data=kwargs, strict=True)
     ns = dict(args).copy()
     if ns.pop('tags'):
         do_tags()

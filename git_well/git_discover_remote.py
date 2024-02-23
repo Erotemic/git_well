@@ -3,6 +3,10 @@ import scriptconfig as scfg
 import ubelt as ub
 
 
+# NOTE: SeeAlso
+# ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
+
+
 class GitDiscoverRemoteCLI(scfg.DataConfig):
     """
     Attempt to discover a ssh remote based on an ssh host.
@@ -12,12 +16,18 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
     """
     __command__ = 'discover_remote'
 
-    repo_dpath = scfg.Value('.', help='The path to the repo to run in')
+    repo_dpath = scfg.Value('.', help=ub.paragraph(
+        '''
+        The path to the repo to run in.
+        NOTE: due to behavior of ``getcwd``, if you are in a logical directory
+        that contains a symlink, it can be more stable to set this to the value
+        of the ``$PWD`` environment variable.
+        '''))
 
     host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
-            '''
-            SSH server to attempt to discover remote in.
-            '''))
+        '''
+        The name or address of the SSH server to attempt to discover remote in.
+        '''))
 
     remote = scfg.Value(None, help=ub.paragraph(
         '''
@@ -38,24 +48,33 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         expected location.
         '''))
 
+    remote_cwd = scfg.Value(None, help='path on the remote. inferred if not given')
+
     @classmethod
     def main(cls, cmdline=1, **kwargs):
         """
         Example:
-            >>> # xdoctest: +SKIP
-            >>> from git_well.git_discover_remote import *  # NOQA
+            >>> from git_well.git_discover_remote import GitDiscoverRemoteCLI
+            >>> from git_well.repo import Repo
+            >>> cls = GitDiscoverRemoteCLI
+            >>> repo = Repo.demo()
+            >>> # TODO: make a plausible scenario
             >>> cmdline = 0
             >>> kwargs = dict()
-            >>> cls = GitDiscoverRemoteCLI
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> kwargs['repo_dpath'] = repo
+            >>> import pytest
+            >>> with pytest.raises(Exception):
+            >>>     cls.main(cmdline=cmdline, **kwargs)
         """
         from git_well._utils import rich_print
         config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
-        from git_well._utils import find_git_root
+        from git_well.repo import Repo
         from os.path import expanduser, relpath, join
-        root_dpath = find_git_root(config.repo_dpath)
+
+        repo = Repo.coerce(config.repo_dpath)
+        root_dpath = repo.dpath
 
         host = config.host
         home = config.home
@@ -68,7 +87,12 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
                 'We assume that you are running relative '
                 'to your home directory. rel_dpath={}, home={}').format(rel_dpath, home))
 
-        remote_cwd = rel_dpath
+        remote_cwd = config.remote_cwd
+        if remote_cwd is None:
+            remote_cwd = rel_dpath
+            print(f'home={home}')
+            print(f'root_dpath={root_dpath}')
+            print(f'remote_cwd={remote_cwd}')
         remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:
