@@ -73,7 +73,10 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
 
         unique_fprs = {cand['fpr'] for cand in gpg_candidates}
 
-        if len(unique_fprs) != 1:
+        if len(unique_fprs) == 0:
+            raise Exception('Unable to find any gpg candidates. '
+                            'Is the repo not using git/ssh credentials?')
+        elif len(unique_fprs) != 1:
             print(f'unique_fprs = {ub.urepr(unique_fprs, nl=1)}')
             print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
             raise AssertionError('need to choose 1')
