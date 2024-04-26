@@ -9,6 +9,7 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
 
     remote = scfg.Value(None, help='param1')
     repo_dpath = scfg.Value('.', help='repo to set gpg for')
+    email = scfg.Value(None, help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
@@ -54,12 +55,15 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
                     if cand.exists():
                         identify_file_cands.add(cand)
 
-        email_candidates = ub.oset()
-        for id_fpath in identify_file_cands:
-            pub_key_fpath = id_fpath.augment(tail='.pub')
-            if pub_key_fpath.exists():
-                pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
-                email_candidates.add(pub_email)
+        if config.email is None:
+            email_candidates = ub.oset()
+            for id_fpath in identify_file_cands:
+                pub_key_fpath = id_fpath.augment(tail='.pub')
+                if pub_key_fpath.exists():
+                    pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
+                    email_candidates.add(pub_email)
+        else:
+            email_candidates = [config.email]
 
         gpg_candidates = []
         for email in email_candidates:
