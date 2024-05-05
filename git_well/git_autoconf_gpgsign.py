@@ -106,11 +106,14 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
                         allow_subkey=True, allow_mainkey=True, full=True,
                         filter_expired=True, mintrust=None):
     """
-    python ~/local/scripts/xgpg.py lookup_keyid "Emmy"
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=sign
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=encrypt
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=auth
-    python ~/local/scripts/xgpg.py lookup_keyid "Jonathan Crall"
+    Creates a table of information about GPG key candidates that match a query.
+
+    Ignore:
+        python ~/local/scripts/xgpg.py lookup_keyid "Emmy"
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=sign
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=encrypt
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=auth
+        python ~/local/scripts/xgpg.py lookup_keyid "Jonathan Crall"
     """
     if capabilities is None:
         capabilities = {'certify'}
