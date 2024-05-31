@@ -26,7 +26,7 @@ class GitRemoteProtocol(scfg.DataConfig):
         should be. (i.e. if there is only one, use that, otherwise ask).
         '''))
 
-    protocol = scfg.Value('ssh', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
+    protocol = scfg.Value('git', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
         '''
         The protocol to change to.
         '''))

@@ -9,6 +9,7 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
 
     remote = scfg.Value(None, help='param1')
     repo_dpath = scfg.Value('.', help='repo to set gpg for')
+    email = scfg.Value(None, help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials')
 
     @classmethod
     def main(cls, cmdline=1, **kwargs):
@@ -54,12 +55,15 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
                     if cand.exists():
                         identify_file_cands.add(cand)
 
-        email_candidates = ub.oset()
-        for id_fpath in identify_file_cands:
-            pub_key_fpath = id_fpath.augment(tail='.pub')
-            if pub_key_fpath.exists():
-                pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
-                email_candidates.add(pub_email)
+        if config.email is None:
+            email_candidates = ub.oset()
+            for id_fpath in identify_file_cands:
+                pub_key_fpath = id_fpath.augment(tail='.pub')
+                if pub_key_fpath.exists():
+                    pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
+                    email_candidates.add(pub_email)
+        else:
+            email_candidates = [config.email]
 
         gpg_candidates = []
         for email in email_candidates:
@@ -73,7 +77,10 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
 
         unique_fprs = {cand['fpr'] for cand in gpg_candidates}
 
-        if len(unique_fprs) != 1:
+        if len(unique_fprs) == 0:
+            raise Exception('Unable to find any gpg candidates. '
+                            'Is the repo not using git/ssh credentials?')
+        elif len(unique_fprs) != 1:
             print(f'unique_fprs = {ub.urepr(unique_fprs, nl=1)}')
             print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
             raise AssertionError('need to choose 1')
@@ -99,11 +106,14 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
                         allow_subkey=True, allow_mainkey=True, full=True,
                         filter_expired=True, mintrust=None):
     """
-    python ~/local/scripts/xgpg.py lookup_keyid "Emmy"
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=sign
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=encrypt
-    python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=auth
-    python ~/local/scripts/xgpg.py lookup_keyid "Jonathan Crall"
+    Creates a table of information about GPG key candidates that match a query.
+
+    Ignore:
+        python ~/local/scripts/xgpg.py lookup_keyid "Emmy"
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=sign
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=encrypt
+        python ~/local/scripts/xgpg.py lookup_keyid "Crall" --allow_mainkey=False --capabilities=auth
+        python ~/local/scripts/xgpg.py lookup_keyid "Jonathan Crall"
     """
     if capabilities is None:
         capabilities = {'certify'}
