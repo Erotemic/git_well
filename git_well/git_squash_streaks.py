@@ -644,7 +644,7 @@ def commits_between(repo, start, stop):
         this gets messy any node on the path between <start> and <stop> has
         more than one parent that is not on a path between <start> and <stop>
 
-    Notes:
+    Note:
         As a prefix: the carrot (^A) removes commits reachable from A.
         As a suffix: the carrot (A^) references the 1st parent of A
         Furthermore:
