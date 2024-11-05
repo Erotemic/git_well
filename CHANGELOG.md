@@ -6,6 +6,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Version 0.2.4 - Unreleased
 
+### Added
+* New CLI command: `url` which lets you access components of a git url
+
+### Changed
+* The `repo_name` item (which previously ended with .git) has been changed to `repo_endpoint`, and the `repo_name` no longer will contain a .git suffix.
+
 
 ## [Version 0.2.3] - 
 

@@ -78,8 +78,12 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
         unique_fprs = {cand['fpr'] for cand in gpg_candidates}
 
         if len(unique_fprs) == 0:
+            print('Error')
+            print(f'email_candidates = {ub.urepr(email_candidates, nl=1)}')
+            print(f'identify_file_cands = {ub.urepr(identify_file_cands, nl=1)}')
             raise Exception('Unable to find any gpg candidates. '
-                            'Is the repo not using git/ssh credentials?')
+                            'Is the repo not using git/ssh credentials? '
+                            'Try specifying --email=<youremail>.')
         elif len(unique_fprs) != 1:
             print(f'unique_fprs = {ub.urepr(unique_fprs, nl=1)}')
             print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
