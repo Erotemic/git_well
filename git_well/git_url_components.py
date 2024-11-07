@@ -10,13 +10,19 @@ class GitUrlComponentsCLI(scfg.DataConfig):
 
     Usage
     -----
+    python -m git_well url "https://foo.bar/user/repo.git"
     python -m git_well url "https://foo.bar/user/repo.git" repo_name
+
+    SeeAlso
+    -------
+    :class:`GitURL`
     """
     __command__ = 'url'
 
     url = scfg.Value(None, help='the git url to parse', position=1)
     component = scfg.Value(None, help='The component to access and print. If unspecified all info is printed in json format', position=2)
-    verbose = scfg.Value(0, help='verbosity level')
+    protocol = scfg.Value(None, help='If specified, convert to the specified protocol first')
+    verbose = scfg.Flag(0, help='verbosity level')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -41,6 +47,8 @@ class GitUrlComponentsCLI(scfg.DataConfig):
         if config['url'] is None:
             raise ValueError('A url must be specified')
         url = GitURL(config['url'])
+        if config.protocol is not None:
+            url = url.to_protocol(config.protocol)
         if config.component is None:
             print(json.dumps(url.info, indent='    '))
         else:
