@@ -29,8 +29,13 @@ class GitSyncCLI(scfg.DataConfig):
 
 def main(cmdline=True, **kwargs):
     args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
-    from git_well._utils import rich_print
-    rich_print('args = {}'.format(ub.urepr(args, nl=1)))
+    try:
+        import rich
+        from rich.markup import escape
+        rich.print('args = ' + escape(ub.urepr(args, nl=1)))
+    except Exception:
+        print('args = ' + ub.urepr(args, nl=1))
+
     ns = dict(args).copy()
     ns['host'] = ns['host'][0]
     git_sync(**ns)
