@@ -4,6 +4,15 @@ We are currently working on porting this changelog to the specifications in
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Version 0.2.4 - Unreleased
+
+### Added
+* New CLI command: `url` which lets you access components of a git url
+
+### Changed
+* The `repo_name` item (which previously ended with .git) has been changed to `repo_endpoint`, and the `repo_name` no longer will contain a .git suffix.
+
+
 ## [Version 0.2.3] - 
 
 ## [Version 0.2.2] - 

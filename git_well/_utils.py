@@ -113,3 +113,150 @@ def find_git_root(dpath):
     if found is None:
         raise Exception('cannot find git root')
     return found
+
+
+class GitURL(str):
+    """
+    Represents a url to a git repo and can parse info about / modify the
+    protocol
+
+    References:
+        https://git-scm.com/docs/git-clone#_git_urls
+
+    CommandLine:
+        xdoctest -m git_well.git_remote_protocol GitURL
+
+    Example:
+        >>> from git_well.git_remote_protocol import *  # NOQA
+        >>> from git_well._utils import *  # NOQA
+        >>> urls = [
+        >>>     GitURL('https://foo.bar/user/repo.git'),
+        >>>     GitURL('ssh://foo.bar/user/repo.git'),
+        >>>     GitURL('ssh://git@foo.bar/user/repo.git'),
+        >>>     GitURL('git@foo.bar:group/repo.git'),
+        >>>     GitURL('host:path/to/my/repo/.git'),
+        >>> ]
+        >>> for url in urls:
+        >>>     info = url.info
+        >>>     print('---')
+        >>>     print(f'url = {url}')
+        >>>     print(ub.urepr(info))
+        >>>     print('As git   : ' + url.to_git())
+        >>>     print('As ssh   : ' + url.to_ssh())
+        >>>     print('As https : ' + url.to_https())
+        >>>     if info['protocol'] not in {'scp'}:
+        >>>         # SCP recon is broken
+        >>>         recon = url.to_protocol(info['protocol'])
+        >>>         assert recon == url
+    """
+
+    def __init__(self, data):
+        # note: inheriting from str so data is handled in __new__
+        self._info = None
+
+    def _parse(self):
+        import parse
+        parse.Parser('ssh://{user}')
+
+    def _fixup_endpoint(self, repo_endpoint):
+        if repo_endpoint.endswith('.git'):
+            repo_name = repo_endpoint[:-4]
+        else:
+            repo_name = repo_endpoint
+            repo_endpoint = repo_name + '.git'
+        return repo_name, repo_endpoint
+
+    @property
+    def info(self):
+        if self._info is None:
+            url = self
+            info = {}
+            if url.startswith('https://'):
+                parts = url.split('https://')[1].split('/', 3)
+                repo_endpoint = parts[2]
+                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
+                info['host'] = parts[0]
+                info['group'] = parts[1]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['user'] = None
+                info['protocol'] = 'https'
+            elif url.startswith('git@'):
+                parts = url.split('git@')[1].split(':')
+                repo_endpoint = parts[1].split('/')[1]
+                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
+                info['host'] = parts[0]
+                info['group'] = parts[1].split('/')[0]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['user'] = 'git'
+                info['protocol'] = 'git'
+            elif url.startswith('ssh://'):
+                parts = url.split('ssh://')[1].split('/', 3)
+                user = None
+                if '@' in parts[0]:
+                    user, host = parts[0].split('@')
+                else:
+                    host = parts[0]
+                repo_name, repo_endpoint = self._fixup_endpoint(parts[2])
+                info['host'] = host
+                info['user'] = user
+                info['group'] = parts[1]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['protocol'] = 'ssh'
+            elif url.endswith('/.git'):
+                # An ssh protocol to an explicit directory
+                host, rest = url.split(':', 1)
+                parts = rest.rsplit('/',  2)
+                info['host'] = host
+                info['group'] = parts[0]
+                info['repo_name'] = parts[1]
+                info['repo_endpoint'] = parts[1] + '/.git'
+                info['protocol'] = 'scp'
+            elif '//' not in url and '@' not in url:
+                parts = url.split(':')
+                repo_name, repo_endpoint = self._fixup_endpoint(parts[1].split('/')[1])
+                info['host'] = parts[0]
+                info['group'] = parts[1].split('/')[0]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['protocol'] = 'ssh'
+            else:
+                raise ValueError(url)
+            info['url'] = url
+            self._info = info
+        return self._info
+
+    def to_protocol(self, protocol):
+        """
+        Convert the URL to a different protocol
+        """
+        if protocol == 'git':
+            return self.to_git()
+        elif protocol in {'ssh', 'scp'}:
+            return self.to_ssh()
+        elif protocol == 'https':
+            return self.to_https()
+        else:
+            raise KeyError(protocol)
+
+    def to_git(self):
+        info = self.info
+        new_url = 'git@' + info['host']  + ':' + info['group'] + '/' + info['repo_endpoint']
+        return self.__class__(new_url)
+
+    def to_ssh(self):
+        info = self.info
+        user = info.get('user', None)
+        if user is None:
+            user_part = ''
+        else:
+            user_part = user + '@'
+        new_url = 'ssh://' + user_part + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
+        return self.__class__(new_url)
+
+    def to_https(self):
+        info = self.info
+        new_url = 'https://' + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
+        return self.__class__(new_url)

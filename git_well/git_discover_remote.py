@@ -110,6 +110,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
                 host,
             ]
             ssh_command = ' '.join(args) + ' "' + remote_part + '"'
+            print('Testing if remote is reachable')
             info = ub.cmd(ssh_command)
             try:
                 info.check_returncode()

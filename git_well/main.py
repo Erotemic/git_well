@@ -16,6 +16,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.git_remote_protocol import __cli__ as remote_protocol
     from git_well.git_discover_remote import __cli__ as discover_remote
     from git_well.git_autoconf_gpgsign import __cli__ as autoconf_gpgsign
+    from git_well.git_url_components import __cli__ as url
 
 
 def main():
