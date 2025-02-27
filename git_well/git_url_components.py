@@ -22,7 +22,7 @@ class GitUrlComponentsCLI(scfg.DataConfig):
     url = scfg.Value(None, help='the git url to parse', position=1)
     component = scfg.Value(None, help='The component to access and print. If unspecified all info is printed in json format', position=2)
     protocol = scfg.Value(None, help='If specified, convert to the specified protocol first')
-    verbose = scfg.Flag(0, help='verbosity level')
+    verbose = scfg.Flag(False, help='verbosity level')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
