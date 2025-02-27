@@ -3,23 +3,29 @@ def make_dummy_git_repo():
     import ubelt as ub
     repo_dpath = ub.Path.appdir('git_well', 'tests', 'dummy-git-repo')
 
-    try:
-        repo_dpath.delete().ensuredir()
-    except PermissionError:
-        if ub.WIN32:
-            # On windows we might run into this on the CI server. The working
-            # hypothesis for what could be causing it is that another git
-            # instance might have a lock on data in the .git directory.
-            # To work around this we are going to garbage collect to hopefully
-            # cause any lock to be released, wait, and then try again.
-            # another git instance might have a lock on a file.
-            import gc
-            import time
-            gc.collect()
-            time.sleep(1)
-            repo_dpath.delete().ensuredir()
-        else:
-            raise
+    # On windows we need to use a tempdir because it doesn't seem to let you
+    # clean up after yourself.
+    if ub.WIN32:
+        import tempfile
+        repo_dpath = ub.Path(tempfile.mkdtemp()) / 'dummy-git-repo'
+
+    # try:
+    repo_dpath.delete().ensuredir()
+    # except PermissionError:
+    #     if ub.WIN32:
+    #         # On windows we might run into this on the CI server. The working
+    #         # hypothesis for what could be causing it is that another git
+    #         # instance might have a lock on data in the .git directory.
+    #         # To work around this we are going to garbage collect to hopefully
+    #         # cause any lock to be released, wait, and then try again.
+    #         # another git instance might have a lock on a file.
+    #         import gc
+    #         import time
+    #         gc.collect()
+    #         time.sleep(1)
+    #         repo_dpath.delete().ensuredir()
+    #     else:
+    #         raise
 
     import git
     repo = git.Repo.init(repo_dpath, initial_branch='main')
