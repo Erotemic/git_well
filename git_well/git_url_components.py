@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import scriptconfig as scfg
 import ubelt as ub
-from git_well._utils import GitURL
 
 
 class GitUrlComponentsCLI(scfg.DataConfig):
@@ -46,6 +45,7 @@ class GitUrlComponentsCLI(scfg.DataConfig):
         import json
         if config['url'] is None:
             raise ValueError('A url must be specified')
+        from git_well._utils import GitURL
         url = GitURL(config['url'])
         if config.protocol is not None:
             url = url.to_protocol(config.protocol)
