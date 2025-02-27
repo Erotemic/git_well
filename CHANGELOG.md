@@ -4,7 +4,10 @@ We are currently working on porting this changelog to the specifications in
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Version 0.2.5 - Unreleased
+## Version 0.3.0 - Unreleased
+
+### Removed
+* Drop Python 3.7 support
 
 
 ## Version 0.2.4 - Released 2025-02-27
