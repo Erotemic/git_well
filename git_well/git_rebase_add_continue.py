@@ -67,6 +67,8 @@ class GitRebaseAddContinue(scfg.DataConfig):
             except IsADirectoryError:
                 # probably in a submodule
                 continue
+            except FileNotFoundError:
+                text = ''
             for pat in conflict_patterns:
                 if pat.search(text):
                     conflicts.append(fpath)
