@@ -8,6 +8,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     # ~/code/git_well/pyproject.toml
     # ~/code/git_well/setup.py
     from git_well.git_squash_streaks import __cli__ as squash_streaks
+    from git_well.git_squash import __cli__ as squash
     from git_well.git_branch_upgrade import __cli__ as branch_upgrade
     from git_well.git_sync import __cli__ as sync
     from git_well.git_branch_cleanup import __cli__ as branch_cleanup

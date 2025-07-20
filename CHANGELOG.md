@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 * Added patchdir save / apply tools
+* Added new `git-well squash` tool with the goal of making a more useful squash-streaks
 
 ### Removed
 * Drop Python 3.7 support
