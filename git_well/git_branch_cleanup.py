@@ -54,7 +54,7 @@ class CleanDevBranchConfig(scfg.DataConfig):
             merged_branches = repo.find_merged_branches('origin/main')
         remove_branches = list(ub.oset(remove_branches) | ub.oset(merged_branches) - {'release'})
 
-        print('remove_branches = {}'.format(ub.repr2(remove_branches, nl=1)))
+        print('remove_branches = {}'.format(ub.urepr(remove_branches, nl=1)))
         if not remove_branches:
             print('Local devbranches are already clean')
         else:

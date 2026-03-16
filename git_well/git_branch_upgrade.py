@@ -73,7 +73,7 @@ class UpdateDevBranch(scfg.DataConfig):
         # Need to fetch from remote
         if latest is None:
             info = final_cand[-1]
-            print('info = {}'.format(ub.repr2(info, nl=1)))
+            print('info = {}'.format(ub.urepr(info, nl=1)))
             print('Latest seems to be on a remote')
             info['branch_name']
             repo.git.checkout(info['branch_name'])

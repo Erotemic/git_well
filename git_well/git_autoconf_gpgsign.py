@@ -126,16 +126,16 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
 
     entries = gpg_entries(identifier)
 
-    # print(ub.repr2(entries, nl=2, sort=0))
+    # print(ub.urepr(entries, nl=2, sort=0))
     if verbose:
         import pandas as pd
         import rich
-        # print('entries = {}'.format(ub.repr2(entries, nl=2)))
+        # print('entries = {}'.format(ub.urepr(entries, nl=2)))
         for rows in entries:
             rows_df = pd.DataFrame(rows)
             rows_df.index.name = 'row'
             rich.print(rows_df.to_string())
-            # print(ub.repr2(entries, nl=2, si=1, sort=0))
+            # print(ub.urepr(entries, nl=2, si=1, sort=0))
 
     want_caps = {c[0] for c in capabilities}
     candidates = []

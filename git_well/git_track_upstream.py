@@ -52,7 +52,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
         assert not repo.active_branch.is_remote()
         assert repo.active_branch.is_valid()
         tracking_branch = repo.head.reference.tracking_branch()
-        print('tracking_branch = {}'.format(ub.repr2(tracking_branch, nl=1)))
+        print('tracking_branch = {}'.format(ub.urepr(tracking_branch, nl=1)))
 
         if tracking_branch is not None:
             print(f'tracking_branch is already set to {tracking_branch}.')
