@@ -101,17 +101,26 @@ def choice_prompt(msg, choices):
 
 
 def find_git_root(dpath):
-    cwd = ub.Path(dpath).absolute()
-    parts = cwd.parts
-    found = None
-    for i in reversed(range(0, len(parts) + 1)):
-        p = ub.Path(*parts[0:i])
-        cand = p / '.git'
-        if cand.exists():
-            found = p
-            break
-    if found is None:
-        raise Exception('cannot find git root')
+    if 0:
+        # Old implementation
+        cwd = ub.Path(dpath).absolute()
+        parts = cwd.parts
+        found = None
+        for i in reversed(range(0, len(parts) + 1)):
+            p = ub.Path(*parts[0:i])
+            cand = p / '.git'
+            if cand.exists():
+                found = p
+                break
+        if found is None:
+            raise Exception('cannot find git root')
+    else:
+        # New implementation (should be more robust)
+        # allow running inside a subdir of a repo
+        info = ub.cmd('git rev-parse --show-toplevel', cwd=dpath, verbose=0)
+        if info['ret'] != 0:
+            raise RuntimeError(f'Not a git repo: {dpath}')
+        found = ub.Path(info['out'].strip())
     return found
 
 
@@ -181,6 +190,17 @@ class GitURL(str):
                 info['repo_endpoint'] = repo_endpoint
                 info['user'] = None
                 info['protocol'] = 'https'
+            elif url.startswith('http://'):
+                # Coerce http to https
+                parts = url.split('http://')[1].split('/', 3)
+                repo_endpoint = parts[2]
+                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
+                info['host'] = parts[0]
+                info['group'] = parts[1]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['user'] = None
+                info['protocol'] = 'http'
             elif url.startswith('git@'):
                 parts = url.split('git@')[1].split(':')
                 repo_endpoint = parts[1].split('/')[1]

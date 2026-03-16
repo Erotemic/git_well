@@ -693,7 +693,16 @@ def _squash_between(repo, start, stop, dry=False, verbose=True, start_inclusive=
     import git
     import email.utils
     if len(start.parents) != 1:
-        raise AssertionError('cant handle')
+        raise AssertionError('cant handle case with multiple parents')
+        # TODO: Is it possible to do the reset --hard trick here?
+        # The idea is that you reset --hard onto the branch with the
+        # state you want to end up at, you make a list of all the files
+        # that exist in that commit. Then you reset --soft onto the start
+        # commit (maybe you can get a list of the files that are unstaged),
+        # in any case, you re add all unstaged files and commit all modified
+        # files to make a single commit on top of "start" that contains
+        # all changes.
+
     # assert start.authored_datetime < stop.authored_datetime
     if not repo.is_ancestor(ancestor_rev=start, rev=stop):
         raise AssertionError('cant handle')
