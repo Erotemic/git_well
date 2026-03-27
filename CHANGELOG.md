@@ -14,6 +14,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Removed
 * Drop Python 3.7 support
 
+### Changed
+* git-well discover-remote now works with submodules
+
 
 ## Version 0.2.4 - Released 2025-02-27
 

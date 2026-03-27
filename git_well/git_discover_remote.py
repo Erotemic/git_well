@@ -72,9 +72,11 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
 
         from git_well.repo import Repo
         from os.path import expanduser, relpath, join
+        import shlex
 
         repo = Repo.coerce(config.repo_dpath)
-        root_dpath = repo.dpath
+        info = ub.cmd(['git', '-C', repo.dpath, 'rev-parse', '--show-toplevel'], check=True)
+        root_dpath = ub.Path(info.stdout.strip())
 
         host = config.host
         home = config.home
@@ -93,12 +95,13 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
             print(f'home={home}')
             print(f'root_dpath={root_dpath}')
             print(f'remote_cwd={remote_cwd}')
-        remote_gitdir = join(remote_cwd, '.git')
+        #remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:
             # Test that the remote actually has this repo
             remote_parts = [
-                f'test -e {remote_gitdir}',
+                #f'test -e {remote_gitdir}',
+                f'cd {shlex.quote(remote_cwd)} && git rev-parse --is-inside-work-tree',
             ]
             remote_part = ' && '.join(remote_parts)
             ssh_flags = []
@@ -125,7 +128,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
             remote = config.host
 
         # remote_path = f'ssh://{host}:{remote_gitdir}'
-        remote_path = f'{host}:{remote_gitdir}'
+        remote_path = f'{host}:{remote_cwd}'
         add_command = f'git remote add {remote} {remote_path}'
         ub.cmd(add_command, verbose=3, check=True)
 
