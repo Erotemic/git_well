@@ -17,6 +17,7 @@ Submodules
 
    git_well.__main__
    git_well._utils
+   git_well.git_archive_source
    git_well.git_autoconf_gpgsign
    git_well.git_branch_cleanup
    git_well.git_branch_upgrade

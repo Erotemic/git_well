@@ -257,6 +257,7 @@ if __name__ == "__main__":
             "git-branch-cleanup = git_well.git_branch_cleanup:main",
             "git-squash-streaks = git_well.git_squash_streaks:main",
             "git-track-upstream = git_well.git_track_upstream:main",
+            "git-archive-source = git_well.git_archive_source:main",
         ],
     }
     setup(**setupkw)
