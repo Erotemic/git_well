@@ -21,6 +21,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.git_autoconf_gpgsign import __cli__ as autoconf_gpgsign
     from git_well.git_url_components import __cli__ as url
     from git_well.git_archive_source import __cli__ as archive_source
+    from git_well.ipfs import __cli__ as ipfs
     from git_well.patchdir.patchdir_modal import __cli__ as patchdir
 
 

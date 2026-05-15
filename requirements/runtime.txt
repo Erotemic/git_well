@@ -6,6 +6,7 @@ rich>=12.4.4         ;                            python_version >= '3.8'    # P
 rich>=11.2.0         ; python_version < '3.8' and python_version >= '3.6'    # Python 3.6 
 git-python>=1.0.0    ;                            python_version >= '2.7'    # Python 2.7+
 packaging>=21.3
+pyyaml>=6.0
 
 networkx>=2.8           ; python_version < '4.0'   and python_version >= '3.11'   # Python 3.11+
 networkx>=2.7           ; python_version < '3.11'  and python_version >= '3.8'    # Python 3.8-3.11

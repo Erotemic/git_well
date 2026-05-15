@@ -180,4 +180,5 @@ entry_points.console_scripts = [
   "git-squash-streaks = git_well.git_squash_streaks:main",
   "git-track-upstream = git_well.git_track_upstream:main",
   "git-archive-source = git_well.git_archive_source:main",
+  "git-ipfs = git_well.ipfs:main",
 ]
