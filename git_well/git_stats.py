@@ -14,18 +14,18 @@ class GitStatsCLI(scfg.DataConfig):
     repo_dpath = scfg.Value('.', help='param1', position=1)
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(cls, argv=1, **kwargs):
         """
         Example:
             >>> # xdoctest: +SKIP
             >>> from git_well.git_stats import *  # NOQA
-            >>> cmdline = 0
+            >>> argv = 0
             >>> kwargs = dict()
             >>> cls = GitStatsCLI
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> cls.main(argv=argv, **kwargs)
         """
         import rich
-        config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
+        config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich.print('config = ' + ub.urepr(config, nl=1))
         from git_well.repo import Repo
         repo = Repo.coerce(config.repo_dpath)
