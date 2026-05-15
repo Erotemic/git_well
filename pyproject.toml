@@ -1,45 +1,181 @@
 [build-system]
-requires = [ "setuptools>=41.0.1",]
 build-backend = "setuptools.build_meta"
+requires = [
+  "setuptools>=41.0.1",
+]
+
+[project]
+name = "git_well"
+description = "The git_well module"
+license.text = "Apache 2"
+authors = [ { name = "Jon Crall", email = "erotemic@gmail.com" } ]
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Utilities",
+]
+dynamic = [
+  "dependencies",
+  "optional-dependencies",
+  "version",
+]
+urls.Homepage = "https://github.com/Erotemic/git_well"
+scripts.git-archive-source = "git_well.git_archive_source:main"
+scripts.git-branch-cleanup = "git_well.git_branch_cleanup:main"
+scripts.git-branch-upgrade = "git_well.git_branch_upgrade:main"
+scripts.git-squash-streaks = "git_well.git_squash_streaks:main"
+scripts.git-sync = "git_well.git_sync:main"
+scripts.git-track-upstream = "git_well.git_track_upstream:main"
+scripts.git-well = "git_well.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+dynamic.dependencies.file = [
+  "requirements/runtime.txt",
+]
+dynamic.optional-dependencies.docs.file = [
+  "requirements/docs.txt",
+]
+dynamic.optional-dependencies.optional.file = [
+  "requirements/optional.txt",
+]
+dynamic.optional-dependencies.tests.file = [
+  "requirements/tests.txt",
+]
+dynamic.readme.file = [
+  "README.rst",
+]
+dynamic.readme.content-type = "text/x-rst"
+dynamic.version.attr = "git_well.__version__"
+package-data."*" = [
+  "requirements/*.txt",
+]
+packages.find.where = [
+  ".",
+]
+packages.find.include = [
+  "git_well*",
+]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 80
+format.indent-style = "space"
+format.quote-style = "single"
+format.line-ending = "auto"
+format.skip-magic-trailing-comma = false
+format.docstring-code-format = false
+lint.select = [
+  "E",
+  "F",
+  "I",
+]
+lint.ignore = [
+  "E402",
+  "E501",
+]
+
+[tool.codespell]
+skip = [
+  "./docs/build",
+  "./*.egg-info",
+  "./build",
+  "./htmlcov",
+]
+count = true
+quiet-level = 3
+ignore-words-list = [
+  "wont",
+  "cant",
+  "ANS",
+  "doesnt",
+  "arent",
+  "ans",
+  "thats",
+  "datas",
+  "isnt",
+]
 
 [tool.mypy]
 ignore_missing_imports = true
 
+[tool.ty]
+rules.unused-ignore-comment = "ignore"
+rules.unused-type-ignore-comment = "ignore"
+rules.unresolved-import = "ignore"
+
+[tool.pytest]
+ini_options.addopts = "-p no:doctest --xdoctest --xdoctest-style=google --ignore-glob=setup.py --ignore-glob=dev --ignore-glob=docs"
+ini_options.norecursedirs = ".git ignore build __pycache__ dev _skbuild docs"
+ini_options.filterwarnings = [
+  "default",
+  "ignore:.*No cfgstr given in Cacher constructor or call.*:Warning",
+  "ignore:.*Define the __nice__ method for.*:Warning",
+  "ignore:.*private pytest class or function.*:Warning",
+]
+
+[tool.coverage]
+run.branch = true
+report.exclude_lines = [
+  ".*  # nocover",
+  ".*  # pragma: no cover",
+  ".*if six.PY2:",
+  "^ *pass *$",
+  "^ *raise",
+  "def __repr__",
+  "if __name__ == .__main__.:",
+  "if _debug:",
+  "if 0:",
+  "if trace is not None",
+  "pragma: no cover",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "verbose = .*",
+]
+report.omit = [
+  "*/setup.py",
+  "git_well/__main__.py",
+]
+
 [tool.xcookie]
-tags = [ "github", "purepy", "erotemic",]
+tags = [
+  "github",
+  "purepy",
+  "erotemic",
+]
 mod_name = "git_well"
 repo_name = "git_well"
 rel_mod_parent_dpath = "."
-os = [ "linux", "osx", "win",]
-min_python = '3.8'
+os = [
+  "linux",
+  "osx",
+  "win",
+]
+min_python = "3.10"
 version = "{mod_dpath}/__init__.py::__version__"
 author = "Jon Crall"
 author_email = "erotemic@gmail.com"
 description = "The git_well module"
 license = "Apache 2"
 dev_status = "planning"
-remote_host = "https://github.com"
+remote_host = "github.com"
 remote_group = "Erotemic"
-
-[tool.xcookie.entry_points]
-console_scripts = [
-    "git-well = git_well.__main__:main",
-    "git-sync = git_well.git_sync:main",
-    "git-branch-upgrade = git_well.git_branch_upgrade:main",
-    "git-branch-cleanup = git_well.git_branch_cleanup:main",
-    "git-squash-streaks = git_well.git_squash_streaks:main",
-    "git-track-upstream = git_well.git_track_upstream:main",
-    "git-archive-source = git_well.git_archive_source:main",
+pkg_name = "git_well"
+url = "https://github.com/Erotemic/git_well"
+use_setup_py = false
+entry_points.console_scripts = [
+  "git-well = git_well.__main__:main",
+  "git-sync = git_well.git_sync:main",
+  "git-branch-upgrade = git_well.git_branch_upgrade:main",
+  "git-branch-cleanup = git_well.git_branch_cleanup:main",
+  "git-squash-streaks = git_well.git_squash_streaks:main",
+  "git-track-upstream = git_well.git_track_upstream:main",
+  "git-archive-source = git_well.git_archive_source:main",
 ]
-
-[tool.pytest.ini_options]
-addopts = "-p no:doctest --xdoctest --xdoctest-style=google --ignore-glob=setup.py --ignore-glob=dev --ignore-glob=docs"
-norecursedirs = ".git ignore build __pycache__ dev _skbuild docs"
-filterwarnings = [ "default", "ignore:.*No cfgstr given in Cacher constructor or call.*:Warning", "ignore:.*Define the __nice__ method for.*:Warning", "ignore:.*private pytest class or function.*:Warning",]
-
-[tool.coverage.run]
-branch = true
-
-[tool.coverage.report]
-exclude_lines = [ "pragma: no cover", ".*  # pragma: no cover", ".*  # nocover", "def __repr__", "raise AssertionError", "raise NotImplementedError", "if 0:", "if trace is not None", "verbose = .*", "^ *raise", "^ *pass *$", "if _debug:", "if __name__ == .__main__.:", ".*if six.PY2:",]
-omit = [ "git_well/__main__.py", "*/setup.py",]
