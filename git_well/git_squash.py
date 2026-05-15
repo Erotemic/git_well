@@ -33,11 +33,13 @@ class GitSquashCLI(scfg.DataConfig):
             errors occur. (Default: True)
             '''))
 
-    def __post_init__(self):
-        if self.force is not None:
-            self.dry = not self.force
+    def __post_init__(self) -> None:
+        force = self['force']
+        dry = self['dry']
+        if force is not None:
+            self['dry'] = not force
         else:
-            self.force = not self.dry
+            self['force'] = not dry
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
@@ -68,7 +70,7 @@ class GitSquashCLI(scfg.DataConfig):
         squash_commits(config)
 
 
-def squash_commits(config):
+def squash_commits(config: Any) -> None:
     from git_well.repo import Repo
 
     repo = Repo.coerce(config.dpath)

@@ -264,7 +264,12 @@ def git_sync(host: str, remote: str | None = None, message: str = 'wip [skip ci]
             elif retcode != 0:
                 print(f'command={command}')
                 if command.startswith('git push'):
-                    if 'refusing to update checked out branch:' in result.stderr:
+                    stderr = result.stderr
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode(errors='replace')
+                    elif stderr is None:
+                        stderr = ''
+                    if 'refusing to update checked out branch:' in stderr:
                         from rich import prompt
                         ans = prompt.Confirm.ask(ub.paragraph(
                             '''

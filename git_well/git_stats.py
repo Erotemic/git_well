@@ -6,6 +6,8 @@ SeeAlso:
     https://stackoverflow.com/questions/42715785/how-do-i-show-statistics-for-authors-contributions-in-git
 """
 #!/usr/bin/env python3
+from typing import Any
+
 import scriptconfig as scfg
 import ubelt as ub
 
@@ -14,7 +16,7 @@ class GitStatsCLI(scfg.DataConfig):
     repo_dpath = scfg.Value('.', help='param1', position=1)
 
     @classmethod
-    def main(cls, argv=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP

@@ -99,10 +99,12 @@ class SquashStreakCLI(scfg.DataConfig):
     # quiet = scfg.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
 
     def __post_init__(self) -> None:
-        if self.force is not None:
-            self.dry = not self.force
+        force = self['force']
+        dry = self['dry']
+        if force is not None:
+            self['dry'] = not force
         else:
-            self.force = not self.dry
+            self['force'] = not dry
 
 
 def print_exc(
@@ -569,6 +571,8 @@ def find_streaks(chain: list[Any], authors: set[str] | None = None, timedelta: f
 
     # Look at each commit and its successor
     for commit, next_commit in ub.iter_window(it.chain(chain, [None]), size=2):
+        if commit is None:
+            continue
         print('CHECK commit.message = {!r}, {!r}'.format(commit.message, commit))
         if streak is None:
             streak = Streak(prev, [])

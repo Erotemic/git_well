@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 import os
 import git
 import ubelt as ub
@@ -68,7 +68,7 @@ class Repo(git.Repo):
         if isinstance(data, cls):
             self = data
         elif isinstance(data, (str, os.PathLike)):
-            dpath = data
+            dpath = cast(str | os.PathLike[str], data)
             repo_root = find_git_root(dpath)
             self = cls(repo_root)
         else:

@@ -113,7 +113,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
     verbose = scfg.Value(1, help='verbosity level')
 
     @classmethod
-    def main(cls, argv: Any = 1, **kwargs: Any) -> Path:
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Path:
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         archive_path = archive_source(
             repo_dpath=config.repo_dpath,
@@ -125,7 +125,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
         return archive_path
 
 
-def main(argv: Any = 1, **kwargs: Any) -> Path:
+def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> Path:
     """
     Command line entry point for :class:`ArchiveSourceCLI`.
     """

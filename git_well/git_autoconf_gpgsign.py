@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
+
+from typing import Any
+
 import scriptconfig as scfg
 import ubelt as ub
 
@@ -13,7 +16,7 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
     email = scfg.Value(None, help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials')
 
     @classmethod
-    def main(cls, argv=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP

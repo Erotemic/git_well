@@ -88,25 +88,26 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
 
     print('remote_urls = {}'.format(ub.urepr([u.info for u in remote_urls], nl=1)))
 
-    if config.group == 'special:auto':
+    group = config['group']
+    if group == 'special:auto':
         print('Automatically determining group to change protocol for')
         choices = list(ub.unique([r.info['group'] for r in remote_urls]))
         if len(choices) == 1:
             print('Only one choice')
-            config.group = choices[0]
-            print(f'Auto group: {config.group}')
+            group = choices[0]
+            print(f'Auto group: {group}')
         else:
             print('Multiple choices:')
             # TODO: dont depend on rich?
             # TODO: better interaction?
             from git_well._utils import choice_prompt
             ans = choice_prompt('Which group to change protocol for?', choices=choices)
-            config.group = ans
+            group = ans
 
     tasks = []
     for url in remote_urls:
         if url.info['protocol'] != new_protocol:
-            if config.group == url.info['group']:
+            if group == url.info['group']:
                 if new_protocol == 'git':
                     new_url = url.to_git()
                 elif new_protocol == 'ssh':

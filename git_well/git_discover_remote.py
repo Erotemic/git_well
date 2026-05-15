@@ -79,7 +79,12 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
 
         repo = Repo.coerce(config.repo_dpath)
         info = ub.cmd(['git', '-C', repo.dpath, 'rev-parse', '--show-toplevel'], check=True)
-        root_dpath = ub.Path(info.stdout.strip())
+        stdout = info.stdout
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode()
+        if stdout is None:
+            raise RuntimeError('git rev-parse did not return a repository path')
+        root_dpath = ub.Path(stdout.strip())
 
         host = config.host
         home = config.home
