@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import Any
+
 import scriptconfig as scfg
 import ubelt as ub
 
@@ -10,15 +14,15 @@ class GitSavePatchCLI(scfg.DataConfig):
     __command__ = 'save'
     paths = scfg.Value([], nargs='+', help='one or more files to save patches from', position=1)
     out_dpath = scfg.Value('patches', help='output directory to save patches')
-    message = scfg.Value(None, help='if specified also associates a message with this patch in a sidecar file', short_alias='m')
+    message = scfg.Value(None, help='if specified also associates a message with this patch in a sidecar file', short_alias=['m'])
 
     @classmethod
-    def main(cls, argv=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP
             >>> from git_well.git_save_patch import *  # NOQA
-            >>> argv = 0
+            >>> argv = False
             >>> kwargs = dict()
             >>> cls = GitSavePatchCLI
             >>> config = cls(**kwargs)
@@ -30,7 +34,6 @@ class GitSavePatchCLI(scfg.DataConfig):
         rich.print('config = ' + escape(ub.urepr(config, nl=1)))
 
         import json
-        from datetime import datetime
         out_dpath = ub.Path(config.out_dpath).ensuredir()
 
         # TODO: handle resolving the relative git path
@@ -48,7 +51,7 @@ class GitSavePatchCLI(scfg.DataConfig):
         # Create a unique ID using hash of diff
         diff_text = info['out']
         hash_prefix = ub.hash_data(diff_text)[0:8]
-        timestamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        timestamp = ub.timestamp()
         base_name = f'patch_{timestamp}_{hash_prefix}'
 
         patch_fpath = out_dpath / (base_name + '.patch')

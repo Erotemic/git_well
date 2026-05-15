@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # PYTHON_ARGCOMPLETE_OK
+from __future__ import annotations
+
 import scriptconfig as scfg
 
 
@@ -22,7 +24,7 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.patchdir.patchdir_modal import __cli__ as patchdir
 
 
-def main():
+def main() -> None:
     from git_well import __version__
     modal = GitWellModalCLI(version=__version__)
     modal.main()

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 SeeAlso:
     https://github.com/erikbern/git-of-theseus
@@ -30,6 +32,34 @@ class GitStatsCLI(scfg.DataConfig):
         author_stats(repo)
 
 
+def _rich_print_author_stats(author_stats, author_files):
+    """
+    Print author contribution stats as a Rich table.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title='Git author stats')
+    table.add_column('author')
+    table.add_column('commits', justify='right')
+    table.add_column('inserts', justify='right')
+    table.add_column('deletes', justify='right')
+    table.add_column('total', justify='right')
+    table.add_column('files', justify='right')
+
+    for author, stats in author_stats.items():
+        table.add_row(
+            str(author),
+            str(stats.get('commits', 0)),
+            str(stats.get('inserts', 0)),
+            str(stats.get('deletes', 0)),
+            str(stats.get('total', 0)),
+            str(len(author_files.get(author, set()))),
+        )
+
+    Console().print(table)
+
+
 def commit_stats(repo):
     commits = list(repo.iter_commits())
     for commit in commits:
@@ -60,10 +90,7 @@ def author_stats(repo):
                 author_files[author].add(fpath)
 
     author_stats = ub.udict(author_stats).sorted_values(lambda v: v['commits'])
-    import pandas as pd
-    import rich
-    df = pd.DataFrame(author_stats).T
-    rich.print(df)
+    _rich_print_author_stats(author_stats, author_files)
 
 __cli__ = GitStatsCLI
 main = __cli__.main

@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 def make_dummy_git_repo():
     import ubelt as ub

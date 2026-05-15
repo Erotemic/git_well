@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import Any
 import scriptconfig as scfg
 import ubelt as ub
 from git_well._utils import GitURL
 
 
 # TODO: more protocols? ssh?
-VALID_PROTOCOLS = ['git', 'https', 'ssh']
+VALID_PROTOCOLS: list[str] = ['git', 'https', 'ssh']
 
 
 class GitRemoteProtocol(scfg.DataConfig):
@@ -17,41 +20,41 @@ class GitRemoteProtocol(scfg.DataConfig):
     An alias for this command is ``git permit`` because it "permits" a specific
     group to use ssh permissions.
     """
-    __command__ = 'remote_protocol'
-    __alias__ = ['permit']
+    __command__: str = 'remote_protocol'
+    __alias__: list[str] = ['permit']
 
-    group = scfg.Value('special:auto', position=1, help=ub.paragraph(
+    group: scfg.Value = scfg.Value('special:auto', position=1, help=ub.paragraph(
         '''
         The group for which all matching remotes will have their protocol
         changed. If "special:auto", then attempts to determine what the group
         should be. (i.e. if there is only one, use that, otherwise ask).
         '''))
 
-    protocol = scfg.Value('git', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
+    protocol: scfg.Value = scfg.Value('git', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
         '''
         The protocol to change to.
         '''))
 
-    repo_dpath = scfg.Value('.', position=3, help=ub.paragraph(
+    repo_dpath: scfg.Value = scfg.Value('.', position=3, help=ub.paragraph(
         '''
         A path inside the repo to modify.
         '''))
 
 
-def main(cmdline=1, **kwargs):
+def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
     """
     Example:
         >>> from git_well.git_remote_protocol import GitRemoteProtocol
         >>> from git_well.repo import Repo
         >>> repo = Repo.demo()
         >>> repo.cmd('git remote add origin https://github.com/Foobar/foobar.git')
-        >>> cmdline = 0
-        >>> GitRemoteProtocol.main(cmdline=cmdline, repo_dpath=repo, protocol='git')
+        >>> argv = False
+        >>> GitRemoteProtocol.main(argv=argv, repo_dpath=repo, protocol='git')
         >>> assert len(repo.remotes) == 1
         >>> assert list(repo.remotes[0].urls)[0] == 'git@github.com:Foobar/foobar.git'
-        >>> GitRemoteProtocol.main(cmdline=cmdline, repo_dpath=repo, protocol='https')
+        >>> GitRemoteProtocol.main(argv=argv, repo_dpath=repo, protocol='https')
         >>> assert list(repo.remotes[0].urls)[0] == 'https://github.com/Foobar/foobar.git'
-        >>> GitRemoteProtocol.main(cmdline=cmdline, repo_dpath=repo, protocol='git')
+        >>> GitRemoteProtocol.main(argv=argv, repo_dpath=repo, protocol='git')
         >>> assert list(repo.remotes[0].urls)[0] == 'git@github.com:Foobar/foobar.git'
 
     Ignore:
@@ -61,12 +64,12 @@ def main(cmdline=1, **kwargs):
         >>> repo = Repo.demo()
         >>> repo.cmd('git remote add remote1 https://github.com/User1/foobar.git')
         >>> repo.cmd('git remote add remote2 https://github.com/User2/foobar.git')
-        >>> cmdline = 0
+        >>> argv = False
         >>> kwargs = dict()
         >>> kwargs['repo_dpath'] = repo
-        >>> GitRemoteProtocol.main(cmdline=cmdline, **kwargs)
+        >>> GitRemoteProtocol.main(argv=argv, **kwargs)
     """
-    config = GitRemoteProtocol.cli(cmdline=cmdline, data=kwargs, strict=True)
+    config = GitRemoteProtocol.cli(argv=argv, data=kwargs, strict=True)
     from git_well._utils import rich_print
     rich_print('config = ' + ub.urepr(config, nl=1))
     from git_well.repo import Repo

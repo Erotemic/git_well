@@ -1,15 +1,19 @@
+from __future__ import annotations
+
+from typing import Any
+import os
 import ubelt as ub
 
 
-def rich_print(*args, **kwargs):
+def rich_print(*args: Any, **kwargs: Any) -> Any:
     try:
-        from rich import print as print_
+        from rich import print as printer
     except Exception:
-        print_ = print
-    return print_(*args, **kwargs)
+        printer: Any = print
+    return printer(*args, **kwargs)
 
 
-def find_merged_branches(repo, main_branch='main'):
+def find_merged_branches(repo: Any, main_branch: str = 'main') -> Any:
     # git branch --merged main
     # main_branch = 'main'
     merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
@@ -17,7 +21,7 @@ def find_merged_branches(repo, main_branch='main'):
     return merged_branches
 
 
-def confirm(msg):
+def confirm(msg: str) -> bool:
     try:
         from rich import prompt
         ret = prompt.Confirm.ask(msg)
@@ -35,7 +39,7 @@ def confirm(msg):
     return ret
 
 
-def choice_prompt(msg, choices):
+def choice_prompt(msg: str, choices: list[str]) -> str:
     """
     Ignore:
         choice_prompt('which one?', choices=['a', 'b', 'c'])
@@ -50,7 +54,7 @@ def choice_prompt(msg, choices):
         """
         Assigns an integer to each choice.
         """
-        def make_prompt(self, default):
+        def make_prompt(self, default: Any) -> Any:
             prompt = self.prompt.copy()
             prompt.end = ""
 
@@ -78,7 +82,7 @@ def choice_prompt(msg, choices):
             prompt.append(self.prompt_suffix)
             return prompt
 
-        def process_response(self, value: str):
+        def process_response(self, value: str) -> str:
             value = value.strip()
             assert self.choices is not None
             try:
@@ -100,7 +104,7 @@ def choice_prompt(msg, choices):
     return ChoiceWithIntPrompt.ask(msg, choices=choices)
 
 
-def find_git_root(dpath):
+def find_git_root(dpath: str | os.PathLike[str]) -> ub.Path:
     if 0:
         # Old implementation
         cwd = ub.Path(dpath).absolute()
@@ -159,15 +163,15 @@ class GitURL(str):
         >>>         assert recon == url
     """
 
-    def __init__(self, data):
+    def __init__(self, data: str) -> None:
         # note: inheriting from str so data is handled in __new__
-        self._info = None
+        self._info: dict[str, Any] | None = None
 
-    def _parse(self):
+    def _parse(self) -> None:
         import parse
         parse.Parser('ssh://{user}')
 
-    def _fixup_endpoint(self, repo_endpoint):
+    def _fixup_endpoint(self, repo_endpoint: str) -> tuple[str, str]:
         if repo_endpoint.endswith('.git'):
             repo_name = repo_endpoint[:-4]
         else:
@@ -176,7 +180,7 @@ class GitURL(str):
         return repo_name, repo_endpoint
 
     @property
-    def info(self):
+    def info(self) -> dict[str, Any]:
         if self._info is None:
             url = self
             info = {}
@@ -248,7 +252,7 @@ class GitURL(str):
             self._info = info
         return self._info
 
-    def to_protocol(self, protocol):
+    def to_protocol(self, protocol: str) -> GitURL:
         """
         Convert the URL to a different protocol
         """
@@ -261,12 +265,12 @@ class GitURL(str):
         else:
             raise KeyError(protocol)
 
-    def to_git(self):
+    def to_git(self) -> GitURL:
         info = self.info
         new_url = 'git@' + info['host']  + ':' + info['group'] + '/' + info['repo_endpoint']
         return self.__class__(new_url)
 
-    def to_ssh(self):
+    def to_ssh(self) -> GitURL:
         info = self.info
         user = info.get('user', None)
         if user is None:
@@ -276,7 +280,7 @@ class GitURL(str):
         new_url = 'ssh://' + user_part + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
         return self.__class__(new_url)
 
-    def to_https(self):
+    def to_https(self) -> GitURL:
         info = self.info
         new_url = 'https://' + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
         return self.__class__(new_url)

@@ -89,7 +89,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
         '.', position=1, nargs='?',
         help='location of the Git repository to archive')
     output = scfg.Value(
-        None, short_alias='o',
+        None, short_alias=['o'],
         help=textwrap.dedent('''
             Exact archive path to write. Relative paths are interpreted
             relative to the repository root. If unspecified, the archive is
@@ -456,11 +456,20 @@ def _clone_committed_checkout(
         shutil.rmtree(dst)
 
     src_root = Path(cast(str, src.working_tree_dir)).resolve()
-    cloned = git.Repo.clone_from(
-        str(src_root),
-        str(dst),
-        multi_options=_clone_options_for_depth(clone_depth),
-    )
+    try:
+        old_cwd = os.getcwd()
+    except FileNotFoundError:
+        old_cwd = None
+    os.chdir(src_root.parent)
+    try:
+        cloned = git.Repo.clone_from(
+            str(src_root),
+            str(dst),
+            multi_options=_clone_options_for_depth(clone_depth),
+        )
+    finally:
+        if old_cwd is not None:
+            os.chdir(old_cwd)
     _checkout_commit(cloned, commit, label, clone_depth, log)
 
     # The archive is for inspection, not local recovery. Expire the clone's
@@ -652,7 +661,10 @@ def _write_archive(
     else:
         import tarfile
 
-        mode = _FORMAT_TO_TAR_MODE[archive_format]
+        mode = cast(
+            Literal['w', 'w:gz', 'w:bz2', 'w:xz'],
+            _FORMAT_TO_TAR_MODE[archive_format],
+        )
         with tarfile.open(archive_path, mode) as tar:
             tar.add(str(root), arcname=prefix, recursive=True)
 

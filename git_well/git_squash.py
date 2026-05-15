@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 # import ubelt as ub
 import scriptconfig as scfg
 import ubelt as ub
@@ -18,9 +22,9 @@ class GitSquashCLI(scfg.DataConfig):
     newest = scfg.Value('HEAD', help='The latest commit to be included in the squash')
 
     inplace = scfg.Value(False, isflag=True, help='Apply squash directly to current branch')
-    dry = scfg.Value(True, isflag=True, short_alias='n', help='Dry run')
-    force = scfg.Value(None, isflag=True, short_alias='f', help='Force squash (opposite of dry)')
-    verbose = scfg.Value(True, isflag=True, short_alias='v', help='Print progress')
+    dry = scfg.Value(True, isflag=True, short_alias=['n'], help='Dry run')
+    force = scfg.Value(None, isflag=True, short_alias=['f'], help='Force squash (opposite of dry)')
+    verbose = scfg.Value(True, isflag=True, short_alias=['v'], help='Print progress')
     dpath = scfg.Value('.', help='Path to repo to squash in')
 
     auto_rollback = scfg.Value(False, isflag=True, help=ub.paragraph(
@@ -36,7 +40,7 @@ class GitSquashCLI(scfg.DataConfig):
             self.force = not self.dry
 
     @classmethod
-    def main(cls, argv=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> # xdoctest: +REQUIRES(LINUX)
@@ -55,12 +59,12 @@ class GitSquashCLI(scfg.DataConfig):
             >>>     'dpath': repo.dpath,
             >>>     'dry': False,
             >>> }
-            >>> argv = 0
+            >>> argv = False
             >>> cls = GitSquashCLI
             >>> cls.main(argv=argv, **kwargs)
 
         """
-        config = cls.cli(argv=argv, data=kwargs, strict=True, verbose=1)
+        config = cls.cli(argv=argv, data=kwargs, strict=True, verbose=True)
         squash_commits(config)
 
 

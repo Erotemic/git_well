@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
+from __future__ import annotations
 import scriptconfig as scfg
 import ubelt as ub
 
@@ -106,6 +107,35 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
         repo.cmd(r'git config --local --list | grep "gpg\|sign\|email"', shell=True, verbose=1)
 
 
+def _rich_print_records(records, title=None):
+    """
+    Print a sequence of record dictionaries as a Rich table.
+
+    This is intentionally small and local because it is only used for a
+    debug-only display path.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    columns = []
+    seen = set()
+    for record in records:
+        for key in record:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+
+    table = Table(title=title)
+    table.add_column('row', justify='right')
+    for column in columns:
+        table.add_column(str(column))
+
+    for idx, record in enumerate(records):
+        table.add_row(str(idx), *[str(record.get(column, '')) for column in columns])
+
+    Console().print(table)
+
+
 def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
                         allow_subkey=True, allow_mainkey=True, full=True,
                         filter_expired=True, mintrust=None):
@@ -128,13 +158,9 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
 
     # print(ub.urepr(entries, nl=2, sort=0))
     if verbose:
-        import pandas as pd
-        import rich
         # print('entries = {}'.format(ub.urepr(entries, nl=2)))
-        for rows in entries:
-            rows_df = pd.DataFrame(rows)
-            rows_df.index.name = 'row'
-            rich.print(rows_df.to_string())
+        for entry_idx, rows in enumerate(entries):
+            _rich_print_records(rows, title=f'GPG entry {entry_idx}')
             # print(ub.urepr(entries, nl=2, si=1, sort=0))
 
     want_caps = {c[0] for c in capabilities}

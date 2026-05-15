@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
+from __future__ import annotations
+
+from typing import Any
+import os
 import ubelt as ub
 import scriptconfig as scfg
 
@@ -12,14 +16,14 @@ class GitRebaseAddContinue(scfg.DataConfig):
     This script checks all of the paths for conflicts and then if none
     exist adds all files and continues.
     """
-    __command__ = 'rebase_add_continue'
+    __command__: str = 'rebase_add_continue'
 
-    repo_dpath = scfg.Value('.', help='location of the repo')
+    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
 
-    skip_editor = scfg.Value(True, help='if True skip the editor to change the commit message on git rebase --continue')
+    skip_editor: scfg.Value = scfg.Value(True, help='if True skip the editor to change the commit message on git rebase --continue')
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> from git_well.git_rebase_add_continue import GitRebaseAddContinue
@@ -27,14 +31,14 @@ class GitRebaseAddContinue(scfg.DataConfig):
             >>> cls = GitRebaseAddContinue
             >>> repo = Repo.demo()
             >>> # TODO: make a plausible scenario
-            >>> cmdline = 0
+            >>> argv = False
             >>> kwargs = dict()
             >>> kwargs['repo_dpath'] = repo
             >>> import pytest
             >>> with pytest.raises(RuntimeError):
-            >>>     cls.main(cmdline=cmdline, **kwargs)
+            >>>     cls.main(argv=argv, **kwargs)
         """
-        config = cls.cli(cmdline=cmdline, data=kwargs)
+        config = cls.cli(argv=argv, data=kwargs)
         from git_well._utils import rich_print
         from git_well.repo import Repo
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
@@ -101,7 +105,7 @@ class GitRebaseAddContinue(scfg.DataConfig):
             print('rebase is still active')
 
 
-def parsed_rebase_git_status(repo_dpath):
+def parsed_rebase_git_status(repo_dpath: str | os.PathLike[str]) -> dict[str, list[ub.Path]]:
     """
     a git status output has several possible sections it can output,
     check for those, and set the state based on them.

@@ -3,6 +3,9 @@
 Requirements:
     pip install GitPython
 """
+from __future__ import annotations
+
+from typing import Any
 import ubelt as ub
 import scriptconfig as scfg
 
@@ -21,12 +24,12 @@ class TrackUpstreamCLI(scfg.DataConfig):
 
         git branch --set-upstream-to=<remote>/<branch> <branch>
     """
-    __command__ = 'track_upstream'
-    repo_dpath = scfg.Value('.', position=1, help='location of the repo')
-    force = scfg.Value(False, isflag=True, short_alias=['-f'], help='if True, then choose a new tracking branch even if one is set')
+    __command__: str = 'track_upstream'
+    repo_dpath: scfg.Value = scfg.Value('.', position=1, help='location of the repo')
+    force: scfg.Value = scfg.Value(False, isflag=True, short_alias=['-f'], help='if True, then choose a new tracking branch even if one is set')
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> from git_well.git_track_upstream import TrackUpstreamCLI
@@ -36,13 +39,13 @@ class TrackUpstreamCLI(scfg.DataConfig):
             >>> # TODO: make this test work without the network
             >>> repo.cmd('git fetch origin')
             >>> repo.cmd('git reset --hard origin/main')
-            >>> cmdline = 0
+            >>> argv = False
             >>> cls = TrackUpstreamCLI
             >>> kwargs = cls()
             >>> kwargs['repo_dpath'] = repo
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> cls.main(argv=argv, **kwargs)
         """
-        config = cls.cli(cmdline=cmdline, data=kwargs)
+        config = cls.cli(argv=argv, data=kwargs)
         from git_well._utils import rich_print
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
@@ -83,7 +86,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
             print('Doing nothing.')
 
 
-def unique_remotes_with_branch(repo, branch):
+def unique_remotes_with_branch(repo: Any, branch: Any) -> list[dict[str, Any]]:
     available_remotes = repo.remotes
     remote_infos = {}
     for remote in available_remotes:

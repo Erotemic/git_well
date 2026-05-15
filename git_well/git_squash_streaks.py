@@ -8,6 +8,9 @@ Requirements:
     pip install GitPython
     pip install scriptconfig
 """
+from __future__ import annotations
+
+from typing import Any
 import sys
 import os
 import warnings
@@ -16,10 +19,10 @@ import ubelt as ub
 import scriptconfig as scfg
 
 
-EXPERIMENTAL_PSEUDO_CHAIN = 0
-EXPERIMENTAL_REBASE = 0
+EXPERIMENTAL_PSEUDO_CHAIN: int = 0
+EXPERIMENTAL_REBASE: int = 0
 
-__docstubs__ = """
+__docstubs__: str = """
 from git.objects.commit import Commit
 """
 
@@ -28,81 +31,83 @@ class SquashStreakCLI(scfg.DataConfig):
     """
     Squashes consecutive commits that meet a specified criteiron.
     """
-    __command__ = "squash_streaks"
+    __command__: str = "squash_streaks"
 
-    timedelta = scfg.Value('sameday', type=str, help=ub.paragraph(
+    timedelta: scfg.Value = scfg.Value('sameday', type=str, help=ub.paragraph(
             '''
             strategy mode or max number of seconds to determine how far
             appart two commits can be before they are squashed.
             (Default: 'sameday'). Valid values: ['sameday', 'alltime',
             'none', <n_seconds:float>]
             '''))
-    custom_streak = scfg.Value(None, help=ub.paragraph(
+    custom_streak: scfg.Value = scfg.Value(None, help=ub.paragraph(
             '''
             hack to specify one custom streak: older newer
             '''), nargs=2)
-    pattern = scfg.Value(None, type=str, help=ub.paragraph(
+    pattern: scfg.Value = scfg.Value(None, type=str, help=ub.paragraph(
             '''
             instead of squashing messages with the same name, squash
             only if they match this pattern (Default: None). Default of
             None means that squash two commits if they have the same
             message.
             '''))
-    tags = scfg.Value(False, isflag=True, help='experimental')
+    tags: scfg.Value = scfg.Value(False, isflag=True, help='experimental')
 
-    preserve_tags = scfg.Value(True, isflag=True, help=ub.paragraph(
+    preserve_tags: scfg.Value = scfg.Value(True, isflag=True, help=ub.paragraph(
             '''
             if True the chain is not allowed to extend past any tags. If
             a set, then we will not procede past any tag with a name in
             the set.
             '''))
-    oldest_commit = scfg.Value(None, help=ub.paragraph(
+    oldest_commit: scfg.Value = scfg.Value(None, help=ub.paragraph(
             '''
             if specified we will only squash commits toplogically after
             this commit in the graph.
             '''))
-    inplace = scfg.Value(False, isflag=True, help=ub.paragraph(
+    inplace: scfg.Value = scfg.Value(False, isflag=True, help=ub.paragraph(
             '''
             if True changes will be applied directly to the current
             branch otherwise a temporary branch will be created. Then
             you must manually reset the current branch to this branch
             and delete the temp branch. (Default: False)
             '''))
-    auto_rollback = scfg.Value(False, isflag=True, help=ub.paragraph(
+    auto_rollback: scfg.Value = scfg.Value(False, isflag=True, help=ub.paragraph(
             '''
             if True the repo will be reset to a clean state if any
             errors occur. (Default: True)
             '''))
-    authors = scfg.Value(None, type=str, help=ub.paragraph(
+    authors: scfg.Value = scfg.Value(None, type=str, help=ub.paragraph(
             '''
             "level-set" of authors who's commits can be squashed
             together. Only squash commits from these authors.  Set to
             <config> to use your git config
             '''))
-    dry = scfg.Value(True, isflag=True, mutex_group=1, short_alias=['n'], help=ub.paragraph(
+    dry: scfg.Value = scfg.Value(True, isflag=True, mutex_group='dryrun', short_alias=['n'], help=ub.paragraph(
             '''
             if True this only executes a dry run, that prints the chains
             that would be squashed (Default: True)
             '''))
 
-    force = scfg.Value(None, isflag=True, mutex_group=1, short_alias=['f'], help='turn dry mode off')
+    force: scfg.Value = scfg.Value(None, isflag=True, mutex_group='dryrun', short_alias=['f'], help='turn dry mode off')
 
-    verbose = scfg.Value(True, mutex_group=2, short_alias=['v'], help='verbosity flag flag')
+    verbose: scfg.Value = scfg.Value(True, mutex_group='verbose', short_alias=['v'], help='verbosity flag flag')
 
     # TODO: scriptconfig needs to be extended to handle these argparse
     # use-cases
-    # dry = scfg.Value(True, alias=['force'], mutex_group=1, short_alias=['f'], help='opposite of --dry', isflag=True)
+    # dry = scfg.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
     # nargs=0)
-    # quiet = scfg.Value(None, alias=['quiet'], mutex_group=2, short_alias=['q'], help='suppress output', nargs=0)
+    # quiet = scfg.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.force is not None:
             self.dry = not self.force
         else:
             self.force = not self.dry
 
 
-def print_exc(exc_info=None):
+def print_exc(
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any] | None = None,
+) -> None:
     """
     Example:
         >>> try:
@@ -115,8 +120,11 @@ def print_exc(exc_info=None):
     import traceback
     if exc_info is None:
         exc_info = sys.exc_info()
+    exc_type, exc_value, exc_tb = exc_info
+    if exc_type is None or exc_value is None:
+        return
 
-    tbtext = ''.join(traceback.format_exception(*exc_info))
+    tbtext = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
 
     colored = False
     if colored:
@@ -144,17 +152,17 @@ def print_exc(exc_info=None):
 
 
 class Streak(ub.NiceRepr):
-    def __init__(self, child, _streak=None):
+    def __init__(self, child: Any, _streak: list[Any] | None = None) -> None:
         # If child is None, then this is the future-most streak
         self.child = child
         if _streak is None:
             _streak = []
         self._streak = _streak
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         return iter(self._streak)
 
-    def __nice__(self):
+    def __nice__(self) -> str:
         abbrev = 8
         num = len(self)
         if num == 0:
@@ -164,32 +172,33 @@ class Streak(ub.NiceRepr):
         elif num >= 2:
             return 'num={}, {}^..{}'.format(
                 num, self.start.hexsha[:abbrev], self.stop.hexsha[:abbrev])
+        return 'num={}'.format(num)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._streak)
 
-    def append(self, commit):
+    def append(self, commit: Any) -> None:
         self._streak.append(commit)
 
     @property
-    def before_start(self):
+    def before_start(self) -> Any:
         assert len(self.start.parents) == 1
         return self.start.parents[0]
 
     @property
-    def after_stop(self):
+    def after_stop(self) -> Any:
         return self.child
 
     @property
-    def start(self):
+    def start(self) -> Any:
         return self._streak[-1]
 
     @property
-    def stop(self):
+    def stop(self) -> Any:
         return self._streak[0]
 
 
-def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
+def find_pseudo_chain(head: Any, oldest_commit: Any | None = None, preserve_tags: bool = True) -> list[Any]:
     """
     Finds start and end points that can be safely squashed between
 
@@ -284,7 +293,7 @@ def find_pseudo_chain(head, oldest_commit=None, preserve_tags=True):
     return pseudo_chain
 
 
-def git_nx_graph(head, oldest_commit=None, preserve_tags=False):
+def git_nx_graph(head: Any, oldest_commit: Any | None = None, preserve_tags: bool = False) -> Any:
     """
     Example:
         >>> # xdoctest: +REQUIRES(LINUX)
@@ -317,14 +326,14 @@ def git_nx_graph(head, oldest_commit=None, preserve_tags=False):
     else:
         tagged_hexshas = set()
 
-    def neighbors(s):
+    def neighbors(s: Any) -> Any:
         return iter(s.parents)
 
-    def git_dfs_edges(source, depth_limit=None):
+    def git_dfs_edges(source: Any, depth_limit: int | None = None) -> Any:
         nodes = [source]
         visited = set()
         if depth_limit is None:
-            depth_limit = float('inf')
+            depth_limit = sys.maxsize
         for start in nodes:
             if start.hexsha in visited:
                 continue
@@ -374,7 +383,7 @@ def git_nx_graph(head, oldest_commit=None, preserve_tags=False):
     return graph
 
 
-def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
+def find_chain(head: Any, authors: set[str] | None = None, preserve_tags: bool = True, oldest_commit: Any | None = None) -> list[Any]:
     """
     Find a chain of commits starting at the HEAD.  If `authors` is specified
     the commits must be from one of these authors.
@@ -484,7 +493,7 @@ def find_chain(head, authors=None, preserve_tags=True, oldest_commit=None):
     return chain
 
 
-def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
+def find_streaks(chain: list[Any], authors: set[str] | None = None, timedelta: float | str = 'sameday', pattern: str | None = None) -> list[Streak]:
     """
     Given a chain, finds subchains (called streaks) that have the same author
     and are within a timedelta threshold of each other.
@@ -505,7 +514,7 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
     if timedelta is None:
         timedelta = 'none'
 
-    def matches_time(streak, commit):
+    def matches_time(streak: Streak, commit: Any) -> bool:
         if timedelta == 'alltime' or str(timedelta).lower() == 'none':
             return True
         elif timedelta is not None:
@@ -517,13 +526,16 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
                 date2 = datetime2.date()
                 if date1 == date2:
                     return True
-            else:
-                if abs(datetime2 - datetime1).seconds < timedelta:
+            elif isinstance(timedelta, (int, float)):
+                if abs(datetime2 - datetime1).total_seconds() < float(timedelta):
                     return True
+            else:
+                raise ValueError('timedelta = {!r}'.format(timedelta))
         else:
             raise ValueError('timedelta = {!r}'.format(timedelta))
+        return False
 
-    def matches_message(streak, commit):
+    def matches_message(streak: Streak, commit: Any) -> bool:
         if pattern is None:
             flag = streak.start.message == commit.message
             # flag |= streak.start.message.strip() == commit.message.strip()
@@ -531,7 +543,7 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
             flag = re.match(pattern, commit.message) is not None
         return flag
 
-    def continues_streak(streak, commit):
+    def continues_streak(streak: Streak, commit: Any) -> bool:
         if authors is not None:
             if commit.author.name not in authors:
                 return False
@@ -588,7 +600,7 @@ def find_streaks(chain, authors=None, timedelta='sameday', pattern=None):
     return streaks
 
 
-def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
+def checkout_temporary_branch(repo: Any, suffix: str = '-temp-script-branch') -> str:
     """
     Changes to a temporary branch so we don't messup anything on the main one.
 
@@ -618,7 +630,7 @@ def checkout_temporary_branch(repo, suffix='-temp-script-branch'):
     return temp_branchname
 
 
-def commits_between(repo, start, stop, start_inclusive=True):
+def commits_between(repo: Any, start: Any, stop: Any, start_inclusive: bool = True) -> list[Any]:
     """
     Args:
         start (Commit): toplogically first (i.e. chronologically older) commit
@@ -685,7 +697,7 @@ class RollbackError(Exception):
     pass
 
 
-def _squash_between(repo, start, stop, dry=False, verbose=True, start_inclusive=True):
+def _squash_between(repo: Any, start: Any, stop: Any, dry: bool = False, verbose: bool = True, start_inclusive: bool = True) -> None:
     """
     inplace squash between, use external function that sets up temp branches to
     use this directly from the commandline.
@@ -795,7 +807,7 @@ def _squash_between(repo, start, stop, dry=False, verbose=True, start_inclusive=
                 print(' * already at the head, no need to fix')
 
 
-def do_tags(verbose=True, inplace=False, dry=True, auto_rollback=False):
+def do_tags(verbose: bool = True, inplace: bool = False, dry: bool = True, auto_rollback: bool = False) -> None:
     import git
     if verbose:
         if dry:
@@ -902,10 +914,10 @@ def do_tags(verbose=True, inplace=False, dry=True, auto_rollback=False):
             print('Or, to automatically accept changes run with --inplace')
 
 
-def squash_streaks(authors, timedelta='sameday', pattern=None,
-                   inplace=False,
-                   auto_rollback=True, dry=False, verbose=True,
-                   custom_streak=None, preserve_tags=True, oldest_commit=None):
+def squash_streaks(authors: set[str], timedelta: str | int | float = 'sameday', pattern: str | None = None,
+                   inplace: bool = False,
+                   auto_rollback: bool = True, dry: bool = False, verbose: bool = True,
+                   custom_streak: tuple[Any, Any] | None = None, preserve_tags: bool = True, oldest_commit: str | None = None) -> None:
     """
     Squashes consecutive commits that meet a specified criteiron.
 
@@ -1044,11 +1056,11 @@ def squash_streaks(authors, timedelta='sameday', pattern=None,
             print('Or, to automatically accept changes run with --inplace')
 
 
-def git_squash_streaks(cmdline=1, **kwargs):
+def git_squash_streaks(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
     """
     git-squash-streaks
     """
-    args = SquashStreakCLI.cli(cmdline=cmdline, data=kwargs, strict=True)
+    args = SquashStreakCLI.cli(argv=argv, data=kwargs, strict=True)
     ns = dict(args).copy()
     if ns.pop('tags'):
         do_tags()

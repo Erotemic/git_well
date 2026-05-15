@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import Any
+
 import scriptconfig as scfg
 import ubelt as ub
 import json
@@ -16,7 +20,7 @@ class GitApplyPatchCLI(scfg.DataConfig):
     restore_patch = scfg.Flag(False, help='Restore (unstage) patch files after applying')
 
     @classmethod
-    def main(cls, argv=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> from git_well.patchdir.git_patchdir_apply import GitApplyPatchCLI

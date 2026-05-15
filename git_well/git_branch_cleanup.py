@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
+from __future__ import annotations
+
+from typing import Any
 import ubelt as ub
 import scriptconfig as scfg
 
@@ -8,15 +11,15 @@ class CleanDevBranchConfig(scfg.DataConfig):
     """
     Cleanup branches that have been merged into main.
     """
-    __command__ = 'branch_cleanup'
+    __command__: str = 'branch_cleanup'
 
-    repo_dpath = scfg.Value('.', help='location of the repo')
-    keep_last = scfg.Value(1, help='previous number of dev branches to keep')
-    remove_merged = scfg.Value(False, isflag=True, help='if True, remove other merged branhes as well')
-    yes = scfg.Value(False, isflag=True, short_alias=['-y'], help='if True, say yes to propmts')
+    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
+    keep_last: scfg.Value = scfg.Value(1, help='previous number of dev branches to keep')
+    remove_merged: scfg.Value = scfg.Value(False, isflag=True, help='if True, remove other merged branhes as well')
+    yes: scfg.Value = scfg.Value(False, isflag=True, short_alias=['-y'], help='if True, say yes to propmts')
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> from git_well.git_branch_cleanup import CleanDevBranchConfig
@@ -28,13 +31,13 @@ class CleanDevBranchConfig(scfg.DataConfig):
             >>> repo.cmd('git checkout -b dev/2.1.0')
             >>> repo.cmd('git checkout main')
             >>> assert repo.active_branch.name == 'main'
-            >>> cmdline = 0
+            >>> argv = False
             >>> kwargs = dict()
             >>> kwargs['repo_dpath'] = repo
             >>> kwargs['yes'] = True
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> cls.main(argv=argv, **kwargs)
         """
-        config = cls.cli(cmdline=cmdline, data=kwargs)
+        config = cls.cli(argv=argv, data=kwargs)
         from git_well.repo import Repo
         from git_well._utils import rich_print
         from git_well.git_branch_upgrade import dev_branches

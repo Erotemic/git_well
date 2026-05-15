@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+from __future__ import annotations
+
+from typing import Any
 from os.path import normpath
 from os.path import realpath
 from os.path import expanduser
@@ -12,23 +15,23 @@ class GitSyncCLI(scfg.DataConfig):
     """
     Sync a git repo with a remote server via ssh
     """
-    __command__ = 'sync'
-    host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
+    __command__: str = 'sync'
+    host: scfg.Value = scfg.Value(None, position=1, required=True, help=ub.paragraph(
             '''
             Server to sync to via ssh (e.g. user@servername.edu)
             '''), nargs=1)
-    remote = scfg.Value(None, position=2, help='The git remote to use (e.g. origin)', nargs='?')
-    forward_ssh_agent = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
+    remote: scfg.Value = scfg.Value(None, position=2, help='The git remote to use (e.g. origin)', nargs='?')
+    forward_ssh_agent: scfg.Value = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
             '''
             Enable forwarding of the ssh authentication agent connection
             '''))
-    dry = scfg.Value(False, isflag=True, short_alias=['n'], help='Perform a dry run')
-    message = scfg.Value('wip [skip ci]', type=str, short_alias=['m'], help='Specify a custom commit message')
-    force = scfg.Value(False, isflag=True, help='Force push and hard reset the remote.')
+    dry: scfg.Value = scfg.Value(False, isflag=True, short_alias=['n'], help='Perform a dry run')
+    message: scfg.Value = scfg.Value('wip [skip ci]', type=str, short_alias=['m'], help='Specify a custom commit message')
+    force: scfg.Value = scfg.Value(False, isflag=True, help='Force push and hard reset the remote.')
 
 
-def main(cmdline=True, **kwargs):
-    args = GitSyncCLI.cli(cmdline=cmdline, data=kwargs)
+def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    args = GitSyncCLI.cli(argv=argv, data=kwargs)
     try:
         import rich
         from rich.markup import escape
@@ -41,7 +44,7 @@ def main(cmdline=True, **kwargs):
     git_sync(**ns)
 
 
-def getcwd():
+def getcwd() -> str:
     """
     Workaround to get the working directory without dereferencing symlinks.
     This may not work on all systems.
@@ -63,7 +66,7 @@ def getcwd():
     return canidate1
 
 
-def git_default_push_remote_name():
+def git_default_push_remote_name() -> str | None:
     local_remotes = ub.cmd('git remote -v')['out'].strip()
     lines = [line for line in local_remotes.split('\n') if line]
     candidates = []
@@ -77,7 +80,7 @@ def git_default_push_remote_name():
     return remote_name
 
 
-def _devcheck():
+def _devcheck() -> None:
     """
     TODO: need to resolve the  receive.denyCurrentBranch problem less manually
 
@@ -94,8 +97,8 @@ def _devcheck():
     """
 
 
-def git_sync(host, remote=None, message='wip [skip ci]',
-             forward_ssh_agent=False, dry=False, force=False, home=None):
+def git_sync(host: str, remote: str | None = None, message: str = 'wip [skip ci]',
+             forward_ssh_agent: bool = False, dry: bool = False, force: bool = False, home: str | os.PathLike[str] | None = None) -> None:
     """
     Commit any changes in the current working directory, ssh into a remote
     machine, and then pull those changes.

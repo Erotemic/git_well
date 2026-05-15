@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import Any
 import scriptconfig as scfg
 import ubelt as ub
 
@@ -14,9 +17,9 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
     Like git-sync, the remote machine must have the same directory structure
     relative to the home drive.
     """
-    __command__ = 'discover_remote'
+    __command__: str = 'discover_remote'
 
-    repo_dpath = scfg.Value('.', help=ub.paragraph(
+    repo_dpath: scfg.Value = scfg.Value('.', help=ub.paragraph(
         '''
         The path to the repo to run in.
         NOTE: due to behavior of ``getcwd``, if you are in a logical directory
@@ -24,34 +27,34 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         of the ``$PWD`` environment variable.
         '''))
 
-    host = scfg.Value(None, position=1, required=True, help=ub.paragraph(
+    host: scfg.Value = scfg.Value(None, position=1, required=True, help=ub.paragraph(
         '''
         The name or address of the SSH server to attempt to discover remote in.
         '''))
 
-    remote = scfg.Value(None, help=ub.paragraph(
+    remote: scfg.Value = scfg.Value(None, help=ub.paragraph(
         '''
         If specified use this as the name for the new remote. Otherwise, use
         the host name instead.
         '''))
 
-    home = scfg.Value(None, help='Explicitly specify where your home drive is. Usually this can be inferred')
+    home: scfg.Value = scfg.Value(None, help='Explicitly specify where your home drive is. Usually this can be inferred')
 
-    forward_ssh_agent = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
+    forward_ssh_agent: scfg.Value = scfg.Value(False, isflag=True, short_alias=['A'], help=ub.paragraph(
             '''
             Enable forwarding of the ssh authentication agent connection
             '''))
 
-    test_remote = scfg.Value(True, isflag=True, help=ub.paragraph(
+    test_remote: scfg.Value = scfg.Value(True, isflag=True, help=ub.paragraph(
         '''
         if True, test that the remote exists and there is a git repo in the
         expected location.
         '''))
 
-    remote_cwd = scfg.Value(None, help='path on the remote. inferred if not given')
+    remote_cwd: scfg.Value = scfg.Value(None, help='path on the remote. inferred if not given')
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         """
         Example:
             >>> from git_well.git_discover_remote import GitDiscoverRemoteCLI
@@ -59,15 +62,15 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
             >>> cls = GitDiscoverRemoteCLI
             >>> repo = Repo.demo()
             >>> # TODO: make a plausible scenario
-            >>> cmdline = 0
+            >>> argv = False
             >>> kwargs = dict()
             >>> kwargs['repo_dpath'] = repo
             >>> import pytest
             >>> with pytest.raises(Exception):
-            >>>     cls.main(cmdline=cmdline, **kwargs)
+            >>>     cls.main(argv=argv, **kwargs)
         """
         from git_well._utils import rich_print
-        config = cls.cli(cmdline=cmdline, data=kwargs, strict=True)
+        config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
         from git_well.repo import Repo
@@ -133,7 +136,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ub.cmd(add_command, verbose=3, check=True)
 
 
-def fsspec_shh_connect(host):
+def fsspec_shh_connect(host: str) -> Any:
     # This is not as easy as it could be
     # Paramiko does not respect the ssh config by default, but it does
     # give us tools to parse it. However, it is still not straightforward
