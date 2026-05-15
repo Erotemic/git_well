@@ -12,15 +12,22 @@ class GitApplyPatchCLI(scfg.DataConfig):
     """
     Applies a saved patch from the patch directory.
     """
+
     __command__ = 'apply'
-    patch = scfg.Value(None, help='Path to a specific patch file or JSON metadata file')
+    patch = scfg.Value(
+        None, help='Path to a specific patch file or JSON metadata file'
+    )
     patch_dpath = scfg.Value('patches', help='Directory of saved patches')
     list_only = scfg.Flag(False, help='Only list available patches')
     dry = scfg.Flag(False, help='Show what would be applied without applying')
-    restore_patch = scfg.Flag(False, help='Restore (unstage) patch files after applying')
+    restore_patch = scfg.Flag(
+        False, help='Restore (unstage) patch files after applying'
+    )
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> from git_well.patchdir.git_patchdir_apply import GitApplyPatchCLI
@@ -60,6 +67,7 @@ class GitApplyPatchCLI(scfg.DataConfig):
         """
         import rich
         from rich.markup import escape
+
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich.print('config = ' + escape(ub.urepr(config, nl=1)))
 
@@ -83,7 +91,9 @@ class GitApplyPatchCLI(scfg.DataConfig):
             return
 
         if config.patch is None:
-            print('You must specify a patch file to apply (or use --list-only).')
+            print(
+                'You must specify a patch file to apply (or use --list-only).'
+            )
             return
 
         patch_input = ub.Path(config.patch)
@@ -110,13 +120,13 @@ class GitApplyPatchCLI(scfg.DataConfig):
         meta_fpath = patch_fpath.augment(ext='.json')
         if meta_fpath.exists():
             meta = json.loads(meta_fpath.read_text())
-            rich.print(f"[green]Applying patch:[/green] {patch_fpath.name}")
+            rich.print(f'[green]Applying patch:[/green] {patch_fpath.name}')
             if 'message' in meta:
-                print(f"Message: {meta['message']}")
+                print(f'Message: {meta["message"]}')
             if 'files' in meta:
-                print(f"Affected files: {meta['files']}")
+                print(f'Affected files: {meta["files"]}')
         else:
-            print(f"Applying patch: {patch_fpath.name}")
+            print(f'Applying patch: {patch_fpath.name}')
 
         if config.dry:
             print(f'[dry-run] Would apply: {patch_fpath}')
@@ -132,7 +142,11 @@ class GitApplyPatchCLI(scfg.DataConfig):
 
         if config.restore_patch:
             # Optionally revert changes made by patch (e.g., for testing)
-            result = ub.cmd(['git', 'restore', '--source=HEAD', '--staged', '--worktree'] + meta.get('files', []), verbose=True)
+            result = ub.cmd(
+                ['git', 'restore', '--source=HEAD', '--staged', '--worktree']
+                + meta.get('files', []),
+                verbose=True,
+            )
             print('[~] Patch restored from working tree (for dry testing).')
 
 

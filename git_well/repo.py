@@ -14,17 +14,20 @@ class Repo(git.Repo):
         print(f'repo={repo}')
         ...
     """
+
     # Extension of git.Repo
 
     def cmd(self, command: str | list[str], **kwargs: Any) -> Any:
         """
         Execute a command in the root of the repo.
         """
-        defaults = ub.udict({
-            'cwd': self.dpath,
-            'check': True,
-            'verbose': 0,
-        })
+        defaults = ub.udict(
+            {
+                'cwd': self.dpath,
+                'check': True,
+                'verbose': 0,
+            }
+        )
         final_kwargs = defaults | kwargs
         info = ub.cmd(command, **final_kwargs)
         return info
@@ -65,6 +68,7 @@ class Repo(git.Repo):
         """
         from git_well._utils import find_git_root
         import os
+
         if isinstance(data, cls):
             self = data
         elif isinstance(data, (str, os.PathLike)):
@@ -88,12 +92,17 @@ class Repo(git.Repo):
             >>> self = Repo.demo()
         """
         from git_well.demo import make_dummy_git_repo
+
         dpath = make_dummy_git_repo()
         return cls.coerce(dpath)
 
     def find_merged_branches(repo: Repo, main_branch: str = 'main') -> Any:
         # git branch --merged main
         # main_branch = 'main'
-        merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
+        merged_branches = [
+            p.replace('*', '').strip()
+            for p in repo.git.branch(merged=main_branch).split('\n')
+            if p.strip()
+        ]
         merged_branches = ub.oset(merged_branches) - {main_branch}
         return merged_branches

@@ -2,6 +2,7 @@
 """
 Archive committed source with full Git history and initialized submodules.
 """
+
 from __future__ import annotations
 
 import os
@@ -59,6 +60,7 @@ class SubmoduleStatus:
     """
     Parsed information from ``git submodule status --recursive``.
     """
+
     status: str
     sha: str
     path: str
@@ -83,37 +85,47 @@ class ArchiveSourceCLI(scfg.DataConfig):
     Local edits, untracked files, ignored files, and build outputs are excluded
     in all modes. Submodules must already be initialized locally.
     """
+
     __command__ = 'archive_source'
 
     repo_dpath = scfg.Value(
-        '.', position=1, nargs='?',
-        help='location of the Git repository to archive')
+        '.',
+        position=1,
+        nargs='?',
+        help='location of the Git repository to archive',
+    )
     output = scfg.Value(
-        None, short_alias=['o'],
-        help=textwrap.dedent('''
+        None,
+        short_alias=['o'],
+        help=textwrap.dedent("""
             Exact archive path to write. Relative paths are interpreted
             relative to the repository root. If unspecified, the archive is
             written to the repository root as
             <repo>-source-<timestamp>-<short-sha>.<format-extension>.
-            ''').strip())
+            """).strip(),
+    )
     depth = scfg.Value(
         'full',
-        help=textwrap.dedent('''
+        help=textwrap.dedent("""
             Git history depth: "full" for all current-HEAD history, a positive
             integer for shallow history, or 0 for source-only git archive mode.
-            ''').strip())
+            """).strip(),
+    )
     format = scfg.Value(
         'auto',
-        help=textwrap.dedent('''
+        help=textwrap.dedent("""
             Archive format. Defaults to "auto", which infers the format from
             --output when possible, similar to git archive. Supported values are
             auto, tar, tar.gz, tgz, zip, tar.bz2, tbz2, tar.xz, and txz. When
             auto cannot infer from --output, it falls back to tar.gz.
-            ''').strip())
+            """).strip(),
+    )
     verbose = scfg.Value(1, help='verbosity level')
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Path:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> Path:
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         archive_path = archive_source(
             repo_dpath=config.repo_dpath,
@@ -198,8 +210,11 @@ def archive_source(
     log(f'[source-archive] repo: {repo_root}')
     log(f'[source-archive] prefix: {prefix}')
     log(f'[source-archive] archive format: {archive_format}')
-    log('[source-archive] git history: {}'.format(
-        'included' if include_git_history else 'omitted'))
+    log(
+        '[source-archive] git history: {}'.format(
+            'included' if include_git_history else 'omitted'
+        )
+    )
     if include_git_history:
         depth_label = 'full' if clone_depth is None else str(clone_depth)
         log(f'[source-archive] history depth: {depth_label}')
@@ -210,10 +225,12 @@ def archive_source(
     import shutil
     import tempfile
 
-    tmpdir = Path(tempfile.mkdtemp(
-        prefix=f'{repo_name}-source-archive.',
-        dir=os.environ.get('TMPDIR', None),
-    ))
+    tmpdir = Path(
+        tempfile.mkdtemp(
+            prefix=f'{repo_name}-source-archive.',
+            dir=os.environ.get('TMPDIR', None),
+        )
+    )
     try:
         stage = tmpdir / 'stage'
         stage.mkdir(parents=True, exist_ok=True)
@@ -239,12 +256,14 @@ def archive_source(
             if info.status == '-':
                 raise RuntimeError(
                     f"submodule '{path}' is not initialized; run: "
-                    'git submodule update --init --recursive')
+                    'git submodule update --init --recursive'
+                )
             src_dpath = repo_root / path
             if not src_dpath.exists():
                 raise RuntimeError(
                     f"submodule path '{path}' is missing; run: "
-                    'git submodule update --init --recursive')
+                    'git submodule update --init --recursive'
+                )
             sub_repo = _coerce_repo(src_dpath)
             _assert_has_head(sub_repo)
             sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
@@ -260,7 +279,9 @@ def archive_source(
                 )
             else:
                 (archive_root / path).mkdir(parents=True, exist_ok=True)
-                _extract_git_archive(sub_repo, 'HEAD', stage, f'{prefix}/{path}')
+                _extract_git_archive(
+                    sub_repo, 'HEAD', stage, f'{prefix}/{path}'
+                )
 
         if include_git_history:
             _append_manifest_exclude(archive_root)
@@ -336,10 +357,13 @@ def _assert_has_head(repo: 'git.Repo') -> None:
 
 def _normalize_depth(depth: DepthArg) -> Optional[int]:
     import re
+
     if depth in {None, '', 'full'}:
         return None
     if isinstance(depth, bool):
-        raise ValueError("depth must be a non-negative integer, None, or 'full'")
+        raise ValueError(
+            "depth must be a non-negative integer, None, or 'full'"
+        )
     if isinstance(depth, int):
         value = depth
     else:
@@ -347,10 +371,14 @@ def _normalize_depth(depth: DepthArg) -> Optional[int]:
         if text == '0':
             return 0
         if not re.match(r'^[1-9][0-9]*$', text):
-            raise ValueError("depth must be a non-negative integer, None, or 'full'")
+            raise ValueError(
+                "depth must be a non-negative integer, None, or 'full'"
+            )
         value = int(text)
     if value < 0:
-        raise ValueError("depth must be a non-negative integer, None, or 'full'")
+        raise ValueError(
+            "depth must be a non-negative integer, None, or 'full'"
+        )
     return value
 
 
@@ -359,7 +387,9 @@ def _normalize_format(format: str) -> ResolvedArchiveFormat:
     normalized = _FORMAT_ALIASES.get(raw_format, raw_format)
     if normalized not in _FORMAT_TO_EXTENSION:
         valid = ', '.join(['auto', *_FORMAT_TO_EXTENSION, *_FORMAT_ALIASES])
-        raise ValueError(f'unknown archive format {format!r}; expected one of: {valid}')
+        raise ValueError(
+            f'unknown archive format {format!r}; expected one of: {valid}'
+        )
     return cast(ResolvedArchiveFormat, normalized)
 
 
@@ -377,7 +407,8 @@ def _infer_format_from_output(output: PathLike) -> ResolvedArchiveFormat:
         return 'zip'
     raise ValueError(
         f'cannot infer archive format from output path {output!r}; '
-        'specify --format explicitly')
+        'specify --format explicitly'
+    )
 
 
 def _resolve_archive_format(
@@ -398,7 +429,9 @@ def _resolve_output(
     archive_format: ResolvedArchiveFormat,
 ) -> Path:
     if output is None:
-        archive_path = repo_root / f'{prefix}{_FORMAT_TO_EXTENSION[archive_format]}'
+        archive_path = (
+            repo_root / f'{prefix}{_FORMAT_TO_EXTENSION[archive_format]}'
+        )
     else:
         archive_path = Path(output).expanduser()
         if not archive_path.is_absolute():
@@ -408,6 +441,7 @@ def _resolve_output(
 
 def _submodule_status(repo: 'git.Repo') -> List[SubmoduleStatus]:
     import git
+
     try:
         stdout = repo.git.submodule('status', '--recursive')
     except git.GitCommandError:
@@ -428,7 +462,9 @@ def _submodule_status(repo: 'git.Repo') -> List[SubmoduleStatus]:
         path = parts[1]
         if not path or not sha:
             raise RuntimeError(f'could not parse submodule status line: {line}')
-        infos.append(SubmoduleStatus(status=status, sha=sha, path=path, line=line))
+        infos.append(
+            SubmoduleStatus(status=status, sha=sha, path=path, line=line)
+        )
     return infos
 
 
@@ -477,7 +513,8 @@ def _clone_committed_checkout(
     # the archived .git directory reasonably small.
     try:
         cloned.git.reflog(
-            'expire', '--expire=now', '--expire-unreachable=now', '--all')
+            'expire', '--expire=now', '--expire-unreachable=now', '--all'
+        )
     except git.GitCommandError:
         pass
     try:
@@ -499,11 +536,15 @@ def _checkout_commit(
         repo.git.checkout('-q', '--detach', commit)
         return
     except git.GitCommandError:
-        log(f'[source-archive] checkout of {label} failed after clone; fetching exact commit')
+        log(
+            f'[source-archive] checkout of {label} failed after clone; fetching exact commit'
+        )
 
     if clone_depth is not None:
         try:
-            repo.git.fetch('--quiet', '--depth', str(clone_depth), 'origin', commit)
+            repo.git.fetch(
+                '--quiet', '--depth', str(clone_depth), 'origin', commit
+            )
         except git.GitCommandError:
             repo.git.fetch('--quiet', 'origin', commit)
     else:
@@ -511,7 +552,9 @@ def _checkout_commit(
     repo.git.checkout('-q', '--detach', commit)
 
 
-def _extract_git_archive(repo: 'git.Repo', treeish: str, dst: Path, prefix: str) -> None:
+def _extract_git_archive(
+    repo: 'git.Repo', treeish: str, dst: Path, prefix: str
+) -> None:
     import hashlib
     import tarfile
 
@@ -543,13 +586,16 @@ def _append_manifest_exclude(repo_dpath: PathLike) -> None:
     if info.exists():
         exclude = info / 'exclude'
         with exclude.open('a') as file:
-            file.write(textwrap.dedent(
-                '''
+            file.write(
+                textwrap.dedent(
+                    """
 
                 # Added by git-well archive_source so the archive manifest does not
                 # dirty the checkout.
                 /SOURCE_ARCHIVE_MANIFEST.txt
-                ''').lstrip('\n'))
+                """
+                ).lstrip('\n')
+            )
 
 
 def _write_manifest(
@@ -574,7 +620,7 @@ def _write_manifest(
         super_status = ''
 
     lines = textwrap.dedent(
-        f'''
+        f"""
         Source archive manifest
         =======================
 
@@ -585,45 +631,57 @@ def _write_manifest(
         Superproject HEAD: {head_sha}
         Superproject short HEAD: {short_sha}
         Git history included: {'yes' if include_git_history else 'no'}
-        '''
+        """
     ).splitlines()
 
     if include_git_history:
-        lines.extend([
-            f'Git history depth: {depth_label}',
-            f'Shallow clone: {"yes" if clone_depth is not None else "no"}',
-        ])
+        lines.extend(
+            [
+                f'Git history depth: {depth_label}',
+                f'Shallow clone: {"yes" if clone_depth is not None else "no"}',
+            ]
+        )
     else:
-        lines.extend([
-            'Git history depth: 0',
-            'Shallow clone: no',
-        ])
+        lines.extend(
+            [
+                'Git history depth: 0',
+                'Shallow clone: no',
+            ]
+        )
 
-    lines.extend(textwrap.dedent(
-        '''
+    lines.extend(
+        textwrap.dedent(
+            """
 
         Archive policy:
         - Includes committed/tracked files from the superproject HEAD.
         - Includes committed/tracked files from each initialized recursive submodule HEAD.
-        '''
-    ).splitlines())
+        """
+        ).splitlines()
+    )
     if include_git_history:
-        lines.extend([
-            '- Includes .git metadata for the superproject and initialized recursive submodules.',
-            '- Excludes local edits, untracked files, ignored files, and build outputs.',
-        ])
+        lines.extend(
+            [
+                '- Includes .git metadata for the superproject and initialized recursive submodules.',
+                '- Excludes local edits, untracked files, ignored files, and build outputs.',
+            ]
+        )
     else:
-        lines.extend([
-            '- Uses git archive source-only exports.',
-            '- Excludes local edits, untracked files, ignored files, build outputs, and .git directories.',
-        ])
-    lines.extend([
-        '',
-        'Superproject status at archive time:',
-        super_status,
-        '',
-        'Recursive submodule status at archive time:',
-    ])
+        lines.extend(
+            [
+                '- Uses git archive source-only exports.',
+                '- Excludes local edits, untracked files, ignored files, build outputs, and .git directories.',
+            ]
+        )
+    lines.extend(
+        [
+            '',
+            'Superproject status at archive time:',
+            super_status,
+            '',
+            'Recursive submodule status at archive time:',
+        ]
+    )
     if submodule_status:
         lines.extend(info.line for info in submodule_status)
     else:
@@ -654,10 +712,15 @@ def _write_archive(
     root = stage / prefix
     if archive_format == 'zip':
         import zipfile
-        with zipfile.ZipFile(archive_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zfile:
+
+        with zipfile.ZipFile(
+            archive_path, mode='w', compression=zipfile.ZIP_DEFLATED
+        ) as zfile:
             _add_zip_entry(zfile, root, Path(prefix))
             for path in sorted(root.rglob('*')):
-                _add_zip_entry(zfile, path, Path(prefix) / path.relative_to(root))
+                _add_zip_entry(
+                    zfile, path, Path(prefix) / path.relative_to(root)
+                )
     else:
         import tarfile
 
@@ -673,6 +736,7 @@ def _add_zip_entry(zfile: 'zipfile.ZipFile', path: Path, arcname: Path) -> None:
     import os
     import stat
     import zipfile
+
     arcname_text = arcname.as_posix()
     st = path.lstat()
     if stat.S_ISDIR(st.st_mode):

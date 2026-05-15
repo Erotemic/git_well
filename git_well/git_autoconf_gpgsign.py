@@ -13,10 +13,15 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
 
     remote = scfg.Value(None, help='param1')
     repo_dpath = scfg.Value('.', help='repo to set gpg for')
-    email = scfg.Value(None, help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials')
+    email = scfg.Value(
+        None,
+        help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials',
+    )
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP
@@ -27,13 +32,16 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
             >>> cls.main(argv=argv, **kwargs)
         """
         import rich
+
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich.print('config = ' + ub.urepr(config, nl=1))
 
         from git_well.repo import Repo
+
         repo = Repo.coerce(config.repo_dpath)
 
         import os
+
         env = os.environ.copy()
         env['GIT_SSH_COMMAND'] = 'ssh -v'
 
@@ -75,8 +83,12 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
             # print(info.stdout)
             # entries = gpg_entries(email)
             candidates = lookup_gpg_keyinfos(
-                email, verbose=0, allow_mainkey=False, capabilities='sign',
-                mintrust='u')
+                email,
+                verbose=0,
+                allow_mainkey=False,
+                capabilities='sign',
+                mintrust='u',
+            )
             gpg_candidates.extend(candidates)
 
         unique_fprs = {cand['fpr'] for cand in gpg_candidates}
@@ -84,10 +96,14 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
         if len(unique_fprs) == 0:
             print('Error')
             print(f'email_candidates = {ub.urepr(email_candidates, nl=1)}')
-            print(f'identify_file_cands = {ub.urepr(identify_file_cands, nl=1)}')
-            raise Exception('Unable to find any gpg candidates. '
-                            'Is the repo not using git/ssh credentials? '
-                            'Try specifying --email=<youremail>.')
+            print(
+                f'identify_file_cands = {ub.urepr(identify_file_cands, nl=1)}'
+            )
+            raise Exception(
+                'Unable to find any gpg candidates. '
+                'Is the repo not using git/ssh credentials? '
+                'Try specifying --email=<youremail>.'
+            )
         elif len(unique_fprs) != 1:
             print(f'unique_fprs = {ub.urepr(unique_fprs, nl=1)}')
             print('gpg_candidates = {}'.format(ub.urepr(gpg_candidates, nl=1)))
@@ -103,11 +119,19 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
         # Tell git which key to sign
         repo.cmd(f'git config --local user.signingkey "{fpr}"')
 
-        print("CURRENT GLOBAL SETTINGS")
-        repo.cmd(r'git config --global --list | grep "gpg\|sign\|email"', shell=True, verbose=1)
+        print('CURRENT GLOBAL SETTINGS')
+        repo.cmd(
+            r'git config --global --list | grep "gpg\|sign\|email"',
+            shell=True,
+            verbose=1,
+        )
 
-        print("CURRENT LOCAL SETTINGS")
-        repo.cmd(r'git config --local --list | grep "gpg\|sign\|email"', shell=True, verbose=1)
+        print('CURRENT LOCAL SETTINGS')
+        repo.cmd(
+            r'git config --local --list | grep "gpg\|sign\|email"',
+            shell=True,
+            verbose=1,
+        )
 
 
 def _rich_print_records(records, title=None):
@@ -134,14 +158,23 @@ def _rich_print_records(records, title=None):
         table.add_column(str(column))
 
     for idx, record in enumerate(records):
-        table.add_row(str(idx), *[str(record.get(column, '')) for column in columns])
+        table.add_row(
+            str(idx), *[str(record.get(column, '')) for column in columns]
+        )
 
     Console().print(table)
 
 
-def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
-                        allow_subkey=True, allow_mainkey=True, full=True,
-                        filter_expired=True, mintrust=None):
+def lookup_gpg_keyinfos(
+    identifier,
+    verbose=0,
+    capabilities=None,
+    allow_subkey=True,
+    allow_mainkey=True,
+    full=True,
+    filter_expired=True,
+    mintrust=None,
+):
     """
     Creates a table of information about GPG key candidates that match a query.
 
@@ -176,7 +209,6 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
         allowed_row_types.add('pub')
 
     for rows in entries:
-
         entry_uids = []
         entry_candidates = []
         trust = '-'
@@ -208,7 +240,7 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
                         'fpr': fpr,
                         'trust': trust,
                         'trust_level': TRUST_CODE_TO_LEVEL[trust],
-                        **row_
+                        **row_,
                     }
                     entry_candidates.append(keyinfo)
 
@@ -222,7 +254,9 @@ def lookup_gpg_keyinfos(identifier, verbose=0, capabilities=None,
 
     if mintrust:
         mintrust_level = TRUST_CODE_TO_LEVEL[mintrust]
-        candidates = [c for c in candidates if c.get('trust_level', 6) <= mintrust_level]
+        candidates = [
+            c for c in candidates if c.get('trust_level', 6) <= mintrust_level
+        ]
 
     return candidates
 
@@ -236,31 +270,37 @@ def gpg_entries(identifier=None, verbose=0):
     suffix = ''
     if identifier is not None:
         suffix = ' ' + chr(34) + identifier + chr(34)
-    info = ub.cmd('gpg --with-colons --fixed-list-mode --list-keys --keyid-format LONG' + suffix, verbose=verbose)
+    info = ub.cmd(
+        'gpg --with-colons --fixed-list-mode --list-keys --keyid-format LONG'
+        + suffix,
+        verbose=verbose,
+    )
 
     default_field_info = {
-        1: 'type',         # Field 1 - Type of record
-        2: 'valid',        # Field 2 - Validity
-        3: 'len',          # Field 3 - Key length
-        4: 'pkalgo',       # Field 4 - Public key algorithm
-        5: 'keyid',        # Field 5 - KeyID
-        6: 'created',      # Field 6 - Creation Date
-        7: 'expires',      # Field 7 - Expiration Date
+        1: 'type',  # Field 1 - Type of record
+        2: 'valid',  # Field 2 - Validity
+        3: 'len',  # Field 3 - Key length
+        4: 'pkalgo',  # Field 4 - Public key algorithm
+        5: 'keyid',  # Field 5 - KeyID
+        6: 'created',  # Field 6 - Creation Date
+        7: 'expires',  # Field 7 - Expiration Date
         8: 'cert',
         9: 'ownertrust',
-        10: 'uid',          # Field 10 - UserId
+        10: 'uid',  # Field 10 - UserId
         11: 'sigclass',
         12: 'capabilities',
         13: 'issuer',
         14: 'flags',
         15: 'sn',
         16: 'hasher',
-        17: 'curve',  }
+        17: 'curve',
+    }
 
     special_info = {
         'tru': {1: 'type', 2: 'stale', 3: 'trust', 4: 'date_create'},
         'pkd': {1: 'type', 2: 'index', 3: 'info', 4: 'value'},
-        'cfg': {1: 'type'}}
+        'cfg': {1: 'type'},
+    }
 
     header = []
     entries = []
@@ -292,8 +332,16 @@ def gpg_entries(identifier=None, verbose=0):
 
 TRUST_CODES = [
     # Not sure if all levels are correct
-    {'code': '-', 'level': 4, 'desc': 'No ownertrust assigned / not yet calculated'},
-    {'code': 'e', 'level': 4, 'desc': 'Trust calculation has failed; probably due to an expired key'},
+    {
+        'code': '-',
+        'level': 4,
+        'desc': 'No ownertrust assigned / not yet calculated',
+    },
+    {
+        'code': 'e',
+        'level': 4,
+        'desc': 'Trust calculation has failed; probably due to an expired key',
+    },
     {'code': 'q', 'level': 4, 'desc': 'Not enough information for calculation'},
     {'code': 'n', 'level': 5, 'desc': 'Never trust this key'},
     {'code': 'm', 'level': 2, 'desc': 'Marginally trusted'},

@@ -11,13 +11,22 @@ class GitSavePatchCLI(scfg.DataConfig):
     """
     Saves the diff into a folder of patches that can be applied later.
     """
+
     __command__ = 'save'
-    paths = scfg.Value([], nargs='+', help='one or more files to save patches from', position=1)
+    paths = scfg.Value(
+        [], nargs='+', help='one or more files to save patches from', position=1
+    )
     out_dpath = scfg.Value('patches', help='output directory to save patches')
-    message = scfg.Value(None, help='if specified also associates a message with this patch in a sidecar file', short_alias=['m'])
+    message = scfg.Value(
+        None,
+        help='if specified also associates a message with this patch in a sidecar file',
+        short_alias=['m'],
+    )
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP
@@ -30,10 +39,12 @@ class GitSavePatchCLI(scfg.DataConfig):
         """
         import rich
         from rich.markup import escape
+
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich.print('config = ' + escape(ub.urepr(config, nl=1)))
 
         import json
+
         out_dpath = ub.Path(config.out_dpath).ensuredir()
 
         # TODO: handle resolving the relative git path

@@ -1,9 +1,9 @@
-
 def test_cli_main_help():
     """
     Run help for each modal CLI
     """
     from git_well import main
+
     modal = main.GitWellModalCLI()
 
     try:
@@ -20,7 +20,6 @@ def test_cli_main_help():
             modal.run(argv=[command, '--help'])
         except SystemExit:
             ...
-
 
 
 def test_archive_source_help_mentions_git_archive(capsys):
@@ -45,7 +44,11 @@ def _init_demo_repo(repo):
 
     repo.mkdir()
     ub.cmd(['git', 'init'], cwd=repo, check=True)
-    ub.cmd(['git', 'config', 'user.email', 'test@example.com'], cwd=repo, check=True)
+    ub.cmd(
+        ['git', 'config', 'user.email', 'test@example.com'],
+        cwd=repo,
+        check=True,
+    )
     ub.cmd(['git', 'config', 'user.name', 'Test User'], cwd=repo, check=True)
 
 
@@ -78,7 +81,6 @@ def test_archive_source_depth_zero_source_only(tmp_path):
     assert not any(name.endswith('/untracked.txt') for name in names)
     assert any(name.endswith('/SOURCE_ARCHIVE_MANIFEST.txt') for name in names)
     assert not any('/.git/' in name for name in names)
-
 
 
 def test_archive_source_auto_zip(tmp_path):
@@ -115,13 +117,15 @@ def test_archive_source_auto_zip(tmp_path):
 def test_archive_source_cli_options():
     from git_well.git_archive_source import ArchiveSourceCLI
 
-    config = ArchiveSourceCLI.cli(argv=['--depth', '0', '-o', 'foo.tar.gz'], strict=True)
+    config = ArchiveSourceCLI.cli(
+        argv=['--depth', '0', '-o', 'foo.tar.gz'], strict=True
+    )
     assert str(config.depth) == '0'
     assert config.output == 'foo.tar.gz'
 
-    config = ArchiveSourceCLI.cli(argv=[
-        '--depth', '0', '--format', 'zip', '-o', 'foo.any'
-    ], strict=True)
+    config = ArchiveSourceCLI.cli(
+        argv=['--depth', '0', '--format', 'zip', '-o', 'foo.any'], strict=True
+    )
     assert str(config.format) == 'zip'
     assert config.output == 'foo.any'
 

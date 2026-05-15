@@ -26,6 +26,7 @@ class GitWellModalCLI(scfg.ModalCLI):
 
 def main() -> None:
     from git_well import __version__
+
     modal = GitWellModalCLI(version=__version__)
     modal.main()
 

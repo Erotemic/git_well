@@ -3,6 +3,7 @@
 Requirements:
     pip install GitPython
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -24,12 +25,22 @@ class TrackUpstreamCLI(scfg.DataConfig):
 
         git branch --set-upstream-to=<remote>/<branch> <branch>
     """
+
     __command__: str = 'track_upstream'
-    repo_dpath: scfg.Value = scfg.Value('.', position=1, help='location of the repo')
-    force: scfg.Value = scfg.Value(False, isflag=True, short_alias=['-f'], help='if True, then choose a new tracking branch even if one is set')
+    repo_dpath: scfg.Value = scfg.Value(
+        '.', position=1, help='location of the repo'
+    )
+    force: scfg.Value = scfg.Value(
+        False,
+        isflag=True,
+        short_alias=['-f'],
+        help='if True, then choose a new tracking branch even if one is set',
+    )
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> from git_well.git_track_upstream import TrackUpstreamCLI
@@ -47,9 +58,11 @@ class TrackUpstreamCLI(scfg.DataConfig):
         """
         config = cls.cli(argv=argv, data=kwargs)
         from git_well._utils import rich_print
+
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
 
         from git_well.repo import Repo
+
         repo = Repo.coerce(config['repo_dpath'])
 
         assert not repo.active_branch.is_remote()
@@ -69,10 +82,14 @@ class TrackUpstreamCLI(scfg.DataConfig):
             unique_infos = unique_remotes_with_branch(repo, branch)
             if len(unique_infos) != 1:
                 from git_well._utils import choice_prompt
+
                 print('unique_infos = {}'.format(ub.urepr(unique_infos, nl=2)))
                 name_to_info = {d['name']: d for d in unique_infos}
                 choices = list(name_to_info.keys())
-                ans = choice_prompt('Sensible defaults are ambiguous. Choose one.', choices=choices)
+                ans = choice_prompt(
+                    'Sensible defaults are ambiguous. Choose one.',
+                    choices=choices,
+                )
                 chosen = name_to_info[ans]
             else:
                 chosen = unique_infos[0]
@@ -92,19 +109,24 @@ def unique_remotes_with_branch(repo: Any, branch: Any) -> list[dict[str, Any]]:
     for remote in available_remotes:
         valid_refs = []
         for ref in remote.refs:
-            if ref.name[len(ref.remote_name):].lstrip('/') == branch.name:
+            if ref.name[len(ref.remote_name) :].lstrip('/') == branch.name:
                 valid_refs.append(ref)
         if not valid_refs:
             continue
         info = {'remote': remote, 'name': remote.name, 'valid_refs': valid_refs}
         remote_infos[remote.name] = info
-        ref_urls = tuple(sorted(set(ub.flatten(list(remote.urls) for ref in remote.refs))))
+        ref_urls = tuple(
+            sorted(set(ub.flatten(list(remote.urls) for ref in remote.refs)))
+        )
         info['ref_urls'] = ref_urls
 
     groups = ub.group_items(remote_infos.values(), key=lambda x: x['ref_urls'])
     unique_infos = []
     for key, group in groups.items():
-        chosen = sorted(group, key=lambda x: ((0 if x['name'] == 'origin' else 1), x['name']))[0]
+        chosen = sorted(
+            group,
+            key=lambda x: ((0 if x['name'] == 'origin' else 1), x['name']),
+        )[0]
         unique_infos.append(chosen)
 
     return unique_infos

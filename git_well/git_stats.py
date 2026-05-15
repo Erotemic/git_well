@@ -16,7 +16,9 @@ class GitStatsCLI(scfg.DataConfig):
     repo_dpath = scfg.Value('.', help='param1', position=1)
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> # xdoctest: +SKIP
@@ -27,9 +29,11 @@ class GitStatsCLI(scfg.DataConfig):
             >>> cls.main(argv=argv, **kwargs)
         """
         import rich
+
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich.print('config = ' + ub.urepr(config, nl=1))
         from git_well.repo import Repo
+
         repo = Repo.coerce(config.repo_dpath)
         author_stats(repo)
 
@@ -70,7 +74,9 @@ def commit_stats(repo):
 
 def author_stats(repo):
     log_info = repo.cmd("git log --format='author: %ae' --numstat")
-    log_info = repo.cmd("git log --since='1 year ago' --format='author: %ae' --numstat")
+    log_info = repo.cmd(
+        "git log --since='1 year ago' --format='author: %ae' --numstat"
+    )
     print(log_info.stdout)
     author_stats = ub.ddict(lambda: ub.ddict(int))
     author_files = ub.ddict(set)
@@ -93,6 +99,7 @@ def author_stats(repo):
 
     author_stats = ub.udict(author_stats).sorted_values(lambda v: v['commits'])
     _rich_print_author_stats(author_stats, author_files)
+
 
 __cli__ = GitStatsCLI
 main = __cli__.main

@@ -20,25 +20,42 @@ class GitRemoteProtocol(scfg.DataConfig):
     An alias for this command is ``git permit`` because it "permits" a specific
     group to use ssh permissions.
     """
+
     __command__: str = 'remote_protocol'
     __alias__: list[str] = ['permit']
 
-    group: scfg.Value = scfg.Value('special:auto', position=1, help=ub.paragraph(
-        '''
+    group: scfg.Value = scfg.Value(
+        'special:auto',
+        position=1,
+        help=ub.paragraph(
+            """
         The group for which all matching remotes will have their protocol
         changed. If "special:auto", then attempts to determine what the group
         should be. (i.e. if there is only one, use that, otherwise ask).
-        '''))
+        """
+        ),
+    )
 
-    protocol: scfg.Value = scfg.Value('git', position=2, choices=VALID_PROTOCOLS, help=ub.paragraph(
-        '''
+    protocol: scfg.Value = scfg.Value(
+        'git',
+        position=2,
+        choices=VALID_PROTOCOLS,
+        help=ub.paragraph(
+            """
         The protocol to change to.
-        '''))
+        """
+        ),
+    )
 
-    repo_dpath: scfg.Value = scfg.Value('.', position=3, help=ub.paragraph(
-        '''
+    repo_dpath: scfg.Value = scfg.Value(
+        '.',
+        position=3,
+        help=ub.paragraph(
+            """
         A path inside the repo to modify.
-        '''))
+        """
+        ),
+    )
 
 
 def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
@@ -71,8 +88,10 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
     """
     config = GitRemoteProtocol.cli(argv=argv, data=kwargs, strict=True)
     from git_well._utils import rich_print
+
     rich_print('config = ' + ub.urepr(config, nl=1))
     from git_well.repo import Repo
+
     repo = Repo.coerce(config['repo_dpath'])
     repo.config_fpath
 
@@ -86,7 +105,9 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
             url = GitURL(url)
             remote_urls.append(url)
 
-    print('remote_urls = {}'.format(ub.urepr([u.info for u in remote_urls], nl=1)))
+    print(
+        'remote_urls = {}'.format(ub.urepr([u.info for u in remote_urls], nl=1))
+    )
 
     group = config['group']
     if group == 'special:auto':
@@ -101,7 +122,10 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
             # TODO: dont depend on rich?
             # TODO: better interaction?
             from git_well._utils import choice_prompt
-            ans = choice_prompt('Which group to change protocol for?', choices=choices)
+
+            ans = choice_prompt(
+                'Which group to change protocol for?', choices=choices
+            )
             group = ans
 
     tasks = []
@@ -116,11 +140,13 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
                     new_url = url.to_https()
                 else:
                     raise KeyError(new_protocol)
-                tasks.append({
-                    'task': 'change',
-                    'old': url,
-                    'new': new_url,
-                })
+                tasks.append(
+                    {
+                        'task': 'change',
+                        'old': url,
+                        'new': new_url,
+                    }
+                )
 
     config_text = repo.config_fpath.read_text()
     # print('tasks = {}'.format(ub.urepr(tasks, nl=1)))
@@ -128,6 +154,7 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
     for task in tasks:
         config_text = config_text.replace(task['old'], task['new'])
     repo.config_fpath.write_text(config_text)
+
 
 __cli__ = GitRemoteProtocol
 __cli__.main = main

@@ -16,14 +16,20 @@ class GitRebaseAddContinue(scfg.DataConfig):
     This script checks all of the paths for conflicts and then if none
     exist adds all files and continues.
     """
+
     __command__: str = 'rebase_add_continue'
 
     repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
 
-    skip_editor: scfg.Value = scfg.Value(True, help='if True skip the editor to change the commit message on git rebase --continue')
+    skip_editor: scfg.Value = scfg.Value(
+        True,
+        help='if True skip the editor to change the commit message on git rebase --continue',
+    )
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> from git_well.git_rebase_add_continue import GitRebaseAddContinue
@@ -41,6 +47,7 @@ class GitRebaseAddContinue(scfg.DataConfig):
         config = cls.cli(argv=argv, data=kwargs)
         from git_well._utils import rich_print
         from git_well.repo import Repo
+
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         repo = Repo.coerce(config.repo_dpath)
         repo_dpath = repo.dpath
@@ -52,16 +59,22 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
         if 0:
             import xdev
+
             b = xdev.RegexBuilder.coerce('python')
             b.previous(exact='7')
         import re
+
         # Check if conflicts are resolved
         conflict_patterns = [
             re.compile('^' + ('<' * 7) + ' HEAD$', flags=re.MULTILINE),
             re.compile('^' + ('>' * 7) + ' HEAD$', flags=re.MULTILINE),
             # re.compile('^' + ('=' * 7) + '$', flags=re.MULTILINE),
-            re.compile('^' + ('>' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE),
-            re.compile('^' + ('<' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE),
+            re.compile(
+                '^' + ('>' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE
+            ),
+            re.compile(
+                '^' + ('<' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE
+            ),
         ]
 
         conflicts = []
@@ -93,11 +106,16 @@ class GitRebaseAddContinue(scfg.DataConfig):
             # Use -c core.editor=true to skip the commit message editor
             # References:
             #     ... [SO43489971] https://stackoverflow.com/questions/43489971/how-to-suppress-the-editor-for-git-rebase-continue
-            info = ub.cmd('git -c core.editor=true rebase --continue', verbose=3,
-                          cwd=repo.dpath, system=True)
+            info = ub.cmd(
+                'git -c core.editor=true rebase --continue',
+                verbose=3,
+                cwd=repo.dpath,
+                system=True,
+            )
         else:
-            info = ub.cmd('git rebase --continue', verbose=3,
-                          cwd=repo.dpath, system=True)
+            info = ub.cmd(
+                'git rebase --continue', verbose=3, cwd=repo.dpath, system=True
+            )
         if info['ret'] == 0:
             print('rebase is complete')
         else:
@@ -105,7 +123,9 @@ class GitRebaseAddContinue(scfg.DataConfig):
             print('rebase is still active')
 
 
-def parsed_rebase_git_status(repo_dpath: str | os.PathLike[str]) -> dict[str, list[ub.Path]]:
+def parsed_rebase_git_status(
+    repo_dpath: str | os.PathLike[str],
+) -> dict[str, list[ub.Path]]:
     """
     a git status output has several possible sections it can output,
     check for those, and set the state based on them.
@@ -159,45 +179,59 @@ def parsed_rebase_git_status(repo_dpath: str | os.PathLike[str]) -> dict[str, li
                     fpath = repo_dpath / rel_fpath
                     fpaths['modified'].append(fpath)
                 else:
-                    raise Exception(ub.paragraph(
-                        f'''
+                    raise Exception(
+                        ub.paragraph(
+                            f"""
                         rebase status parser hit unhandled case in state {state}:
                         line_idx={line_idx}, line={line}
-                        '''))
+                        """
+                        )
+                    )
             elif state == 'UNMERGED':
                 if line_.startswith(('both modified:',)):
                     rel_fpath = line.split(':', 1)[1].strip()
                     fpath = repo_dpath / rel_fpath
                     fpaths['both_modified'].append(fpath)
                 else:
-                    raise Exception(ub.paragraph(
-                        f'''
+                    raise Exception(
+                        ub.paragraph(
+                            f"""
                         rebase status parser hit unhandled case in state {state}:
                         line_idx={line_idx}, line={line}
-                        '''))
+                        """
+                        )
+                    )
             elif state == 'UNSTAGED':
                 if line_.startswith('('):
                     continue
                 elif line_.startswith(('modified:', 'new file:')):
                     rel_fpath = line.split(':', 1)[1]
                     # Hacks for submodules
-                    rel_fpath = rel_fpath.replace('(modified content, untracked content)', '')
+                    rel_fpath = rel_fpath.replace(
+                        '(modified content, untracked content)', ''
+                    )
                     rel_fpath = rel_fpath.strip()
 
                     fpath = repo_dpath / rel_fpath
                     fpaths['unstaged'].append(fpath)
                 else:
-                    raise Exception(ub.paragraph(
-                        f'''
+                    raise Exception(
+                        ub.paragraph(
+                            f"""
                         rebase status parser hit unhandled case in state {state}:
                         line_idx={line_idx}, line={line}
-                        '''))
+                        """
+                        )
+                    )
             else:
-                raise Exception(ub.paragraph(
-                    f'''
+                raise Exception(
+                    ub.paragraph(
+                        f"""
                     rebase status parser hit unhandled case in state {state}:
                     line_idx={line_idx}, line={line}
-                    '''))
+                    """
+                    )
+                )
     print('finished parse git status')
     return fpaths
 

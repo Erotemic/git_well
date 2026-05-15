@@ -6,7 +6,8 @@ from typing import Any
 import scriptconfig as scfg
 import ubelt as ub
 from git_well.git_squash_streaks import (
-    _squash_between, checkout_temporary_branch,
+    _squash_between,
+    checkout_temporary_branch,
 )
 
 
@@ -16,22 +17,39 @@ class GitSquashCLI(scfg.DataConfig):
     This CLI is experimental and designed to eventually supercede
     squash-streaks with a better API.
     """
+
     __command__ = 'squash'
 
     oldest = scfg.Value('main', help='The oldest commit to sqash onto')
-    newest = scfg.Value('HEAD', help='The latest commit to be included in the squash')
+    newest = scfg.Value(
+        'HEAD', help='The latest commit to be included in the squash'
+    )
 
-    inplace = scfg.Value(False, isflag=True, help='Apply squash directly to current branch')
+    inplace = scfg.Value(
+        False, isflag=True, help='Apply squash directly to current branch'
+    )
     dry = scfg.Value(True, isflag=True, short_alias=['n'], help='Dry run')
-    force = scfg.Value(None, isflag=True, short_alias=['f'], help='Force squash (opposite of dry)')
-    verbose = scfg.Value(True, isflag=True, short_alias=['v'], help='Print progress')
+    force = scfg.Value(
+        None,
+        isflag=True,
+        short_alias=['f'],
+        help='Force squash (opposite of dry)',
+    )
+    verbose = scfg.Value(
+        True, isflag=True, short_alias=['v'], help='Print progress'
+    )
     dpath = scfg.Value('.', help='Path to repo to squash in')
 
-    auto_rollback = scfg.Value(False, isflag=True, help=ub.paragraph(
-            '''
+    auto_rollback = scfg.Value(
+        False,
+        isflag=True,
+        help=ub.paragraph(
+            """
             if True the repo will be reset to a clean state if any
             errors occur. (Default: True)
-            '''))
+            """
+        ),
+    )
 
     def __post_init__(self) -> None:
         force = self['force']
@@ -42,7 +60,9 @@ class GitSquashCLI(scfg.DataConfig):
             self['force'] = not dry
 
     @classmethod
-    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> # xdoctest: +REQUIRES(LINUX)
@@ -79,7 +99,7 @@ def squash_commits(config: Any) -> None:
     newest = repo.commit(config.newest)
 
     if repo.is_ancestor(ancestor_rev=newest, rev=oldest):
-        raise ValueError(f"Commit {oldest} is not an ancestor of {newest}")
+        raise ValueError(f'Commit {oldest} is not an ancestor of {newest}')
 
     if not config.dry:
         temp_branch = checkout_temporary_branch(repo, '-squash-temp')
@@ -87,11 +107,18 @@ def squash_commits(config: Any) -> None:
         temp_branch = None
 
     try:
-        _squash_between(repo, start=oldest, stop=newest,
-                        dry=config.dry, verbose=config.verbose,
-                        start_inclusive=False)
+        _squash_between(
+            repo,
+            start=oldest,
+            stop=newest,
+            dry=config.dry,
+            verbose=config.verbose,
+            start_inclusive=False,
+        )
     except Exception:
-        print('Squash failed. Consider running with --dry or checking your range.')
+        print(
+            'Squash failed. Consider running with --dry or checking your range.'
+        )
         if not config.dry and config.auto_rollback:
             print('ROLLING BACK')
             repo.git.checkout(orig_branch_name)
