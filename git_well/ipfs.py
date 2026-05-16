@@ -52,6 +52,20 @@ class IPFSCLI(scfg.ModalCLI):
     __command__ = 'ipfs'
 
 
+def _register_modal(parent: Any) -> Any:
+    """Register a scriptconfig command while preserving the class name.
+
+    Some scriptconfig versions return ``None`` from ``ModalCLI.register``.
+    Using that method directly as a decorator can therefore overwrite names
+    such as ``IPFSAdd`` with ``None``, which is surprising for tests and for
+    downstream callers that import command classes directly.
+    """
+    def _decorator(cls):
+        parent.register(cls)
+        return cls
+    return _decorator
+
+
 SIDECAR_SCHEMA_VERSION = 1
 MIN_KUBO_VERSION = (0, 37, 0)
 MIN_KUBO_VERSION_TEXT = '.'.join(map(str, MIN_KUBO_VERSION))
@@ -66,6 +80,24 @@ CID_IMPORT_KEYS = (
     'raw_leaves',
     'only_hash',
 )
+
+
+KUBO_INSTALL_HINT = (
+    f'Kubo >= {MIN_KUBO_VERSION_TEXT} is required. '
+    'Install Kubo, make sure `ipfs` is on PATH, then rerun `git ipfs doctor`.'
+)
+KUBO_DAEMON_HINT = (
+    'The Kubo API/daemon does not appear to be reachable. '
+    'Start it with `ipfs daemon`, or verify that IPFS_PATH points at the intended Kubo repo.'
+)
+KUBO_PIN_NAME_HINT = (
+    f'Named pins during add require Kubo >= {MIN_KUBO_VERSION_TEXT} '
+    'because git-ipfs uses `ipfs add --pin-name`. Upgrade Kubo or omit `--name`.'
+)
+
+
+class GitIPFSError(RuntimeError):
+    """User-facing error raised for actionable git-ipfs failures."""
 
 
 class _YamlCodec:
@@ -132,15 +164,68 @@ def argv_to_str(argv: Iterable[os.PathLike | str]) -> str:
     return ' '.join(shlex.quote(os.fspath(p)) for p in argv)
 
 
+def _cmd_text(value: str | bytes | None) -> str:
+    """Normalize ubelt command output to text for static checkers."""
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode(errors='replace')
+    return value
+
+
+def _command_failure_message(argv: list[str], info: Any) -> str:
+    """Build an actionable command-failure message for CLI users."""
+    cmdline = argv_to_str(argv)
+    stdout = _cmd_text(getattr(info, 'stdout', None)).strip()
+    stderr = _cmd_text(getattr(info, 'stderr', None)).strip()
+    returncode = getattr(info, 'returncode', None)
+    parts = [f'Command failed with exit code {returncode}: {cmdline}']
+    if stderr:
+        parts.append(f'stderr:\n{stderr}')
+    if stdout:
+        parts.append(f'stdout:\n{stdout}')
+
+    text = '\n'.join([stderr, stdout]).lower()
+    if argv[:2] == ['ipfs', 'get']:
+        cid = argv[-1] if argv else '<cid>'
+        parts.append(
+            'Could not retrieve the requested CID. Verify that the content is '
+            f'pinned somewhere reachable, then try `git ipfs peers --connect` or `ipfs swarm peers`. CID: {cid}'
+        )
+    elif argv[:3] == ['ipfs', 'swarm', 'peers']:
+        parts.append(KUBO_DAEMON_HINT)
+    elif argv[:2] == ['ipfs', 'repo']:
+        parts.append(
+            'The user-level Kubo repository may not be initialized. Run `ipfs init` '
+            'for Kubo itself; git-ipfs does not create an IPFS store inside this Git repo.'
+        )
+    elif argv[:2] == ['ipfs', 'add'] and ('pin-name' in text or any(a.startswith('--pin-name') for a in argv)):
+        parts.append(KUBO_PIN_NAME_HINT)
+    elif argv and argv[0] == 'ipfs' and (
+        'api' in text or 'daemon' in text or 'connection refused' in text or 'no such file' in text
+    ):
+        parts.append(KUBO_DAEMON_HINT)
+    elif argv and argv[0] == 'ipfs':
+        parts.append('Run `git ipfs doctor` for a local Kubo/Git environment report.')
+    return '\n\n'.join(parts)
+
+
 def _run(argv: list[str], *, cwd: os.PathLike | str | None = None,
          dry_run: bool = False, verbose: int = 3, check: bool = True) -> Any:
     """Run or print a command using ubelt's command wrapper."""
     if dry_run:
         print(argv_to_str(argv))
         return None  # type: ignore[return-value]
-    info = ub.cmd(argv, cwd=cwd, verbose=verbose)
-    if check:
-        info.check_returncode()
+    if argv and argv[0] == 'ipfs' and shutil.which('ipfs') is None:
+        raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT)
+    try:
+        info = ub.cmd(argv, cwd=cwd, verbose=verbose)
+    except FileNotFoundError as ex:
+        if argv and argv[0] == 'ipfs':
+            raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT) from ex
+        raise
+    if check and getattr(info, 'returncode', 0):
+        raise GitIPFSError(_command_failure_message(argv, info))
     return info
 
 
@@ -314,10 +399,11 @@ def _connect_to_peer_hint(peer_hint: str, *, dry_run: bool = False, verbose: int
             info = _run(find_argv, verbose=0, check=False)
             if info.returncode:
                 if verbose:
-                    detail = (info.stderr or info.stdout).strip()
+                    detail = (_cmd_text(info.stderr) or _cmd_text(info.stdout)).strip()
                     print(f'warning: could not resolve peer {peer_hint!r}: {detail}')
                 return False
-            candidate_addrs = [ln.strip() for ln in info.stdout.splitlines() if ln.strip()]
+            stdout = _cmd_text(info.stdout)
+            candidate_addrs = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
             candidate_addrs = [
                 addr if addr.endswith('/p2p/' + peer_hint) else addr.rstrip('/') + '/p2p/' + peer_hint
                 for addr in candidate_addrs
@@ -334,9 +420,9 @@ def _connect_to_peer_hint(peer_hint: str, *, dry_run: bool = False, verbose: int
             if info.returncode == 0:
                 connected = True
                 if verbose:
-                    print((info.stdout or f'connected: {addr}').strip())
+                    print((_cmd_text(info.stdout) or f'connected: {addr}').strip())
             elif verbose:
-                detail = (info.stderr or info.stdout).strip()
+                detail = (_cmd_text(info.stderr) or _cmd_text(info.stdout)).strip()
                 print(f'warning: could not connect to {addr!r}: {detail}')
     return connected
 
@@ -434,15 +520,6 @@ def _gitignore_pattern_for(rel_path: os.PathLike | str) -> str:
     return '/' + '/'.join(parts)
 
 
-def _cmd_text(value: str | bytes | None) -> str:
-    """Normalize ubelt command output to text for static checkers."""
-    if value is None:
-        return ''
-    if isinstance(value, bytes):
-        return value.decode(errors='replace')
-    return value
-
-
 def _git_toplevel(start: os.PathLike | str) -> Path | None:
     """Return the enclosing git worktree root, or None outside git."""
     info = ub.cmd(['git', 'rev-parse', '--show-toplevel'], cwd=start, verbose=0)
@@ -536,7 +613,7 @@ def _ipfs_only_hash_cid(tracked_path: Path, add_config: dict[str, Any] | None = 
     """Recompute a CID using kubo without writing blocks."""
     argv = _build_rehash_argv(tracked_path, add_config or {})
     info = _run(argv, verbose=0)
-    return _parse_ipfs_add_root_cid(info.stdout)
+    return _parse_ipfs_add_root_cid(_cmd_text(info.stdout))
 
 
 def _compute_quickstat(tracked_path: os.PathLike | str) -> dict[str, Any] | None:
@@ -596,7 +673,7 @@ def _print_status_table(rows: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSDoctor(scfg.DataConfig):
     """Check the local git/IPFS environment and explain what is missing."""
     __command__ = 'doctor'
@@ -625,7 +702,7 @@ class IPFSDoctor(scfg.DataConfig):
 
         if ipfs_exe:
             version = _run(['ipfs', 'version'], verbose=0, check=False)
-            version_text = (version.stdout or version.stderr).strip()
+            version_text = (_cmd_text(version.stdout) or _cmd_text(version.stderr)).strip()
             found_version = _parse_kubo_version_text(version_text)
             add('ipfs version', version.returncode == 0, version_text)
             add(
@@ -635,13 +712,22 @@ class IPFSDoctor(scfg.DataConfig):
             )
 
             repo_stat = _run(['ipfs', 'repo', 'stat'], verbose=0, check=False)
-            add('ipfs repo', repo_stat.returncode == 0, 'initialized' if repo_stat.returncode == 0 else repo_stat.stderr.strip())
+            repo_detail = 'initialized' if repo_stat.returncode == 0 else (
+                _cmd_text(repo_stat.stderr).strip() or
+                'not initialized; run `ipfs init` for your user-level Kubo repo'
+            )
+            add('ipfs repo', repo_stat.returncode == 0, repo_detail)
 
             daemon = _run(['ipfs', 'swarm', 'peers'], verbose=0, check=False)
-            add('ipfs daemon', daemon.returncode == 0, 'online API reachable' if daemon.returncode == 0 else daemon.stderr.strip())
+            daemon_detail = 'online API reachable' if daemon.returncode == 0 else (
+                _cmd_text(daemon.stderr).strip() or KUBO_DAEMON_HINT
+            )
+            add('ipfs daemon', daemon.returncode == 0, daemon_detail)
 
             remotes = _run(['ipfs', 'pin', 'remote', 'service', 'ls'], verbose=0, check=False)
-            detail = remotes.stdout.strip() if remotes.stdout.strip() else remotes.stderr.strip() or 'no remote pinning services listed'
+            remote_stdout = _cmd_text(remotes.stdout).strip()
+            remote_stderr = _cmd_text(remotes.stderr).strip()
+            detail = remote_stdout if remote_stdout else remote_stderr or 'no remote pinning services listed'
             add('remote pinning', remotes.returncode == 0, detail)
 
         git_ipfs = shutil.which('git-ipfs')
@@ -660,7 +746,7 @@ class IPFSDoctor(scfg.DataConfig):
             raise SystemExit('failed checks: ' + ', '.join(failed))
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSPeers(scfg.DataConfig):
     """List or connect to peer hints recorded in sidecars."""
     __command__ = 'peers'
@@ -691,7 +777,9 @@ class IPFSPeers(scfg.DataConfig):
                 _connect_suggested_peers(meta, dry_run=config.dry_run, verbose=1)
 
 
-@IPFSCLI.register
+
+
+@_register_modal(IPFSCLI)
 class IPFSPush(scfg.DataConfig):
     """Push sidecar CIDs to a configured Kubo remote pinning service."""
     __command__ = 'push'
@@ -738,7 +826,7 @@ class IPFSPush(scfg.DataConfig):
             _run(argv2, dry_run=config.dry_run, verbose=3)
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSAdd(scfg.DataConfig):
     """Add a file/directory to IPFS and optionally write a sidecar."""
     __command__ = 'add'
@@ -793,8 +881,9 @@ class IPFSAdd(scfg.DataConfig):
         if config.only_hash:
             return
 
-        cid = _parse_ipfs_add_root_cid(info.stdout)
-        lines = [ln for ln in info.stdout.splitlines() if ln.strip()]
+        add_stdout = _cmd_text(info.stdout)
+        cid = _parse_ipfs_add_root_cid(add_stdout)
+        lines = [ln for ln in add_stdout.splitlines() if ln.strip()]
 
         if sidecar_fpath is not None:
             sidecar_dpath = sidecar_fpath.parent
@@ -837,7 +926,7 @@ class IPFSAdd(scfg.DataConfig):
             print(f'Wrote to: sidecar_fpath={sidecar_fpath}')
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSPull(scfg.DataConfig):
     """Materialize content described by one or more ``*.ipfs`` sidecars."""
     __command__ = 'pull'
@@ -868,7 +957,7 @@ class IPFSPull(scfg.DataConfig):
                 sync_ipfs_pull(root_cid, tracked_path, delete=config.delete)
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSStatus(scfg.DataConfig):
     """Check whether local content tracked by sidecars appears changed."""
     __command__ = 'status'
@@ -932,7 +1021,7 @@ class IPFSStatus(scfg.DataConfig):
         _print_status_table(rows)
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSExportPins(scfg.DataConfig):
     """Export ``ipfs pin add`` commands for sidecars."""
     __command__ = 'export'
@@ -994,7 +1083,7 @@ class IPFSPin(scfg.ModalCLI):
     __command__ = 'pin'
 
 
-@IPFSPin.register
+@_register_modal(IPFSPin)
 class IPFSPinAdd(scfg.DataConfig):
     """Pin a CID or the CID referenced by a sidecar."""
     __command__ = 'add'
@@ -1034,7 +1123,7 @@ class IPFSPinAdd(scfg.DataConfig):
 IPFSCLI.register(IPFSPin)
 
 
-@IPFSCLI.register
+@_register_modal(IPFSCLI)
 class IPFSCheckCID(scfg.DataConfig):
     """Compare CIDs produced by common CID-version/raw-leaves settings."""
     __command__ = 'check-cid'
@@ -1063,7 +1152,7 @@ class IPFSCheckCID(scfg.DataConfig):
                 argv2.append('--recursive')
             argv2 += flags + [os.fspath(config.path)]
             info = _run(argv2, verbose=0)
-            cid = info.stdout.strip().splitlines()[-1]
+            cid = _cmd_text(info.stdout).strip().splitlines()[-1]
             rows.append((label, cid))
         width = max(len(k) for k, _ in rows)
         for label, cid in rows:

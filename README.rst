@@ -137,8 +137,14 @@ CID-affecting import settings.  Volatile local details such as mtimes, command
 elapsed time, and machine-specific cache state are intentionally left out of
 the committed sidecar so repeated runs stay reviewable.
 
-Sidecars may also include peer hints.  Bare peer IDs are useful hints when
-routing can discover addresses; full multiaddrs are more reliable when known.
+Sidecar schema v1
+~~~~~~~~~~~~~~~~~
+
+The ``schema_version: 1`` contract is intentionally small and YAML-first.
+Unknown fields should be ignored by readers, and fields that are not needed to
+materialize content should be treated as advisory.  This keeps hand-written
+sidecars easy to review and gives future versions room to add optional metadata
+without breaking old repositories.
 
 .. code:: yaml
 
@@ -147,10 +153,24 @@ routing can discover addresses; full multiaddrs are more reliable when known.
    cid: bafy...
    rel_path: data
    kind: directory
+   size_bytes: 123456
+   num_files: 42
+   pin_name: my-data
+   import:
+     recursive: true
+     cid_version: 1
+     raw_leaves: false
    suggested_peers:
      - 12D3KooW...
      - /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
 
+Required fields for materialization are ``cid`` and ``rel_path``.  The
+``import`` mapping records options that affect CID reproducibility.
+``pin_name``, sizes, counts, and ``suggested_peers`` are useful metadata, but a
+reader should still be able to pull content without them.
+
+Sidecars may include peer hints.  Bare peer IDs are useful hints when routing
+can discover addresses; full multiaddrs are more reliable when known.
 ``git ipfs pull`` makes a best-effort attempt to connect to ``suggested_peers``
 before downloading.  Peer hints can also be inspected or connected manually:
 
@@ -174,6 +194,40 @@ Useful inspection commands:
    git ipfs status
    git ipfs status --full
    git ipfs export --emit_bash
+
+Dogfood checklist
+~~~~~~~~~~~~~~~~~
+
+When changing this workflow, test it on a scratch branch with a small real
+payload before publishing the change:
+
+.. code:: bash
+
+   git ipfs doctor
+   mkdir -p .git-well-ipfs-smoke
+   printf 'hello from git ipfs\n' > .git-well-ipfs-smoke/payload.txt
+   git ipfs add .git-well-ipfs-smoke --name git-well-ipfs-smoke
+   git status --short .gitignore .git-well-ipfs-smoke.ipfs
+   rm -rf .git-well-ipfs-smoke
+   git ipfs pull .git-well-ipfs-smoke.ipfs
+   git ipfs status .git-well-ipfs-smoke.ipfs
+
+The helper script ``dev/ipfs_dogfood_smoke.sh`` runs the same smoke flow and
+accepts an optional peer hint as its second argument.
+
+Troubleshooting
+~~~~~~~~~~~~~~~
+
+``git ipfs doctor`` is the first command to run when retrieval is confusing.
+Common failure modes are reported with actionable hints:
+
+* ``ipfs`` is missing from ``PATH``: install Kubo >= 0.37.0.
+* The Kubo repo is missing: run ``ipfs init`` for Kubo itself.  This does not
+  create anything inside the Git repository.
+* The daemon/API is offline: start ``ipfs daemon`` or check ``IPFS_PATH``.
+* Retrieval cannot find a CID: check that someone is pinning the content, then
+  try ``git ipfs peers --connect`` or add more specific ``suggested_peers``.
+* Named pins fail: upgrade to Kubo >= 0.37.0 or omit ``--name``.
 
 
 Use Cases
