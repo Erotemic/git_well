@@ -27,3 +27,12 @@ bash -n dev/ipfs_dogfood_smoke.sh
 
 - Broadened internal config helper annotations so `scriptconfig.Config` objects accepted by `cli()` satisfy `ty`.
 - Avoid mutating parsed `scriptconfig.Config` in `IPFSPinAdd`; use a local `pin_name` instead.
+
+## v7 Windows fake-IPFS test fix
+
+- Makes the fake Kubo test helper install a shared Python implementation plus
+  POSIX and Windows launchers.
+- Adds `ipfs.bat` and `ipfs.cmd` launchers so `shutil.which('ipfs')` succeeds
+  on Windows through PATHEXT during the fake-IPFS integration test.
+- Keeps the fake implementation single-sourced so POSIX and Windows exercise
+  the same behavior.

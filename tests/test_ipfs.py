@@ -166,16 +166,22 @@ def test_parse_ipfs_add_root_cid_quiet_mode():
 
 
 def _install_fake_ipfs(tmp_path, monkeypatch):
-    """Install a tiny fake Kubo executable for end-to-end CLI tests."""
+    """Install a tiny fake Kubo executable for end-to-end CLI tests.
+
+    Windows does not execute extensionless scripts through ``PATH`` lookup,
+    and ``shutil.which('ipfs')`` will only find names in ``PATHEXT``.  Install
+    both a POSIX ``ipfs`` launcher and Windows ``ipfs.bat`` / ``ipfs.cmd``
+    launchers that delegate to the same Python implementation.
+    """
     import os
+    import sys
     import textwrap
 
     bin_dpath = tmp_path / 'bin'
     bin_dpath.mkdir()
     log_fpath = tmp_path / 'fake-ipfs-calls.jsonl'
-    fake_ipfs = bin_dpath / 'ipfs'
-    fake_ipfs.write_text(textwrap.dedent(r'''
-        #!/usr/bin/env python3
+    fake_impl = bin_dpath / '_fake_ipfs.py'
+    fake_impl.write_text(textwrap.dedent(r'''
         import json
         import os
         import sys
@@ -233,7 +239,21 @@ def _install_fake_ipfs(tmp_path, monkeypatch):
 
         raise SystemExit(main())
     ''').lstrip())
+
+    fake_ipfs = bin_dpath / 'ipfs'
+    fake_ipfs.write_text(
+        '#!/usr/bin/env sh\n'
+        'exec "{}" "$(dirname "$0")/_fake_ipfs.py" "$@"\n'.format(sys.executable)
+    )
     fake_ipfs.chmod(0o755)
+
+    for ext in ['bat', 'cmd']:
+        launcher = bin_dpath / f'ipfs.{ext}'
+        launcher.write_text(
+            '@echo off\r\n'
+            '"{}" "%~dp0_fake_ipfs.py" %*\r\n'.format(sys.executable)
+        )
+
     monkeypatch.setenv('GIT_WELL_FAKE_IPFS_LOG', os.fspath(log_fpath))
     monkeypatch.setenv('PATH', os.fspath(bin_dpath) + os.pathsep + os.environ.get('PATH', ''))
     return bin_dpath, log_fpath
