@@ -95,6 +95,87 @@ The tools in this module are derived from:
 
 
 
+Tracking large files with IPFS
+------------------------------
+
+``git-well`` also exposes an experimental ``git ipfs`` helper for keeping
+large payloads out of Git while tracking reproducible IPFS CIDs in small
+``*.ipfs`` sidecar files.  There is intentionally no repository-local IPFS
+store and no required ``git ipfs init`` step: Kubo still owns its normal
+``$IPFS_PATH`` repository, while Git only tracks small sidecar metadata.
+
+The minimum supported Kubo version is **0.37.0**.  This is the first Kubo
+release with ``ipfs add --pin-name``, which ``git ipfs add --name`` uses to
+assign a human-readable name at import time.
+
+The intended happy path is:
+
+.. code:: bash
+
+   git ipfs doctor
+   git ipfs add data/ --name my-data
+   git commit -m "Track data with IPFS"
+
+When you know the peer that is likely to provide the content, record it during
+add:
+
+.. code:: bash
+
+   git ipfs add data/ --name my-data --suggested-peers 12D3KooW...
+
+A collaborator can then materialize the payloads with:
+
+.. code:: bash
+
+   git clone <repo-url>
+   cd <repo>
+   git ipfs doctor
+   git ipfs pull
+
+The sidecar stores the CID, relative path, object kind, byte size, and the
+CID-affecting import settings.  Volatile local details such as mtimes, command
+elapsed time, and machine-specific cache state are intentionally left out of
+the committed sidecar so repeated runs stay reviewable.
+
+Sidecars may also include peer hints.  Bare peer IDs are useful hints when
+routing can discover addresses; full multiaddrs are more reliable when known.
+
+.. code:: yaml
+
+   schema_version: 1
+   type: ipfs-sidecar
+   cid: bafy...
+   rel_path: data
+   kind: directory
+   suggested_peers:
+     - 12D3KooW...
+     - /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
+
+``git ipfs pull`` makes a best-effort attempt to connect to ``suggested_peers``
+before downloading.  Peer hints can also be inspected or connected manually:
+
+.. code:: bash
+
+   git ipfs peers
+   git ipfs peers --connect
+
+To make the data retrievable by others, configure a Kubo remote pinning service
+and push sidecar CIDs:
+
+.. code:: bash
+
+   ipfs pin remote service add <service-name> <endpoint> <key>
+   git ipfs push --service <service-name>
+
+Useful inspection commands:
+
+.. code:: bash
+
+   git ipfs status
+   git ipfs status --full
+   git ipfs export --emit_bash
+
+
 Use Cases
 ---------
 
