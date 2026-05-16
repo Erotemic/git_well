@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Added patchdir save / apply tools
 * Added new `git-well squash` tool with the goal of making a more useful squash-streaks
 * Add `git-well archive_source` tool
+* Add `git-well ipfs` tool
 
 ### Removed
 * Drop Python 3.7, 3.8, and 3.9 support
