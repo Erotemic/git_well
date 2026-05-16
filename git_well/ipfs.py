@@ -455,8 +455,13 @@ def _version_gte(found: tuple[int, ...] | None, minimum: tuple[int, ...]) -> boo
     return tuple(found + (0,) * (width - len(found))) >= tuple(minimum + (0,) * (width - len(minimum)))
 
 
-def _clean_import_config(config: scfg.DataConfig | dict[str, Any]) -> dict[str, Any]:
-    cfg = dict(config)
+def _config_dict(config: Any) -> dict[str, Any]:
+    """Return a plain dict for scriptconfig.Config/DataConfig/mapping objects."""
+    return dict(config)
+
+
+def _clean_import_config(config: Any) -> dict[str, Any]:
+    cfg = _config_dict(config)
     return {
         key: cfg[key]
         for key in CID_IMPORT_KEYS
@@ -469,14 +474,14 @@ def _sidecar_metadata(
     cid: str,
     rel_path: os.PathLike | str,
     path: os.PathLike | str,
-    config: scfg.DataConfig | dict[str, Any],
+    config: Any,
     num_items: int | None = None,
 ) -> dict[str, Any]:
     """Build the deterministic tracked sidecar payload."""
     path = Path(path)
     quickstat = _compute_quickstat(path)
     import_config = _clean_import_config(config)
-    cfg = dict(config)
+    cfg = _config_dict(config)
     meta: dict[str, Any] = {
         'schema_version': SIDECAR_SCHEMA_VERSION,
         'type': 'ipfs-sidecar',
@@ -579,8 +584,8 @@ def _parse_ipfs_progress_size(stderr: str) -> str | None:
     return None
 
 
-def _build_add_argv(config: scfg.DataConfig | dict[str, Any]) -> list[str]:
-    cfg = dict(config)
+def _build_add_argv(config: Any) -> list[str]:
+    cfg = _config_dict(config)
     argv = ['ipfs', 'add']
     bool_flags = ['pin', 'progress', 'recursive', 'only_hash']
     keyval_flags = ['raw_leaves', 'cid_version']
@@ -1100,18 +1105,19 @@ class IPFSPinAdd(scfg.DataConfig):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         if config.path is None:
             raise ValueError('Path must be specified')
+        pin_name = config.name
         candidate = Path(config.path)
         if candidate.exists():
             meta = _read_sidecar(candidate)
             root_cid = meta['cid']
-            if config.name is None:
-                config.name = _sidecar_pin_name(meta)
+            if pin_name is None:
+                pin_name = _sidecar_pin_name(meta)
         else:
             root_cid = config.path
 
         pin_argv = ['ipfs', 'pin', 'add']
-        if config.name is not None:
-            pin_argv += ['--name', config.name]
+        if pin_name is not None:
+            pin_argv += ['--name', pin_name]
         if config.progress:
             pin_argv.append('--progress')
         if config.recursive:

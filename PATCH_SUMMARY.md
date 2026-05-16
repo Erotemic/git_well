@@ -21,3 +21,9 @@ ty check git_well
 python -m pytest -q tests/test_ipfs.py
 bash -n dev/ipfs_dogfood_smoke.sh
 ```
+
+
+## v6
+
+- Broadened internal config helper annotations so `scriptconfig.Config` objects accepted by `cli()` satisfy `ty`.
+- Avoid mutating parsed `scriptconfig.Config` in `IPFSPinAdd`; use a local `pin_name` instead.
