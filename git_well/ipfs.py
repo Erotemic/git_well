@@ -210,19 +210,74 @@ def _command_failure_message(argv: list[str], info: Any) -> str:
     return '\n\n'.join(parts)
 
 
+def _ipfs_command_prefix() -> list[str]:
+    """Return the command prefix used when logical argv starts with ``ipfs``.
+
+    Tests and unusual installations can set ``GIT_WELL_IPFS_COMMAND_JSON`` to a
+    JSON list such as ``["python", "/path/to/fake_ipfs.py"]``.  The simpler
+    ``GIT_WELL_IPFS_EXE`` override accepts a single executable path.  Normal
+    users should not need either variable.
+    """
+    command_json = os.environ.get('GIT_WELL_IPFS_COMMAND_JSON')
+    if command_json:
+        try:
+            data = json.loads(command_json)
+        except Exception as ex:  # pragma: no cover - defensive config error
+            raise GitIPFSError(
+                'Invalid GIT_WELL_IPFS_COMMAND_JSON. Expected a JSON list of strings.'
+            ) from ex
+        if not isinstance(data, list) or not data or not all(isinstance(p, str) for p in data):
+            raise GitIPFSError(
+                'Invalid GIT_WELL_IPFS_COMMAND_JSON. Expected a non-empty JSON list of strings.'
+            )
+        return data
+    ipfs_exe = os.environ.get('GIT_WELL_IPFS_EXE')
+    if ipfs_exe:
+        return [ipfs_exe]
+    return ['ipfs']
+
+
+def _executable_exists(exe: str) -> bool:
+    """Return true if ``exe`` is executable or resolvable on PATH."""
+    return shutil.which(exe) is not None or Path(exe).exists()
+
+
+def _logical_ipfs_argv(argv: list[str]) -> list[str]:
+    """Rewrite logical ``ipfs`` argv through any configured test/user shim."""
+    if argv and argv[0] == 'ipfs':
+        return _ipfs_command_prefix() + argv[1:]
+    return argv
+
+
+def _ipfs_executable_detail() -> tuple[bool, str]:
+    """Return whether Kubo is callable and a human-readable detail string."""
+    prefix = _ipfs_command_prefix()
+    exe = prefix[0]
+    if _executable_exists(exe):
+        return True, argv_to_str(prefix)
+    if prefix == ['ipfs']:
+        return False, 'not found on PATH'
+    return False, 'configured command is not executable: ' + argv_to_str(prefix)
+
+
 def _run(argv: list[str], *, cwd: os.PathLike | str | None = None,
          dry_run: bool = False, verbose: int = 3, check: bool = True) -> Any:
     """Run or print a command using ubelt's command wrapper."""
+    run_argv = _logical_ipfs_argv(argv)
     if dry_run:
-        print(argv_to_str(argv))
+        print(argv_to_str(run_argv))
         return None  # type: ignore[return-value]
-    if argv and argv[0] == 'ipfs' and shutil.which('ipfs') is None:
-        raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT)
+    if argv and argv[0] == 'ipfs' and not _executable_exists(run_argv[0]):
+        if run_argv == ['ipfs'] + argv[1:]:
+            raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT)
+        raise GitIPFSError('Configured IPFS command is not executable: ' + argv_to_str(run_argv))
     try:
-        info = ub.cmd(argv, cwd=cwd, verbose=verbose)
+        info = ub.cmd(run_argv, cwd=cwd, verbose=verbose)
     except FileNotFoundError as ex:
         if argv and argv[0] == 'ipfs':
-            raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT) from ex
+            if run_argv == ['ipfs'] + argv[1:]:
+                raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT) from ex
+            raise GitIPFSError('Configured IPFS command is not executable: ' + argv_to_str(run_argv)) from ex
         raise
     if check and getattr(info, 'returncode', 0):
         raise GitIPFSError(_command_failure_message(argv, info))
@@ -702,10 +757,10 @@ class IPFSDoctor(scfg.DataConfig):
         git_root = _git_toplevel(start)
         add('git worktree', git_root is not None, os.fspath(git_root) if git_root else 'not inside a git worktree')
 
-        ipfs_exe = shutil.which('ipfs')
-        add('ipfs executable', ipfs_exe is not None, ipfs_exe or 'not found on PATH')
+        ipfs_ok, ipfs_detail = _ipfs_executable_detail()
+        add('ipfs executable', ipfs_ok, ipfs_detail)
 
-        if ipfs_exe:
+        if ipfs_ok:
             version = _run(['ipfs', 'version'], verbose=0, check=False)
             version_text = (_cmd_text(version.stdout) or _cmd_text(version.stderr)).strip()
             found_version = _parse_kubo_version_text(version_text)

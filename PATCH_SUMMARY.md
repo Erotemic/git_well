@@ -1,38 +1,23 @@
-# git-ipfs hardening overlay v5
+# git ipfs hardening overlay v8
 
-This follow-up fixes a regression in the v4 integration test: using
-`scriptconfig.ModalCLI.register` directly as a decorator can replace the
-command class name with `None` in some scriptconfig versions.
+This overlay fixes the Windows fake-IPFS integration test by avoiding platform
+PATH / PATHEXT lookup for the test double.
 
 Changes:
 
-- Adds `_register_modal(parent)` helper that registers a modal command and
-  returns the original class object.
-- Switches `IPFSDoctor`, `IPFSPeers`, `IPFSPush`, `IPFSAdd`, `IPFSPull`,
-  `IPFSStatus`, `IPFSExportPins`, `IPFSPinAdd`, and `IPFSCheckCID` to the
-  preserving decorator.
-- Adds a regression test that imports `IPFSAdd`, `IPFSPull`, and `IPFSDoctor`
-  and verifies they remain class objects.
+- Add `GIT_WELL_IPFS_COMMAND_JSON`, a test/user override for the logical `ipfs`
+  executable. It accepts a JSON argv prefix, e.g. `["python", "fake_ipfs.py"]`.
+- Keep `GIT_WELL_IPFS_EXE` as a simpler single-executable override.
+- Rewrite logical `ipfs ...` commands through the configured prefix inside
+  `_run`, while still using the logical argv for user-facing diagnostics.
+- Update `git ipfs doctor` to report configured IPFS command prefixes.
+- Update the fake-IPFS test fixture to set `GIT_WELL_IPFS_COMMAND_JSON` to
+  `[sys.executable, _fake_ipfs.py]`, so Windows does not need to discover
+  `ipfs`, `ipfs.cmd`, or `ipfs.bat` via `shutil.which`.
 
-Suggested checks:
+Validation performed in this sandbox:
 
-```bash
-ty check git_well
-python -m pytest -q tests/test_ipfs.py
-bash -n dev/ipfs_dogfood_smoke.sh
-```
+- `python -m py_compile git_well/ipfs.py tests/test_ipfs.py`
 
-
-## v6
-
-- Broadened internal config helper annotations so `scriptconfig.Config` objects accepted by `cli()` satisfy `ty`.
-- Avoid mutating parsed `scriptconfig.Config` in `IPFSPinAdd`; use a local `pin_name` instead.
-
-## v7 Windows fake-IPFS test fix
-
-- Makes the fake Kubo test helper install a shared Python implementation plus
-  POSIX and Windows launchers.
-- Adds `ipfs.bat` and `ipfs.cmd` launchers so `shutil.which('ipfs')` succeeds
-  on Windows through PATHEXT during the fake-IPFS integration test.
-- Keeps the fake implementation single-sourced so POSIX and Windows exercise
-  the same behavior.
+The sandbox does not have the runtime test dependency `scriptconfig`, so the
+full pytest suite was not run here.

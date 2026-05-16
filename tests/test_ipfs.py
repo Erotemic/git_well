@@ -173,6 +173,7 @@ def _install_fake_ipfs(tmp_path, monkeypatch):
     both a POSIX ``ipfs`` launcher and Windows ``ipfs.bat`` / ``ipfs.cmd``
     launchers that delegate to the same Python implementation.
     """
+    import json
     import os
     import sys
     import textwrap
@@ -255,6 +256,10 @@ def _install_fake_ipfs(tmp_path, monkeypatch):
         )
 
     monkeypatch.setenv('GIT_WELL_FAKE_IPFS_LOG', os.fspath(log_fpath))
+    monkeypatch.setenv(
+        'GIT_WELL_IPFS_COMMAND_JSON',
+        json.dumps([sys.executable, os.fspath(fake_impl)]),
+    )
     monkeypatch.setenv('PATH', os.fspath(bin_dpath) + os.pathsep + os.environ.get('PATH', ''))
     return bin_dpath, log_fpath
 
