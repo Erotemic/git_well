@@ -20,6 +20,10 @@ Requires:
     packaging
     ubelt
 """
+
+from __future__ import annotations
+
+from typing import Any
 import ubelt as ub
 import scriptconfig as scfg
 
@@ -30,11 +34,16 @@ class UpdateDevBranch(scfg.DataConfig):
     ``dev/<version>`` with the greatest semantic version.
 
     """
-    __command__ = 'branch_upgrade'
-    repo_dpath = scfg.Value('.', position=1, help='location of the repo')
+
+    __command__: str = 'branch_upgrade'
+    repo_dpath: scfg.Value = scfg.Value(
+        '.', position=1, help='location of the repo'
+    )
 
     @classmethod
-    def main(cls, cmdline=1, **kwargs):
+    def main(
+        cls, argv: list[str] | str | bool | None = True, **kwargs: Any
+    ) -> None:
         """
         Example:
             >>> from git_well.git_branch_upgrade import UpdateDevBranch
@@ -45,24 +54,30 @@ class UpdateDevBranch(scfg.DataConfig):
             >>> repo.cmd('git checkout -b dev/2.1.0')
             >>> repo.cmd('git checkout main')
             >>> assert repo.active_branch.name == 'main'
-            >>> cmdline = 0
+            >>> argv = False
             >>> kwargs = dict()
             >>> kwargs['repo_dpath'] = repo
-            >>> cls.main(cmdline=cmdline, **kwargs)
+            >>> cls.main(argv=argv, **kwargs)
             >>> assert repo.active_branch.name == 'dev/2.1.0'
         """
-        config = cls.cli(cmdline=cmdline, data=kwargs)
+        config = cls.cli(argv=argv, data=kwargs)
         from git_well._utils import rich_print
+
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         from git_well.repo import Repo
+
         repo = Repo.coerce(config['repo_dpath'])
 
         versioned_dev_branches = dev_branches(repo)
         if len(versioned_dev_branches) == 0:
             raise Exception('There are no versioned branches')
 
-        version = max(versioned_dev_branches, key=lambda x: x['version'])['version']
-        final_cand = [d for d in versioned_dev_branches if d['version'] == version]
+        version = max(versioned_dev_branches, key=lambda x: x['version'])[
+            'version'
+        ]
+        final_cand = [
+            d for d in versioned_dev_branches if d['version'] == version
+        ]
 
         latest = None
         for c in final_cand:
@@ -73,7 +88,7 @@ class UpdateDevBranch(scfg.DataConfig):
         # Need to fetch from remote
         if latest is None:
             info = final_cand[-1]
-            print('info = {}'.format(ub.repr2(info, nl=1)))
+            print('info = {}'.format(ub.urepr(info, nl=1)))
             print('Latest seems to be on a remote')
             info['branch_name']
             repo.git.checkout(info['branch_name'])
@@ -113,8 +128,9 @@ class UpdateDevBranch(scfg.DataConfig):
 #         print(line)
 
 
-def dev_branches(repo):
+def dev_branches(repo: Any) -> list[dict[str, Any]]:
     from packaging.version import parse as Version
+
     branch_infos = []
     for line in repo.git.branch('-r').split('\n'):
         line = line.strip().split('->')[-1].strip()

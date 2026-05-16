@@ -4,10 +4,23 @@ We are currently working on porting this changelog to the specifications in
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Version 0.2.5 - Unreleased
+## Version 0.3.0 - Unreleased
+
+### Added
+
+* Added patchdir save / apply tools
+* Added new `git-well squash` tool with the goal of making a more useful squash-streaks
+* Add `git-well archive_source` tool
+* Add `git-well ipfs` tool
+
+### Removed
+* Drop Python 3.7, 3.8, and 3.9 support
+
+### Changed
+* git-well discover-remote now works with submodules
 
 
-## Version 0.2.4 - Released 2026-05-16
+## Version 0.2.4 - Released 2025-02-27
 
 ### Added
 * New CLI command: `url` which lets you access components of a git url

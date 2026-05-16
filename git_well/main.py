@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # PYTHON_ARGCOMPLETE_OK
+from __future__ import annotations
+
 import scriptconfig as scfg
 
 
 class GitWellModalCLI(scfg.ModalCLI):
     # When adding a new top-level CLI, need to update:
     # ~/code/git_well/pyproject.toml
-    # ~/code/git_well/setup.py
     from git_well.git_squash_streaks import __cli__ as squash_streaks
+    from git_well.git_squash import __cli__ as squash
     from git_well.git_branch_upgrade import __cli__ as branch_upgrade
     from git_well.git_sync import __cli__ as sync
     from git_well.git_branch_cleanup import __cli__ as branch_cleanup
@@ -17,10 +19,14 @@ class GitWellModalCLI(scfg.ModalCLI):
     from git_well.git_discover_remote import __cli__ as discover_remote
     from git_well.git_autoconf_gpgsign import __cli__ as autoconf_gpgsign
     from git_well.git_url_components import __cli__ as url
+    from git_well.git_archive_source import __cli__ as archive_source
+    from git_well.ipfs import __cli__ as ipfs
+    from git_well.patchdir.patchdir_modal import __cli__ as patchdir
 
 
-def main():
+def main() -> None:
     from git_well import __version__
+
     modal = GitWellModalCLI(version=__version__)
     modal.main()
 

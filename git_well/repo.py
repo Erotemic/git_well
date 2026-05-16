@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any, cast
+import os
 import git
 import ubelt as ub
 
@@ -10,30 +14,33 @@ class Repo(git.Repo):
         print(f'repo={repo}')
         ...
     """
+
     # Extension of git.Repo
 
-    def cmd(self, command, **kwargs):
+    def cmd(self, command: str | list[str], **kwargs: Any) -> Any:
         """
         Execute a command in the root of the repo.
         """
-        defaults = ub.udict({
-            'cwd': self.dpath,
-            'check': True,
-            'verbose': 0,
-        })
+        defaults = ub.udict(
+            {
+                'cwd': self.dpath,
+                'check': True,
+                'verbose': 0,
+            }
+        )
         final_kwargs = defaults | kwargs
         info = ub.cmd(command, **final_kwargs)
         return info
 
     @property
-    def dpath(self):
+    def dpath(self) -> ub.Path:
         """
         Alias of working_dir wraped in a ubelt Path
         """
         return ub.Path(self.working_dir)
 
     @property
-    def is_submodule(self):
+    def is_submodule(self) -> bool:
         """
         True if the submodule for another repo.
         """
@@ -42,11 +49,11 @@ class Repo(git.Repo):
         return git_file.is_file()
 
     @property
-    def config_fpath(self):
+    def config_fpath(self) -> ub.Path:
         return ub.Path(self.git_dir) / 'config'
 
     @classmethod
-    def coerce(cls, data):
+    def coerce(cls, data: str | os.PathLike[str] | Repo) -> Repo:
         """
         Try to construct a Repo object from input dat
 
@@ -61,10 +68,11 @@ class Repo(git.Repo):
         """
         from git_well._utils import find_git_root
         import os
+
         if isinstance(data, cls):
             self = data
         elif isinstance(data, (str, os.PathLike)):
-            dpath = data
+            dpath = cast(str | os.PathLike[str], data)
             repo_root = find_git_root(dpath)
             self = cls(repo_root)
         else:
@@ -72,7 +80,7 @@ class Repo(git.Repo):
         return self
 
     @classmethod
-    def demo(cls):
+    def demo(cls) -> Repo:
         """
         Create a demo repo for tests
 
@@ -84,12 +92,17 @@ class Repo(git.Repo):
             >>> self = Repo.demo()
         """
         from git_well.demo import make_dummy_git_repo
+
         dpath = make_dummy_git_repo()
         return cls.coerce(dpath)
 
-    def find_merged_branches(repo, main_branch='main'):
+    def find_merged_branches(repo: Repo, main_branch: str = 'main') -> Any:
         # git branch --merged main
         # main_branch = 'main'
-        merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
+        merged_branches = [
+            p.replace('*', '').strip()
+            for p in repo.git.branch(merged=main_branch).split('\n')
+            if p.strip()
+        ]
         merged_branches = ub.oset(merged_branches) - {main_branch}
         return merged_branches

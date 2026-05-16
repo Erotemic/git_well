@@ -1,25 +1,34 @@
+from __future__ import annotations
+
+from typing import Any
+import os
 import ubelt as ub
 
 
-def rich_print(*args, **kwargs):
+def rich_print(*args: Any, **kwargs: Any) -> Any:
     try:
-        from rich import print as print_
+        from rich import print as printer
     except Exception:
-        print_ = print
-    return print_(*args, **kwargs)
+        printer: Any = print
+    return printer(*args, **kwargs)
 
 
-def find_merged_branches(repo, main_branch='main'):
+def find_merged_branches(repo: Any, main_branch: str = 'main') -> Any:
     # git branch --merged main
     # main_branch = 'main'
-    merged_branches = [p.replace('*', '').strip() for p in repo.git.branch(merged=main_branch).split('\n') if p.strip()]
+    merged_branches = [
+        p.replace('*', '').strip()
+        for p in repo.git.branch(merged=main_branch).split('\n')
+        if p.strip()
+    ]
     merged_branches = ub.oset(merged_branches) - {main_branch}
     return merged_branches
 
 
-def confirm(msg):
+def confirm(msg: str) -> bool:
     try:
         from rich import prompt
+
         ret = prompt.Confirm.ask(msg)
     except ImportError:
         while True:
@@ -35,7 +44,7 @@ def confirm(msg):
     return ret
 
 
-def choice_prompt(msg, choices):
+def choice_prompt(msg: str, choices: list[str]) -> str:
     """
     Ignore:
         choice_prompt('which one?', choices=['a', 'b', 'c'])
@@ -50,9 +59,10 @@ def choice_prompt(msg, choices):
         """
         Assigns an integer to each choice.
         """
-        def make_prompt(self, default):
+
+        def make_prompt(self, default: Any) -> Any:
             prompt = self.prompt.copy()
-            prompt.end = ""
+            prompt.end = ''
 
             if self.show_choices and self.choices:
                 prompt.append('\n')
@@ -65,20 +75,20 @@ def choice_prompt(msg, choices):
                         raise AssertionError('choices cannot be integers')
 
                     prompt.append(f'{idx}. ', style='json.number')
-                    prompt.append(f'{choice}\n', style="prompt")
+                    prompt.append(f'{choice}\n', style='prompt')
             if (
                 default != ...
                 and self.show_default
                 and isinstance(default, (str, self.response_type))
             ):
-                prompt.append(" ")
+                prompt.append(' ')
                 _default = self.render_default(default)
                 prompt.append(_default)
 
             prompt.append(self.prompt_suffix)
             return prompt
 
-        def process_response(self, value: str):
+        def process_response(self, value: str) -> str:
             value = value.strip()
             assert self.choices is not None
             try:
@@ -100,18 +110,27 @@ def choice_prompt(msg, choices):
     return ChoiceWithIntPrompt.ask(msg, choices=choices)
 
 
-def find_git_root(dpath):
-    cwd = ub.Path(dpath).absolute()
-    parts = cwd.parts
-    found = None
-    for i in reversed(range(0, len(parts) + 1)):
-        p = ub.Path(*parts[0:i])
-        cand = p / '.git'
-        if cand.exists():
-            found = p
-            break
-    if found is None:
-        raise Exception('cannot find git root')
+def find_git_root(dpath: str | os.PathLike[str]) -> ub.Path:
+    if 0:
+        # Old implementation
+        cwd = ub.Path(dpath).absolute()
+        parts = cwd.parts
+        found = None
+        for i in reversed(range(0, len(parts) + 1)):
+            p = ub.Path(*parts[0:i])
+            cand = p / '.git'
+            if cand.exists():
+                found = p
+                break
+        if found is None:
+            raise Exception('cannot find git root')
+    else:
+        # New implementation (should be more robust)
+        # allow running inside a subdir of a repo
+        info = ub.cmd('git rev-parse --show-toplevel', cwd=dpath, verbose=0)
+        if info['ret'] != 0:
+            raise RuntimeError(f'Not a git repo: {dpath}')
+        found = ub.Path(info['out'].strip())
     return found
 
 
@@ -150,15 +169,16 @@ class GitURL(str):
         >>>         assert recon == url
     """
 
-    def __init__(self, data):
+    def __init__(self, data: str) -> None:
         # note: inheriting from str so data is handled in __new__
-        self._info = None
+        self._info: dict[str, Any] | None = None
 
-    def _parse(self):
+    def _parse(self) -> None:
         import parse
+
         parse.Parser('ssh://{user}')
 
-    def _fixup_endpoint(self, repo_endpoint):
+    def _fixup_endpoint(self, repo_endpoint: str) -> tuple[str, str]:
         if repo_endpoint.endswith('.git'):
             repo_name = repo_endpoint[:-4]
         else:
@@ -167,7 +187,7 @@ class GitURL(str):
         return repo_name, repo_endpoint
 
     @property
-    def info(self):
+    def info(self) -> dict[str, Any]:
         if self._info is None:
             url = self
             info = {}
@@ -181,6 +201,17 @@ class GitURL(str):
                 info['repo_endpoint'] = repo_endpoint
                 info['user'] = None
                 info['protocol'] = 'https'
+            elif url.startswith('http://'):
+                # Coerce http to https
+                parts = url.split('http://')[1].split('/', 3)
+                repo_endpoint = parts[2]
+                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
+                info['host'] = parts[0]
+                info['group'] = parts[1]
+                info['repo_name'] = repo_name
+                info['repo_endpoint'] = repo_endpoint
+                info['user'] = None
+                info['protocol'] = 'http'
             elif url.startswith('git@'):
                 parts = url.split('git@')[1].split(':')
                 repo_endpoint = parts[1].split('/')[1]
@@ -208,7 +239,7 @@ class GitURL(str):
             elif url.endswith('/.git'):
                 # An ssh protocol to an explicit directory
                 host, rest = url.split(':', 1)
-                parts = rest.rsplit('/',  2)
+                parts = rest.rsplit('/', 2)
                 info['host'] = host
                 info['group'] = parts[0]
                 info['repo_name'] = parts[1]
@@ -216,7 +247,9 @@ class GitURL(str):
                 info['protocol'] = 'scp'
             elif '//' not in url and '@' not in url:
                 parts = url.split(':')
-                repo_name, repo_endpoint = self._fixup_endpoint(parts[1].split('/')[1])
+                repo_name, repo_endpoint = self._fixup_endpoint(
+                    parts[1].split('/')[1]
+                )
                 info['host'] = parts[0]
                 info['group'] = parts[1].split('/')[0]
                 info['repo_name'] = repo_name
@@ -228,7 +261,7 @@ class GitURL(str):
             self._info = info
         return self._info
 
-    def to_protocol(self, protocol):
+    def to_protocol(self, protocol: str) -> GitURL:
         """
         Convert the URL to a different protocol
         """
@@ -241,22 +274,44 @@ class GitURL(str):
         else:
             raise KeyError(protocol)
 
-    def to_git(self):
+    def to_git(self) -> GitURL:
         info = self.info
-        new_url = 'git@' + info['host']  + ':' + info['group'] + '/' + info['repo_endpoint']
+        new_url = (
+            'git@'
+            + info['host']
+            + ':'
+            + info['group']
+            + '/'
+            + info['repo_endpoint']
+        )
         return self.__class__(new_url)
 
-    def to_ssh(self):
+    def to_ssh(self) -> GitURL:
         info = self.info
         user = info.get('user', None)
         if user is None:
             user_part = ''
         else:
             user_part = user + '@'
-        new_url = 'ssh://' + user_part + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
+        new_url = (
+            'ssh://'
+            + user_part
+            + info['host']
+            + '/'
+            + info['group']
+            + '/'
+            + info['repo_endpoint']
+        )
         return self.__class__(new_url)
 
-    def to_https(self):
+    def to_https(self) -> GitURL:
         info = self.info
-        new_url = 'https://' + info['host']  + '/' + info['group'] + '/' + info['repo_endpoint']
+        new_url = (
+            'https://'
+            + info['host']
+            + '/'
+            + info['group']
+            + '/'
+            + info['repo_endpoint']
+        )
         return self.__class__(new_url)
