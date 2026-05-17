@@ -124,7 +124,7 @@ jobs:
         IMPORTED_FPR=$($GPG_EXECUTABLE --list-keys --with-colons "$GPG_KEYID" | awk -F: '/^fpr/ { print $10; exit }')
         if [[ "$IMPORTED_FPR" != "$GPG_KEYID" ]]; then echo "ERROR: imported GPG fingerprint $IMPORTED_FPR does not match pinned $GPG_KEYID"; exit 1; fi
         echo "GPG fingerprint verified: $IMPORTED_FPR"
-        VERSION=$(python -c "import setup; print(setup.VERSION)")
+        VERSION=$(python -c 'import ast, pathlib; tree = ast.parse(pathlib.Path('"'"'git_well/__init__.py'"'"').read_text()); print(next(n.value.value for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "__version__" for t in n.targets)))')
         python -m pip install pip uv -U
         python -m pip install packaging twine -U
         python -m pip install urllib3 requests[security]
@@ -220,7 +220,7 @@ jobs:
         IMPORTED_FPR=$($GPG_EXECUTABLE --list-keys --with-colons "$GPG_KEYID" | awk -F: '/^fpr/ { print $10; exit }')
         if [[ "$IMPORTED_FPR" != "$GPG_KEYID" ]]; then echo "ERROR: imported GPG fingerprint $IMPORTED_FPR does not match pinned $GPG_KEYID"; exit 1; fi
         echo "GPG fingerprint verified: $IMPORTED_FPR"
-        VERSION=$(python -c "import setup; print(setup.VERSION)")
+        VERSION=$(python -c 'import ast, pathlib; tree = ast.parse(pathlib.Path('"'"'git_well/__init__.py'"'"').read_text()); print(next(n.value.value for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "__version__" for t in n.targets)))')
         python -m pip install pip uv -U
         python -m pip install packaging twine -U
         python -m pip install urllib3 requests[security]
@@ -292,7 +292,7 @@ jobs:
     - name: Tag Release Commit
       if: (startsWith(github.event.ref, 'refs/heads/release'))
       run: |-
-        export VERSION=$(python -c "import setup; print(setup.VERSION)")
+        export VERSION=$(python -c 'import ast, pathlib; tree = ast.parse(pathlib.Path('"'"'git_well/__init__.py'"'"').read_text()); print(next(n.value.value for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "__version__" for t in n.targets)))')
         git tag "v$VERSION"
         git push origin "v$VERSION"
     - uses: softprops/action-gh-release@v1
