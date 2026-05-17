@@ -22,13 +22,7 @@ Inspect local drift quickly, or by recomputing the CID:
     python -m git_well ipfs status .
     python -m git_well ipfs status . --full
 
-Run a first-use health check, add data, and pull it later:
-
-    git ipfs doctor
-    git ipfs add data --name my-data
-    git ipfs pull
-
-Export local pin commands for all sidecars under the current repo:
+Export pin commands for all sidecars under the current repo:
 
     python -m git_well ipfs export . --emit_bash
 """
@@ -37,10 +31,12 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shlex
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import quote, urlparse
 from typing import Any, Iterable
 
 import scriptconfig as scfg
@@ -50,54 +46,6 @@ import ubelt as ub
 class IPFSCLI(scfg.ModalCLI):
     """Utilities for git-tracked IPFS sidecar files."""
     __command__ = 'ipfs'
-
-
-def _register_modal(parent: Any) -> Any:
-    """Register a scriptconfig command while preserving the class name.
-
-    Some scriptconfig versions return ``None`` from ``ModalCLI.register``.
-    Using that method directly as a decorator can therefore overwrite names
-    such as ``IPFSAdd`` with ``None``, which is surprising for tests and for
-    downstream callers that import command classes directly.
-    """
-    def _decorator(cls):
-        parent.register(cls)
-        return cls
-    return _decorator
-
-
-SIDECAR_SCHEMA_VERSION = 1
-MIN_KUBO_VERSION = (0, 37, 0)
-MIN_KUBO_VERSION_TEXT = '.'.join(map(str, MIN_KUBO_VERSION))
-
-# Options that affect the CID produced by ``ipfs add`` and therefore must be
-# kept in the tracked sidecar.  Runtime/UI flags such as dry_run, progress,
-# update_gitignore, and git_add_sidecar intentionally stay out of committed
-# sidecars so repeated runs do not create noisy diffs.
-CID_IMPORT_KEYS = (
-    'recursive',
-    'cid_version',
-    'raw_leaves',
-    'only_hash',
-)
-
-
-KUBO_INSTALL_HINT = (
-    f'Kubo >= {MIN_KUBO_VERSION_TEXT} is required. '
-    'Install Kubo, make sure `ipfs` is on PATH, then rerun `git ipfs doctor`.'
-)
-KUBO_DAEMON_HINT = (
-    'The Kubo API/daemon does not appear to be reachable. '
-    'Start it with `ipfs daemon`, or verify that IPFS_PATH points at the intended Kubo repo.'
-)
-KUBO_PIN_NAME_HINT = (
-    f'Named pins during add require Kubo >= {MIN_KUBO_VERSION_TEXT} '
-    'because git-ipfs uses `ipfs add --pin-name`. Upgrade Kubo or omit `--name`.'
-)
-
-
-class GitIPFSError(RuntimeError):
-    """User-facing error raised for actionable git-ipfs failures."""
 
 
 class _YamlCodec:
@@ -164,123 +112,15 @@ def argv_to_str(argv: Iterable[os.PathLike | str]) -> str:
     return ' '.join(shlex.quote(os.fspath(p)) for p in argv)
 
 
-def _cmd_text(value: str | bytes | None) -> str:
-    """Normalize ubelt command output to text for static checkers."""
-    if value is None:
-        return ''
-    if isinstance(value, bytes):
-        return value.decode(errors='replace')
-    return value
-
-
-def _command_failure_message(argv: list[str], info: Any) -> str:
-    """Build an actionable command-failure message for CLI users."""
-    cmdline = argv_to_str(argv)
-    stdout = _cmd_text(getattr(info, 'stdout', None)).strip()
-    stderr = _cmd_text(getattr(info, 'stderr', None)).strip()
-    returncode = getattr(info, 'returncode', None)
-    parts = [f'Command failed with exit code {returncode}: {cmdline}']
-    if stderr:
-        parts.append(f'stderr:\n{stderr}')
-    if stdout:
-        parts.append(f'stdout:\n{stdout}')
-
-    text = '\n'.join([stderr, stdout]).lower()
-    if argv[:2] == ['ipfs', 'get']:
-        cid = argv[-1] if argv else '<cid>'
-        parts.append(
-            'Could not retrieve the requested CID. Verify that the content is '
-            f'pinned somewhere reachable, then try `git ipfs peers --connect` or `ipfs swarm peers`. CID: {cid}'
-        )
-    elif argv[:3] == ['ipfs', 'swarm', 'peers']:
-        parts.append(KUBO_DAEMON_HINT)
-    elif argv[:2] == ['ipfs', 'repo']:
-        parts.append(
-            'The user-level Kubo repository may not be initialized. Run `ipfs init` '
-            'for Kubo itself; git-ipfs does not create an IPFS store inside this Git repo.'
-        )
-    elif argv[:2] == ['ipfs', 'add'] and ('pin-name' in text or any(a.startswith('--pin-name') for a in argv)):
-        parts.append(KUBO_PIN_NAME_HINT)
-    elif argv and argv[0] == 'ipfs' and (
-        'api' in text or 'daemon' in text or 'connection refused' in text or 'no such file' in text
-    ):
-        parts.append(KUBO_DAEMON_HINT)
-    elif argv and argv[0] == 'ipfs':
-        parts.append('Run `git ipfs doctor` for a local Kubo/Git environment report.')
-    return '\n\n'.join(parts)
-
-
-def _ipfs_command_prefix() -> list[str]:
-    """Return the command prefix used when logical argv starts with ``ipfs``.
-
-    Tests and unusual installations can set ``GIT_WELL_IPFS_COMMAND_JSON`` to a
-    JSON list such as ``["python", "/path/to/fake_ipfs.py"]``.  The simpler
-    ``GIT_WELL_IPFS_EXE`` override accepts a single executable path.  Normal
-    users should not need either variable.
-    """
-    command_json = os.environ.get('GIT_WELL_IPFS_COMMAND_JSON')
-    if command_json:
-        try:
-            data = json.loads(command_json)
-        except Exception as ex:  # pragma: no cover - defensive config error
-            raise GitIPFSError(
-                'Invalid GIT_WELL_IPFS_COMMAND_JSON. Expected a JSON list of strings.'
-            ) from ex
-        if not isinstance(data, list) or not data or not all(isinstance(p, str) for p in data):
-            raise GitIPFSError(
-                'Invalid GIT_WELL_IPFS_COMMAND_JSON. Expected a non-empty JSON list of strings.'
-            )
-        return data
-    ipfs_exe = os.environ.get('GIT_WELL_IPFS_EXE')
-    if ipfs_exe:
-        return [ipfs_exe]
-    return ['ipfs']
-
-
-def _executable_exists(exe: str) -> bool:
-    """Return true if ``exe`` is executable or resolvable on PATH."""
-    return shutil.which(exe) is not None or Path(exe).exists()
-
-
-def _logical_ipfs_argv(argv: list[str]) -> list[str]:
-    """Rewrite logical ``ipfs`` argv through any configured test/user shim."""
-    if argv and argv[0] == 'ipfs':
-        return _ipfs_command_prefix() + argv[1:]
-    return argv
-
-
-def _ipfs_executable_detail() -> tuple[bool, str]:
-    """Return whether Kubo is callable and a human-readable detail string."""
-    prefix = _ipfs_command_prefix()
-    exe = prefix[0]
-    if _executable_exists(exe):
-        return True, argv_to_str(prefix)
-    if prefix == ['ipfs']:
-        return False, 'not found on PATH'
-    return False, 'configured command is not executable: ' + argv_to_str(prefix)
-
-
 def _run(argv: list[str], *, cwd: os.PathLike | str | None = None,
-         dry_run: bool = False, verbose: int = 3, check: bool = True) -> Any:
+         dry_run: bool = False, verbose: int = 3, check: bool = True) -> ub.cmd:
     """Run or print a command using ubelt's command wrapper."""
-    run_argv = _logical_ipfs_argv(argv)
     if dry_run:
-        print(argv_to_str(run_argv))
+        print(argv_to_str(argv))
         return None  # type: ignore[return-value]
-    if argv and argv[0] == 'ipfs' and not _executable_exists(run_argv[0]):
-        if run_argv == ['ipfs'] + argv[1:]:
-            raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT)
-        raise GitIPFSError('Configured IPFS command is not executable: ' + argv_to_str(run_argv))
-    try:
-        info = ub.cmd(run_argv, cwd=cwd, verbose=verbose)
-    except FileNotFoundError as ex:
-        if argv and argv[0] == 'ipfs':
-            if run_argv == ['ipfs'] + argv[1:]:
-                raise GitIPFSError('Could not find the `ipfs` executable on PATH. ' + KUBO_INSTALL_HINT) from ex
-            raise GitIPFSError('Configured IPFS command is not executable: ' + argv_to_str(run_argv)) from ex
-        raise
-    if check and getattr(info, 'returncode', 0):
-        raise GitIPFSError(_command_failure_message(argv, info))
+    info = ub.cmd(argv, cwd=cwd, verbose=verbose)
+    if check:
+        info.check_returncode()
     return info
 
 
@@ -323,261 +163,12 @@ def _read_sidecar(fpath: os.PathLike | str) -> dict[str, Any]:
     return data
 
 
-def _path_is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    else:
-        return True
-
-
-def _safe_resolve(path: Path) -> Path:
-    """Resolve a path even when the final component does not exist."""
-    try:
-        return path.resolve(strict=False)
-    except RuntimeError:
-        # Defensive guard against pathological symlink loops.
-        return path.absolute()
-
-
 def _tracked_path(sidecar_fpath: os.PathLike | str, meta: dict[str, Any]) -> Path:
-    """Return the materialization target for a sidecar, with traversal guards."""
     sidecar_fpath = Path(sidecar_fpath)
     rel_path = meta.get('rel_path')
     if rel_path is None:
         raise KeyError(f'Missing required "rel_path" field in {sidecar_fpath!s}')
-
-    rel_path = Path(os.fspath(rel_path))
-    if rel_path.is_absolute():
-        raise ValueError(
-            f'Refusing absolute rel_path in {sidecar_fpath!s}: {rel_path!s}'
-        )
-
-    target = sidecar_fpath.parent / rel_path
-    boundary = _git_toplevel(sidecar_fpath.parent) or sidecar_fpath.parent
-    target_resolved = _safe_resolve(target)
-    boundary_resolved = _safe_resolve(boundary)
-    if not _path_is_relative_to(target_resolved, boundary_resolved):
-        raise ValueError(
-            'Refusing sidecar target outside safe boundary: '
-            f'sidecar={sidecar_fpath!s}, rel_path={rel_path!s}, '
-            f'boundary={boundary_resolved!s}, target={target_resolved!s}'
-        )
-    return target
-
-
-def _sidecar_import_config(meta: dict[str, Any]) -> dict[str, Any]:
-    """Return CID-affecting import settings from new or legacy sidecars."""
-    import_config = meta.get('import')
-    if isinstance(import_config, dict):
-        return dict(import_config)
-    legacy = meta.get('add_config')
-    if isinstance(legacy, dict):
-        return {
-            key: legacy[key]
-            for key in CID_IMPORT_KEYS
-            if key in legacy and legacy[key] is not None
-        }
-    return {}
-
-
-def _sidecar_pin_name(meta: dict[str, Any]) -> str | None:
-    """Return a human-readable pin name from new or legacy sidecars."""
-    pin_name = meta.get('pin_name')
-    if pin_name:
-        return str(pin_name)
-    import_config = meta.get('import')
-    if isinstance(import_config, dict) and import_config.get('pin_name'):
-        return str(import_config['pin_name'])
-    add_config = meta.get('add_config')
-    if isinstance(add_config, dict) and add_config.get('name'):
-        return str(add_config['name'])
-    return None
-
-
-def _coerce_suggested_peers(peers: Any) -> list[str]:
-    """Normalize sidecar peer hints into a stable list of strings."""
-    if peers is None or peers is False:
-        return []
-    if isinstance(peers, str):
-        raw_items = [peers]
-    else:
-        raw_items = list(peers)
-    normalized: list[str] = []
-    seen = set()
-    for item in raw_items:
-        if isinstance(item, dict):
-            candidate = item.get('addr') or item.get('multiaddr') or item.get('peer_id') or item.get('id')
-        else:
-            candidate = item
-        if candidate is None:
-            continue
-        text = str(candidate).strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        normalized.append(text)
-    return normalized
-
-
-def _sidecar_suggested_peers(meta: dict[str, Any]) -> list[str]:
-    """Return peer hints from new or legacy-compatible sidecar fields."""
-    peers = _coerce_suggested_peers(meta.get('suggested_peers'))
-    if peers:
-        return peers
-    # Accept a shorter alias for hand-written sidecars without making it the
-    # preferred writer field.
-    return _coerce_suggested_peers(meta.get('peers'))
-
-
-def _connect_to_peer_hint(peer_hint: str, *, dry_run: bool = False, verbose: int = 1) -> bool:
-    """Best-effort connection to a peer hint.
-
-    Hints may be full multiaddrs or bare peer IDs.  A bare peer ID requires the
-    local node to discover usable addresses through the DHT / routing system, so
-    failures are reported but are not fatal to pulls.
-    """
-    peer_hint = str(peer_hint).strip()
-    if not peer_hint:
-        return False
-
-    candidate_addrs: list[str]
-    if peer_hint.startswith('/'):
-        candidate_addrs = [peer_hint]
-    else:
-        find_argv = ['ipfs', 'dht', 'findpeer', peer_hint]
-        if dry_run:
-            print(argv_to_str(find_argv))
-            candidate_addrs = []
-        else:
-            info = _run(find_argv, verbose=0, check=False)
-            if info.returncode:
-                if verbose:
-                    detail = (_cmd_text(info.stderr) or _cmd_text(info.stdout)).strip()
-                    print(f'warning: could not resolve peer {peer_hint!r}: {detail}')
-                return False
-            stdout = _cmd_text(info.stdout)
-            candidate_addrs = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
-            candidate_addrs = [
-                addr if addr.endswith('/p2p/' + peer_hint) else addr.rstrip('/') + '/p2p/' + peer_hint
-                for addr in candidate_addrs
-            ]
-
-    connected = False
-    for addr in candidate_addrs:
-        connect_argv = ['ipfs', 'swarm', 'connect', addr]
-        if dry_run:
-            print(argv_to_str(connect_argv))
-            connected = True
-        else:
-            info = _run(connect_argv, verbose=0, check=False)
-            if info.returncode == 0:
-                connected = True
-                if verbose:
-                    print((_cmd_text(info.stdout) or f'connected: {addr}').strip())
-            elif verbose:
-                detail = (_cmd_text(info.stderr) or _cmd_text(info.stdout)).strip()
-                print(f'warning: could not connect to {addr!r}: {detail}')
-    return connected
-
-
-def _connect_suggested_peers(meta: dict[str, Any], *, dry_run: bool = False, verbose: int = 1) -> int:
-    """Connect to all sidecar peer hints and return the success count."""
-    count = 0
-    for peer_hint in _sidecar_suggested_peers(meta):
-        if _connect_to_peer_hint(peer_hint, dry_run=dry_run, verbose=verbose):
-            count += 1
-    return count
-
-
-def _parse_kubo_version_text(text: str) -> tuple[int, ...] | None:
-    """Parse tuples from outputs like ``ipfs version 0.37.0``."""
-    import re
-    match = re.search(r'(?:kubo|ipfs) version\s+v?([0-9]+(?:\.[0-9]+){1,3})', text, re.I)
-    if match is None:
-        match = re.search(r'\bv?([0-9]+(?:\.[0-9]+){1,3})\b', text)
-    if match is None:
-        return None
-    return tuple(int(part) for part in match.group(1).split('.'))
-
-
-def _version_gte(found: tuple[int, ...] | None, minimum: tuple[int, ...]) -> bool:
-    """Compare version tuples with zero padding."""
-    if found is None:
-        return False
-    width = max(len(found), len(minimum))
-    return tuple(found + (0,) * (width - len(found))) >= tuple(minimum + (0,) * (width - len(minimum)))
-
-
-def _config_dict(config: Any) -> dict[str, Any]:
-    """Return a plain dict for scriptconfig.Config/DataConfig/mapping objects."""
-    return dict(config)
-
-
-def _clean_import_config(config: Any) -> dict[str, Any]:
-    cfg = _config_dict(config)
-    return {
-        key: cfg[key]
-        for key in CID_IMPORT_KEYS
-        if key in cfg and cfg[key] is not None
-    }
-
-
-def _sidecar_metadata(
-    *,
-    cid: str,
-    rel_path: os.PathLike | str,
-    path: os.PathLike | str,
-    config: Any,
-    num_items: int | None = None,
-) -> dict[str, Any]:
-    """Build the deterministic tracked sidecar payload."""
-    path = Path(path)
-    quickstat = _compute_quickstat(path)
-    import_config = _clean_import_config(config)
-    cfg = _config_dict(config)
-    meta: dict[str, Any] = {
-        'schema_version': SIDECAR_SCHEMA_VERSION,
-        'type': 'ipfs-sidecar',
-        'cid': cid,
-        'rel_path': os.fspath(rel_path),
-        'kind': 'directory' if path.is_dir() else 'file',
-        'import': import_config,
-    }
-    if quickstat is not None:
-        meta['size_bytes'] = quickstat.get('bytes')
-        if quickstat.get('nfiles') is not None:
-            meta['num_files'] = quickstat.get('nfiles')
-    if num_items is not None:
-        meta['num_items'] = num_items
-    if cfg.get('name'):
-        meta['pin_name'] = cfg['name']
-    suggested_peers = _coerce_suggested_peers(cfg.get('suggested_peers'))
-    if suggested_peers:
-        meta['suggested_peers'] = suggested_peers
-    return meta
-
-
-def _gitignore_pattern_for(rel_path: os.PathLike | str) -> str:
-    """Return a conservative anchored .gitignore pattern for a sidecar target."""
-    rel = Path(os.fspath(rel_path))
-    if rel.is_absolute():
-        raise ValueError(f'Cannot make .gitignore pattern for absolute path: {rel!s}')
-    parts = []
-    for part in rel.parts:
-        if part in {'', '.'}:
-            continue
-        if part == '..':
-            raise ValueError(f'Cannot make .gitignore pattern for parent path: {rel!s}')
-        part = part.replace('\\', '\\\\')
-        part = part.replace(' ', '\\ ')
-        part = part.replace('#', '\\#')
-        part = part.replace('!', '\\!')
-        parts.append(part)
-    if not parts:
-        raise ValueError(f'Cannot make .gitignore pattern for empty path: {rel!s}')
-    return '/' + '/'.join(parts)
+    return sidecar_fpath.parent / os.fspath(rel_path)
 
 
 def _git_toplevel(start: os.PathLike | str) -> Path | None:
@@ -585,10 +176,173 @@ def _git_toplevel(start: os.PathLike | str) -> Path | None:
     info = ub.cmd(['git', 'rev-parse', '--show-toplevel'], cwd=start, verbose=0)
     if info.returncode:
         return None
-    stdout = _cmd_text(info.stdout).strip()
-    if not stdout:
+    return Path(info.stdout.strip())
+
+
+def _git_search_dir(path: os.PathLike | str) -> Path:
+    """Return an existing directory suitable as a git command cwd."""
+    path = Path(path)
+    if path.exists() and path.is_dir():
+        search_dir = path
+    else:
+        search_dir = path.parent
+    while not search_dir.exists() and search_dir != search_dir.parent:
+        search_dir = search_dir.parent
+    return search_dir
+
+
+def _git_origin_url(repo_root: os.PathLike | str) -> str | None:
+    """Return the configured origin URL for a git worktree, if available."""
+    info = ub.cmd(
+        ['git', 'config', '--get', 'remote.origin.url'],
+        cwd=repo_root, verbose=0)
+    if info.returncode:
         return None
-    return Path(stdout)
+    origin_url = info.stdout.strip()
+    return origin_url or None
+
+
+def _strip_dot_git(name: str) -> str:
+    """Strip the conventional .git suffix from a repository path/name."""
+    if name.endswith('.git'):
+        name = name[:-4]
+    return name
+
+
+def _parse_git_remote_origin(origin_url: str) -> tuple[str, list[str]] | None:
+    """
+    Parse common git remote URL forms into ``(host, path_parts)``.
+
+    Credentials are intentionally discarded. Local filesystem remotes return
+    ``None`` because they are machine-local and should not be embedded in a
+    generated pin name.
+    """
+    origin_url = origin_url.strip()
+    if not origin_url:
+        return None
+
+    host: str | None = None
+    repo_path: str | None = None
+
+    # SCP-like git syntax, e.g. git@github.com:owner/repo.git.
+    scp_match = re.match(r'^(?:[^@/]+@)?([^:/]+):(.+)$', origin_url)
+    if scp_match is not None and '://' not in origin_url:
+        host = scp_match.group(1)
+        repo_path = scp_match.group(2)
+    else:
+        parsed = urlparse(origin_url)
+        if parsed.scheme in {'ssh', 'git', 'http', 'https'}:
+            host = parsed.hostname
+            if host and parsed.port:
+                host = f'{host}:{parsed.port}'
+            repo_path = parsed.path.lstrip('/')
+        else:
+            return None
+
+    if not host or not repo_path:
+        return None
+
+    repo_path = _strip_dot_git(repo_path.rstrip('/'))
+    path_parts = [part for part in repo_path.split('/') if part]
+    if len(path_parts) < 2:
+        return None
+    return host.lower(), path_parts
+
+
+def _purl_quote(component: str) -> str:
+    """Percent-encode one PURL component/path segment."""
+    return quote(component, safe='')
+
+
+def _git_origin_url_to_purl_base(origin_url: str) -> str | None:
+    """
+    Convert a common git origin URL into a PURL-shaped package identifier.
+
+    Recognized public forge hosts use their forge-specific PURL type. Other
+    network remotes use the ``generic`` PURL type with the host in the
+    namespace.
+    Local filesystem remotes return ``None``.
+    """
+    parsed = _parse_git_remote_origin(origin_url)
+    if parsed is None:
+        return None
+    host, path_parts = parsed
+    repo_name = path_parts[-1]
+    namespace_parts = path_parts[:-1]
+    type_map = {
+        'github.com': 'github',
+        'gitlab.com': 'gitlab',
+        'bitbucket.org': 'bitbucket',
+    }
+    purl_type = type_map.get(host, 'generic')
+    if purl_type == 'generic':
+        namespace_parts = [host] + namespace_parts
+    encoded_parts = [
+        _purl_quote(part) for part in namespace_parts + [repo_name]]
+    return 'pkg:{}{}'.format(purl_type, '/' + '/'.join(encoded_parts))
+
+
+def _path_to_purl_subpath(repo_rel_path: os.PathLike | str) -> str:
+    """Encode a repo-relative path for use as a PURL subpath."""
+    path = Path(repo_rel_path).as_posix()
+    parts = [part for part in path.split('/') if part not in {'', '.'}]
+    return '/'.join(_purl_quote(part) for part in parts)
+
+
+def _generated_ipfs_pin_name(tracked_path: os.PathLike | str) -> str | None:
+    """
+    Generate a stable, PURL-shaped pin name for a path in a git worktree.
+
+    The generated name is based on the repository origin and the current
+    repo-relative path. It intentionally avoids local absolute paths, so it
+    returns ``None`` outside a git worktree or when the origin is local or
+    otherwise unparseable.
+    """
+    tracked_path = Path(tracked_path)
+    search_dir = _git_search_dir(tracked_path)
+    repo_root = _git_toplevel(search_dir)
+    if repo_root is None:
+        return None
+    origin_url = _git_origin_url(repo_root)
+    if origin_url is None:
+        return None
+    purl_base = _git_origin_url_to_purl_base(origin_url)
+    if purl_base is None:
+        return None
+    try:
+        repo_rel_path = tracked_path.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return None
+    subpath = _path_to_purl_subpath(repo_rel_path)
+    if subpath:
+        return f'{purl_base}#{subpath}'
+    else:
+        return purl_base
+
+
+def _sidecar_pin_name(sidecar_fpath: os.PathLike | str,
+                      meta: dict[str, Any],
+                      *,
+                      override_name: str | None = None,
+                      prefer_sidecar_name: bool = True,
+                      generated_names: bool = True) -> str | None:
+    """
+    Resolve the pin name for a sidecar.
+
+    Precedence is:
+        1. explicit caller override,
+        2. explicit user name recorded in ``add_config.name``,
+        3. generated PURL-shaped repo/path name.
+    """
+    if override_name is not None:
+        return override_name
+    if prefer_sidecar_name:
+        pin_name = meta.get('add_config', {}).get('name')
+        if pin_name:
+            return pin_name
+    if generated_names:
+        return _generated_ipfs_pin_name(_tracked_path(sidecar_fpath, meta))
+    return None
 
 
 def _append_unique_line(fpath: Path, line: str) -> bool:
@@ -614,10 +368,10 @@ def _parse_ipfs_add_root_cid(stdout: str) -> str:
         raise RuntimeError('ipfs add produced no stdout; cannot find CID')
     last = lines[-1]
     parts = last.split()
+    if len(parts) < 2:
+        raise RuntimeError(f'Unexpected ipfs add output line: {last!r}')
     # Typical format: ``added <cid> <path>``.
     if parts[0] == 'added':
-        if len(parts) < 2:
-            raise RuntimeError(f'Unexpected ipfs add output line: {last!r}')
         return parts[1]
     # ``ipfs add -q`` can emit just the CID.
     return parts[0]
@@ -639,8 +393,8 @@ def _parse_ipfs_progress_size(stderr: str) -> str | None:
     return None
 
 
-def _build_add_argv(config: Any) -> list[str]:
-    cfg = _config_dict(config)
+def _build_add_argv(config: scfg.DataConfig | dict[str, Any]) -> list[str]:
+    cfg = dict(config)
     argv = ['ipfs', 'add']
     bool_flags = ['pin', 'progress', 'recursive', 'only_hash']
     keyval_flags = ['raw_leaves', 'cid_version']
@@ -650,8 +404,6 @@ def _build_add_argv(config: Any) -> list[str]:
     for key in keyval_flags:
         if key in cfg and cfg[key] is not None:
             argv.append('--{}={}'.format(key.replace('_', '-'), json.dumps(cfg[key])))
-    if cfg.get('pin') and cfg.get('name'):
-        argv.append('--pin-name={}'.format(str(cfg['name'])))
     argv.append(os.fspath(cfg['path']))
     return argv
 
@@ -673,7 +425,7 @@ def _ipfs_only_hash_cid(tracked_path: Path, add_config: dict[str, Any] | None = 
     """Recompute a CID using kubo without writing blocks."""
     argv = _build_rehash_argv(tracked_path, add_config or {})
     info = _run(argv, verbose=0)
-    return _parse_ipfs_add_root_cid(_cmd_text(info.stdout))
+    return _parse_ipfs_add_root_cid(info.stdout)
 
 
 def _compute_quickstat(tracked_path: os.PathLike | str) -> dict[str, Any] | None:
@@ -733,160 +485,7 @@ def _print_status_table(rows: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
-@_register_modal(IPFSCLI)
-class IPFSDoctor(scfg.DataConfig):
-    """Check the local git/IPFS environment and explain what is missing."""
-    __command__ = 'doctor'
-
-    path = scfg.Value('.', help='path inside the repository to inspect', position=1)
-    strict = scfg.Flag(False, help='raise an error if any required check fails')
-
-    @classmethod
-    def main(cls, argv=1, **kwargs):
-        argv = kwargs.pop('cmdline', argv)
-        config = cls.cli(argv=argv, data=kwargs, strict=True)
-        from rich.console import Console
-        from rich.table import Table
-
-        rows: list[tuple[str, bool, str]] = []
-
-        def add(label: str, ok: bool, detail: str) -> None:
-            rows.append((label, ok, detail))
-
-        start = Path(config.path)
-        git_root = _git_toplevel(start)
-        add('git worktree', git_root is not None, os.fspath(git_root) if git_root else 'not inside a git worktree')
-
-        ipfs_ok, ipfs_detail = _ipfs_executable_detail()
-        add('ipfs executable', ipfs_ok, ipfs_detail)
-
-        if ipfs_ok:
-            version = _run(['ipfs', 'version'], verbose=0, check=False)
-            version_text = (_cmd_text(version.stdout) or _cmd_text(version.stderr)).strip()
-            found_version = _parse_kubo_version_text(version_text)
-            add('ipfs version', version.returncode == 0, version_text)
-            add(
-                f'kubo >= {MIN_KUBO_VERSION_TEXT}',
-                version.returncode == 0 and _version_gte(found_version, MIN_KUBO_VERSION),
-                'needed for `ipfs add --pin-name`' if version.returncode == 0 else version_text,
-            )
-
-            repo_stat = _run(['ipfs', 'repo', 'stat'], verbose=0, check=False)
-            repo_detail = 'initialized' if repo_stat.returncode == 0 else (
-                _cmd_text(repo_stat.stderr).strip() or
-                'not initialized; run `ipfs init` for your user-level Kubo repo'
-            )
-            add('ipfs repo', repo_stat.returncode == 0, repo_detail)
-
-            daemon = _run(['ipfs', 'swarm', 'peers'], verbose=0, check=False)
-            daemon_detail = 'online API reachable' if daemon.returncode == 0 else (
-                _cmd_text(daemon.stderr).strip() or KUBO_DAEMON_HINT
-            )
-            add('ipfs daemon', daemon.returncode == 0, daemon_detail)
-
-            remotes = _run(['ipfs', 'pin', 'remote', 'service', 'ls'], verbose=0, check=False)
-            remote_stdout = _cmd_text(remotes.stdout).strip()
-            remote_stderr = _cmd_text(remotes.stderr).strip()
-            detail = remote_stdout if remote_stdout else remote_stderr or 'no remote pinning services listed'
-            add('remote pinning', remotes.returncode == 0, detail)
-
-        git_ipfs = shutil.which('git-ipfs')
-        add('git-ipfs command', git_ipfs is not None, git_ipfs or 'not installed as a standalone git subcommand')
-
-        table = Table(title='git ipfs doctor', show_lines=False)
-        table.add_column('check')
-        table.add_column('ok')
-        table.add_column('detail', overflow='fold')
-        for label, ok, detail in rows:
-            table.add_row(label, 'yes' if ok else 'no', detail)
-        Console().print(table)
-
-        failed = [label for label, ok, _detail in rows if not ok]
-        if failed and config.strict:
-            raise SystemExit('failed checks: ' + ', '.join(failed))
-
-
-@_register_modal(IPFSCLI)
-class IPFSPeers(scfg.DataConfig):
-    """List or connect to peer hints recorded in sidecars."""
-    __command__ = 'peers'
-
-    paths = scfg.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
-    recursive = scfg.Flag(True, help='recurse into directories when scanning')
-    connect = scfg.Flag(False, help='attempt to connect to each suggested peer')
-    dry_run = scfg.Flag(False, short_alias=['n'], help='print connect commands without running them')
-
-    @classmethod
-    def main(cls, argv=1, **kwargs):
-        argv = kwargs.pop('cmdline', argv)
-        config = cls.cli(argv=argv, data=kwargs, strict=True)
-        paths = list(config.paths) if config.paths else ['.']
-        rows: list[tuple[Path, str]] = []
-        for path in paths:
-            for sidecar_fpath in _find_sidecars(path, recursive=config.recursive):
-                meta = _read_sidecar(sidecar_fpath)
-                for peer_hint in _sidecar_suggested_peers(meta):
-                    rows.append((sidecar_fpath, peer_hint))
-
-        for sidecar_fpath, peer_hint in rows:
-            print(f'{sidecar_fpath}: {peer_hint}')
-
-        if config.connect:
-            for sidecar_fpath in sorted({row[0] for row in rows}, key=lambda p: os.fspath(p)):
-                meta = _read_sidecar(sidecar_fpath)
-                _connect_suggested_peers(meta, dry_run=config.dry_run, verbose=1)
-
-
-
-
-@_register_modal(IPFSCLI)
-class IPFSPush(scfg.DataConfig):
-    """Push sidecar CIDs to a configured Kubo remote pinning service."""
-    __command__ = 'push'
-
-    paths = scfg.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
-    service = scfg.Value(None, help='remote pinning service name known to `ipfs pin remote service ls`')
-    name = scfg.Value(None, help='override pin name for all pushed CIDs')
-    recursive = scfg.Flag(True, help='ask the remote service to pin recursively')
-    background = scfg.Flag(True, help='queue the pin request in the background')
-    dry_run = scfg.Flag(False, short_alias=['n'], help='print commands without executing')
-    dedupe = scfg.Flag(True, help='deduplicate by CID')
-
-    @classmethod
-    def main(cls, argv=1, **kwargs):
-        argv = kwargs.pop('cmdline', argv)
-        config = cls.cli(argv=argv, data=kwargs, strict=True)
-        if config.service is None:
-            raise ValueError('Specify --service=<name> for the remote pinning service')
-        paths = list(config.paths) if config.paths else ['.']
-        items: list[tuple[str, str | None, Path]] = []
-        for path in paths:
-            for sidecar_fpath in _find_sidecars(path, recursive=True):
-                meta = _read_sidecar(sidecar_fpath)
-                cid = meta.get('cid')
-                if cid:
-                    pin_name = config.name or _sidecar_pin_name(meta) or sidecar_fpath.with_suffix('').name
-                    items.append((str(cid), pin_name, sidecar_fpath))
-
-        if config.dedupe:
-            seen: dict[str, tuple[str, str | None, Path]] = {}
-            for item in items:
-                seen.setdefault(item[0], item)
-            items = list(seen.values())
-
-        for cid, pin_name, _sidecar_fpath in items:
-            argv2 = ['ipfs', 'pin', 'remote', 'add', f'--service={config.service}']
-            if pin_name:
-                argv2.append(f'--name={pin_name}')
-            if config.recursive:
-                argv2.append('--recursive=true')
-            if config.background:
-                argv2.append('--background=true')
-            argv2.append(cid)
-            _run(argv2, dry_run=config.dry_run, verbose=3)
-
-
-@_register_modal(IPFSCLI)
+@IPFSCLI.register
 class IPFSAdd(scfg.DataConfig):
     """Add a file/directory to IPFS and optionally write a sidecar."""
     __command__ = 'add'
@@ -894,9 +493,6 @@ class IPFSAdd(scfg.DataConfig):
 
     path = scfg.Value(None, help='file or directory to add to IPFS', position=1)
     name = scfg.Value(None, help='optional human-readable pin name')
-    suggested_peers = scfg.Value(
-        [], nargs='*', alias=['suggested-peer', 'suggested-peers'],
-        help='peer IDs or multiaddrs likely to provide this CID')
     recursive = scfg.Flag(True, help='add directory paths recursively')
     progress = scfg.Flag(True, short_alias=['p'], help='stream progress data')
     cid_version = scfg.Value(1, help='CID version')
@@ -916,6 +512,8 @@ class IPFSAdd(scfg.DataConfig):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         if config.path is None:
             raise ValueError('Path must be specified')
+        if config.name and not config.pin:
+            raise ValueError('--name requires --pin')
 
         path = Path(config.path)
         sidecar_fpath: Path | None
@@ -930,94 +528,101 @@ class IPFSAdd(scfg.DataConfig):
             sidecar_fpath = None
 
         add_argv = _build_add_argv(config)
+        pin_name = config.name or _generated_ipfs_pin_name(path)
         if config.dry_run:
             print(argv_to_str(add_argv))
             if sidecar_fpath is not None:
                 print(f'would write sidecar: {sidecar_fpath}')
+            if config.pin and not config.only_hash and pin_name:
+                pin_argv = ['ipfs', 'pin', 'add', '--name', pin_name]
+                if config.progress:
+                    pin_argv.append('--progress')
+                pin_argv.append('<cid-from-ipfs-add>')
+                print(argv_to_str(pin_argv))
             return
 
-        info = _run(add_argv, verbose=3)
+        with ub.Timer() as timer:
+            info = _run(add_argv, verbose=3)
 
         if config.only_hash:
             return
 
-        add_stdout = _cmd_text(info.stdout)
-        cid = _parse_ipfs_add_root_cid(add_stdout)
-        lines = [ln for ln in add_stdout.splitlines() if ln.strip()]
+        cid = _parse_ipfs_add_root_cid(info.stdout)
+        size_str = _parse_ipfs_progress_size(info.stderr)
+        lines = [ln for ln in info.stdout.splitlines() if ln.strip()]
 
         if sidecar_fpath is not None:
             sidecar_dpath = sidecar_fpath.parent
             rel_path = os.path.relpath(path, sidecar_dpath)
-            sidecar_metadata = _sidecar_metadata(
-                cid=cid,
-                rel_path=rel_path,
-                path=path,
-                config=config,
-                num_items=len(lines),
-            )
+            sidecar_metadata = {
+                'type': 'ipfs-sidecar',
+                'cid': cid,
+                'rel_path': rel_path,
+                'size': size_str,
+                'num_items': len(lines),
+                'add_config': dict(config),
+                'add_datetime': ub.timestamp(),
+                'add_duration': timer.elapsed,
+                'local_quickstat': _compute_quickstat(path),
+            }
             sidecar_text = _YamlCodec.dumps(sidecar_metadata)
             print(f'write to: sidecar_fpath={sidecar_fpath}')
             sidecar_fpath.write_text(sidecar_text)
 
-            gitignore_changed = False
             if config.update_gitignore:
                 ignore_fpath = sidecar_dpath / '.gitignore'
-                try:
-                    ignore_pattern = _gitignore_pattern_for(rel_path)
-                except ValueError as ex:
-                    print(f'skipping .gitignore update: {ex}')
+                if _append_unique_line(ignore_fpath, rel_path):
+                    print(f'updated: {ignore_fpath}')
                 else:
-                    if _append_unique_line(ignore_fpath, ignore_pattern):
-                        gitignore_changed = True
-                        print(f'updated: {ignore_fpath}')
-                    else:
-                        print(f'gitignore already contains: {ignore_pattern}')
+                    print(f'gitignore already contains: {rel_path}')
 
             if config.git_add_sidecar:
                 if _git_toplevel(sidecar_dpath) is not None:
-                    add_paths = [sidecar_fpath.name]
-                    if gitignore_changed:
-                        add_paths.append('.gitignore')
-                    _run(['git', 'add'] + add_paths, cwd=sidecar_dpath, verbose=2)
+                    _run(['git', 'add', sidecar_fpath.name], cwd=sidecar_dpath, verbose=2)
                 else:
                     print('not in a git worktree; skipping git add of sidecar')
 
             print(sidecar_text)
             print(f'Wrote to: sidecar_fpath={sidecar_fpath}')
 
+        if config.pin and pin_name:
+            pin_argv = ['ipfs', 'pin', 'add', '--name', pin_name]
+            if config.progress:
+                pin_argv.append('--progress')
+            pin_argv.append(cid)
+            _run(pin_argv, verbose=3)
 
-@_register_modal(IPFSCLI)
+
+@IPFSCLI.register
 class IPFSPull(scfg.DataConfig):
     """Materialize content described by one or more ``*.ipfs`` sidecars."""
     __command__ = 'pull'
 
-    path = scfg.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
+    path = scfg.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
     dry_run = scfg.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
     recursive = scfg.Flag(True, help='recurse into directories when scanning')
-    delete = scfg.Flag(True, help='delete stale files when syncing an existing directory with rsync')
-    connect_peers = scfg.Flag(True, help='best-effort connect to sidecar suggested_peers before downloading')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
         argv = kwargs.pop('cmdline', argv)
         config = cls.cli(argv=argv, data=kwargs, strict=True)
+        if config.path is None:
+            raise ValueError('Path must be specified')
         sidecars = _find_sidecars(config.path, recursive=config.recursive)
         print(f'Found {len(sidecars)} sidecar(s)')
         for sidecar_fpath in sidecars:
             meta = _read_sidecar(sidecar_fpath)
             root_cid = meta['cid']
-            tracked_path = _tracked_path(sidecar_fpath, meta)
+            rel_path = meta['rel_path']
+            dpath = sidecar_fpath.parent
             if config.dry_run:
                 print(f'sidecar={sidecar_fpath}')
-                print(f'target={tracked_path}')
                 print(_YamlCodec.dumps(meta))
             else:
-                if config.connect_peers:
-                    _connect_suggested_peers(meta, dry_run=False, verbose=1)
-                sync_ipfs_pull(root_cid, tracked_path, delete=config.delete)
+                sync_ipfs_pull(root_cid, dpath, rel_path)
 
 
-@_register_modal(IPFSCLI)
+@IPFSCLI.register
 class IPFSStatus(scfg.DataConfig):
     """Check whether local content tracked by sidecars appears changed."""
     __command__ = 'status'
@@ -1043,20 +648,19 @@ class IPFSStatus(scfg.DataConfig):
             base_quick = meta.get(config.baseline_key)
             if cur_quick is None:
                 status = 'MISSING'
-            elif isinstance(base_quick, dict):
-                changed = cur_quick.get('bytes') != base_quick.get('bytes')
-                if 'mtime' in cur_quick and 'mtime' in base_quick:
-                    changed = changed or cur_quick.get('mtime') != base_quick.get('mtime')
-                status = 'CHANGED' if changed else 'OK'
-            elif meta.get('size_bytes') is not None:
-                status = 'OK_SIZE' if cur_quick.get('bytes') == meta.get('size_bytes') else 'CHANGED'
-            else:
+            elif base_quick is None:
                 status = 'NO_BASELINE'
+            else:
+                changed = (
+                    cur_quick.get('bytes') != base_quick.get('bytes') or
+                    cur_quick.get('mtime') != base_quick.get('mtime')
+                )
+                status = 'CHANGED' if changed else 'OK'
 
             new_cid = None
             if config.full and cur_quick is not None:
                 try:
-                    new_cid = _ipfs_only_hash_cid(tracked_path, _sidecar_import_config(meta))
+                    new_cid = _ipfs_only_hash_cid(tracked_path, meta.get('add_config', {}))
                     status = 'OK' if new_cid == root_cid else 'CHANGED'
                 except Exception as ex:
                     new_cid = f'ERROR: {ex}'
@@ -1081,7 +685,7 @@ class IPFSStatus(scfg.DataConfig):
         _print_status_table(rows)
 
 
-@_register_modal(IPFSCLI)
+@IPFSCLI.register
 class IPFSExportPins(scfg.DataConfig):
     """Export ``ipfs pin add`` commands for sidecars."""
     __command__ = 'export'
@@ -1092,6 +696,10 @@ class IPFSExportPins(scfg.DataConfig):
     sort = scfg.Flag(True, help='sort output for stable scripts')
     name = scfg.Value(None, help='override pin name for all emitted commands')
     prefer_sidecar_name = scfg.Flag(True, help='use add_config.name when present')
+    generated_names = scfg.Flag(
+        True,
+        help='generate PURL-shaped names from git origin and repo-relative '
+             'path when no explicit name is available')
     progress = scfg.Flag(False, short_alias=['p'], help='include --progress')
     recursive = scfg.Flag(True, help='include --recursive')
     emit_bash = scfg.Flag(False, help='emit a bash header')
@@ -1108,9 +716,12 @@ class IPFSExportPins(scfg.DataConfig):
                 cid = meta.get('cid')
                 if not cid:
                     continue
-                pin_name = config.name
-                if pin_name is None and config.prefer_sidecar_name:
-                    pin_name = _sidecar_pin_name(meta)
+                pin_name = _sidecar_pin_name(
+                    sidecar_fpath, meta,
+                    override_name=config.name,
+                    prefer_sidecar_name=config.prefer_sidecar_name,
+                    generated_names=config.generated_names,
+                )
                 items.append((str(cid), pin_name, sidecar_fpath))
 
         if config.dedupe:
@@ -1143,7 +754,7 @@ class IPFSPin(scfg.ModalCLI):
     __command__ = 'pin'
 
 
-@_register_modal(IPFSPin)
+@IPFSPin.register
 class IPFSPinAdd(scfg.DataConfig):
     """Pin a CID or the CID referenced by a sidecar."""
     __command__ = 'add'
@@ -1151,7 +762,14 @@ class IPFSPinAdd(scfg.DataConfig):
     path = scfg.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
     recursive = scfg.Flag(True, help='pin recursively')
     progress = scfg.Flag(True, short_alias=['p'], help='stream progress data')
-    name = scfg.Value(None, help='optional pin name; defaults to add_config.name')
+    name = scfg.Value(
+        None,
+        help='optional pin name; defaults to add_config.name or a generated '
+             'PURL-shaped repo/path name')
+    generated_names = scfg.Flag(
+        True,
+        help='generate a PURL-shaped name from git origin and repo-relative '
+             'path when no explicit name is available')
     dry_run = scfg.Flag(False, short_alias=['n'], help='print command without executing')
 
     @classmethod
@@ -1160,19 +778,19 @@ class IPFSPinAdd(scfg.DataConfig):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         if config.path is None:
             raise ValueError('Path must be specified')
-        pin_name = config.name
         candidate = Path(config.path)
         if candidate.exists():
             meta = _read_sidecar(candidate)
             root_cid = meta['cid']
-            if pin_name is None:
-                pin_name = _sidecar_pin_name(meta)
+            if config.name is None:
+                config.name = _sidecar_pin_name(
+                    candidate, meta, generated_names=config.generated_names)
         else:
             root_cid = config.path
 
         pin_argv = ['ipfs', 'pin', 'add']
-        if pin_name is not None:
-            pin_argv += ['--name', pin_name]
+        if config.name is not None:
+            pin_argv += ['--name', config.name]
         if config.progress:
             pin_argv.append('--progress')
         if config.recursive:
@@ -1184,7 +802,7 @@ class IPFSPinAdd(scfg.DataConfig):
 IPFSCLI.register(IPFSPin)
 
 
-@_register_modal(IPFSCLI)
+@IPFSCLI.register
 class IPFSCheckCID(scfg.DataConfig):
     """Compare CIDs produced by common CID-version/raw-leaves settings."""
     __command__ = 'check-cid'
@@ -1213,43 +831,34 @@ class IPFSCheckCID(scfg.DataConfig):
                 argv2.append('--recursive')
             argv2 += flags + [os.fspath(config.path)]
             info = _run(argv2, verbose=0)
-            cid = _cmd_text(info.stdout).strip().splitlines()[-1]
+            cid = info.stdout.strip().splitlines()[-1]
             rows.append((label, cid))
         width = max(len(k) for k, _ in rows)
         for label, cid in rows:
             print(f'{label:<{width}} = {cid}')
 
 
-def sync_ipfs_pull(root_cid: str, out_path: os.PathLike | str, *, delete: bool = True) -> None:
+def sync_ipfs_pull(root_cid: str, dpath: os.PathLike | str, rel_path: os.PathLike | str) -> None:
     """
-    Download a CID into ``out_path`` using a temporary staging path.
+    Download a CID into ``dpath / rel_path`` using a temporary staging path.
 
     Existing directories are updated with rsync when available, and replaced via
-    a conservative backup/swap fallback otherwise.  Symlink targets are never
-    followed for replacement.
+    a conservative backup/swap fallback otherwise.
     """
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_root = Path(tempfile.mkdtemp(prefix='git-well-ipfs-', dir=os.fspath(out_path.parent)))
+    dpath = Path(dpath)
+    out_path = dpath / rel_path
+    dpath.mkdir(parents=True, exist_ok=True)
+    tmp_root = Path(tempfile.mkdtemp(prefix='git-well-ipfs-', dir=os.fspath(dpath)))
     tmp_path = tmp_root / 'payload'
     try:
         _run(['ipfs', 'get', '--progress=true', f'--output={tmp_path}', root_cid], verbose=3)
-        if out_path.exists() or out_path.is_symlink():
-            if (
-                out_path.is_dir() and
-                not out_path.is_symlink() and
-                tmp_path.is_dir() and
-                shutil.which('rsync')
-            ):
-                rsync_argv = ['rsync', '-avprP']
-                if delete:
-                    rsync_argv.append('--delete')
-                rsync_argv += [os.fspath(tmp_path) + '/', os.fspath(out_path) + '/']
-                _run(rsync_argv, verbose=3)
+        if out_path.exists():
+            if out_path.is_dir() and tmp_path.is_dir() and shutil.which('rsync'):
+                _run(['rsync', '-avprP', os.fspath(tmp_path) + '/', os.fspath(out_path)], verbose=3)
             else:
                 backup = out_path.with_name(out_path.name + '.old')
-                if backup.exists() or backup.is_symlink():
-                    if backup.is_dir() and not backup.is_symlink():
+                if backup.exists():
+                    if backup.is_dir():
                         shutil.rmtree(backup)
                     else:
                         backup.unlink()
@@ -1260,11 +869,12 @@ def sync_ipfs_pull(root_cid: str, out_path: os.PathLike | str, *, delete: bool =
                     backup.rename(out_path)
                     raise
                 else:
-                    if backup.is_dir() and not backup.is_symlink():
+                    if backup.is_dir():
                         shutil.rmtree(backup)
                     else:
                         backup.unlink()
         else:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path.rename(out_path)
     finally:
         if tmp_root.exists():
