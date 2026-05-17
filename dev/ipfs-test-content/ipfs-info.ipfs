@@ -1,0 +1,13 @@
+schema_version: 1
+type: ipfs-sidecar
+cid: bafybeibesmett7yx3bg3h6mb2td33daijsqbhnrjgklkhblu5fo3yz2ske
+rel_path: ipfs-info
+kind: directory
+import:
+  recursive: true
+  cid_version: 1
+  raw_leaves: false
+  only_hash: false
+size_bytes: 6119
+num_files: 7
+num_items: 8
