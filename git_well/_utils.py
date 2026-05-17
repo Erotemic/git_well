@@ -13,6 +13,41 @@ def rich_print(*args: Any, **kwargs: Any) -> Any:
     return printer(*args, **kwargs)
 
 
+def rich_link_path(path: str | os.PathLike[str]) -> str:
+    """
+    Return rich markup that makes a filesystem path clickable.
+
+    This intentionally uses rich's link markup form so terminals that support
+    hyperlinks can open local paths directly. Callers should print this with
+    :func:`rich_print` or :func:`rich_print_path` when rich is available.
+    """
+    path_text = os.fspath(path)
+    return f'[link={path_text}]{path_text}[/link]'
+
+
+def rich_print_path(
+    prefix: str,
+    path: str | os.PathLike[str],
+    suffix: str = '',
+    **kwargs: Any,
+) -> Any:
+    """
+    Print a filesystem path as a rich hyperlink when rich is available.
+
+    If rich cannot be imported, fall back to builtin :func:`print` with the
+    plain path text so users do not see raw rich markup.
+    """
+    path_text = os.fspath(path)
+    try:
+        from rich import print as printer
+    except Exception:
+        printer: Any = print
+        msg = f'{prefix}{path_text}{suffix}'
+    else:
+        msg = f'{prefix}{rich_link_path(path_text)}{suffix}'
+    return printer(msg, **kwargs)
+
+
 def find_merged_branches(repo: Any, main_branch: str = 'main') -> Any:
     # git branch --merged main
     # main_branch = 'main'

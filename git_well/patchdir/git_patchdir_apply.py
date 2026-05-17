@@ -73,7 +73,9 @@ class GitApplyPatchCLI(scfg.DataConfig):
 
         patch_dpath = ub.Path(config.patch_dpath)
         if not patch_dpath.exists():
-            print(f'No patch directory found at {patch_dpath}')
+            from git_well._utils import rich_print_path
+
+            rich_print_path('No patch directory found at ', patch_dpath)
             return
 
         # List all available patches

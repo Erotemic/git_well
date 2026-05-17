@@ -207,7 +207,8 @@ def archive_source(
     submodule_status = _submodule_status(repo)
 
     log = _Logger(verbose)
-    log(f'[source-archive] repo: {repo_root}')
+    log.path('[source-archive] repo: ', repo_root)
+    log.path('[source-archive] output directory: ', archive_path.parent)
     log(f'[source-archive] prefix: {prefix}')
     log(f'[source-archive] archive format: {archive_format}')
     log(
@@ -760,6 +761,12 @@ class _Logger:
     def __call__(self, msg: str) -> None:
         if self.verbose:
             print(msg)
+
+    def path(self, prefix: str, path: PathLike, suffix: str = '') -> None:
+        if self.verbose:
+            from git_well._utils import rich_print_path
+
+            rich_print_path(prefix, path, suffix=suffix)
 
 
 __cli__ = ArchiveSourceCLI

@@ -140,9 +140,11 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         remote_cwd = config.remote_cwd
         if remote_cwd is None:
             remote_cwd = rel_dpath
-            print(f'home={home}')
-            print(f'root_dpath={root_dpath}')
-            print(f'remote_cwd={remote_cwd}')
+            from git_well._utils import rich_print_path
+
+            rich_print_path('home=', home)
+            rich_print_path('root_dpath=', root_dpath)
+            rich_print_path('remote_cwd=', remote_cwd)
         # remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:

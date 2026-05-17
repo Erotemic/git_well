@@ -162,3 +162,43 @@ def test_archive_source_with_history(tmp_path):
     assert (unpacked / '.git').exists()
     proc = ub.cmd(['git', 'log', '--oneline', '-1'], cwd=unpacked, check=True)
     assert 'initial' in proc.stdout
+
+
+def test_rich_link_path_markup():
+    from git_well._utils import rich_link_path
+
+    assert rich_link_path('/tmp/demo') == '[link=/tmp/demo]/tmp/demo[/link]'
+
+
+def test_archive_source_prints_output_directory(tmp_path, monkeypatch):
+    import os
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    linked_paths = []
+
+    def fake_rich_print_path(prefix, path, suffix=''):
+        linked_paths.append((prefix, os.fspath(path), suffix))
+
+    monkeypatch.setattr(
+        'git_well._utils.rich_print_path', fake_rich_print_path
+    )
+
+    repo = tmp_path / 'demo_prints'
+    output_dpath = tmp_path / 'archives'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    archive_source(
+        repo_dpath=repo,
+        output=output_dpath / 'demo-source.tar.gz',
+        depth=0,
+        verbose=1,
+    )
+    assert (
+        '[source-archive] output directory: ',
+        os.fspath(output_dpath.resolve()),
+        '',
+    ) in linked_paths
