@@ -113,15 +113,30 @@ def argv_to_str(argv: Iterable[os.PathLike | str]) -> str:
 
 
 def _run(argv: list[str], *, cwd: os.PathLike | str | None = None,
-         dry_run: bool = False, verbose: int = 3, check: bool = True) -> ub.cmd:
-    """Run or print a command using ubelt's command wrapper."""
+         dry_run: bool = False, verbose: int = 3, check: bool = True) -> Any:
+    """Run or print a command using ubelt's command wrapper.
+
+    ubelt's ``cmd`` helper is a function, not a public return-type alias.
+    Annotating this wrapper as ``Any`` keeps this module independent of
+    ubelt's internal result class while still allowing callers to access the
+    command result object returned by ``ub.cmd``.
+    """
     if dry_run:
         print(argv_to_str(argv))
-        return None  # type: ignore[return-value]
+        return None
     info = ub.cmd(argv, cwd=cwd, verbose=verbose)
     if check:
         info.check_returncode()
     return info
+
+
+def _cmd_stdout_text(stdout: str | bytes | None) -> str:
+    """Normalize ``ub.cmd(...).stdout`` into text for typed callers."""
+    if stdout is None:
+        return ''
+    if isinstance(stdout, bytes):
+        return stdout.decode()
+    return stdout
 
 
 def _find_sidecars(path: os.PathLike | str, recursive: bool = True) -> list[Path]:
@@ -176,7 +191,10 @@ def _git_toplevel(start: os.PathLike | str) -> Path | None:
     info = ub.cmd(['git', 'rev-parse', '--show-toplevel'], cwd=start, verbose=0)
     if info.returncode:
         return None
-    return Path(info.stdout.strip())
+    toplevel = _cmd_stdout_text(info.stdout).strip()
+    if not toplevel:
+        return None
+    return Path(toplevel)
 
 
 def _git_search_dir(path: os.PathLike | str) -> Path:
@@ -198,7 +216,7 @@ def _git_origin_url(repo_root: os.PathLike | str) -> str | None:
         cwd=repo_root, verbose=0)
     if info.returncode:
         return None
-    origin_url = info.stdout.strip()
+    origin_url = _cmd_stdout_text(info.stdout).strip()
     return origin_url or None
 
 
@@ -393,7 +411,7 @@ def _parse_ipfs_progress_size(stderr: str) -> str | None:
     return None
 
 
-def _build_add_argv(config: scfg.DataConfig | dict[str, Any]) -> list[str]:
+def _build_add_argv(config: Any) -> list[str]:
     cfg = dict(config)
     argv = ['ipfs', 'add']
     bool_flags = ['pin', 'progress', 'recursive', 'only_hash']
@@ -782,15 +800,17 @@ class IPFSPinAdd(scfg.DataConfig):
         if candidate.exists():
             meta = _read_sidecar(candidate)
             root_cid = meta['cid']
-            if config.name is None:
-                config.name = _sidecar_pin_name(
+            pin_name = config.name
+            if pin_name is None:
+                pin_name = _sidecar_pin_name(
                     candidate, meta, generated_names=config.generated_names)
         else:
             root_cid = config.path
+            pin_name = config.name
 
         pin_argv = ['ipfs', 'pin', 'add']
-        if config.name is not None:
-            pin_argv += ['--name', config.name]
+        if pin_name is not None:
+            pin_argv += ['--name', pin_name]
         if config.progress:
             pin_argv.append('--progress')
         if config.recursive:
