@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """
 Archive committed source with full Git history and initialized submodules.
 """
@@ -53,6 +54,12 @@ _FORMAT_ALIASES = {
     'tbz2': 'tar.bz2',
     'txz': 'tar.xz',
 }
+
+# TODO: Re-enable repo-local archive_source defaults after kwconf /
+# scriptconfig modal dispatch preserves omitted values distinctly from
+# injected defaults. The intended Git config keys were:
+# - git-well.archive-source.depth
+# - git-well.archive-source.format
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,18 @@ class ArchiveSourceCLI(scfg.DataConfig):
             auto cannot infer from --output, it falls back to tar.gz.
             """).strip(),
     )
+    # TODO: Re-enable when kwconf fixes modal default injection semantics.
+    # set_config = scfg.Value(
+    #     None,
+    #     nargs='+',
+    #     alias=['set-config'],
+    #     help=textwrap.dedent("""
+    #         Store explicit archive_source defaults in this repository's local
+    #         Git config. Values must be key=value assignments. Currently
+    #         supports depth and format, e.g. --set_config depth=0 format=zip.
+    #         When specified, the config is updated and no archive is created.
+    #         """).strip(),
+    # )
     verbose = scfg.Value(1, help='verbosity level')
 
     @classmethod
@@ -334,6 +353,90 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
     kwargs.pop('output_dir', None)
     kwargs.pop('prefix', None)
     return archive_source(*args, **kwargs)
+
+
+# TODO: Land this when kwconf / scriptconfig modal dispatch can distinguish
+# omitted values from defaults injected through modal kwargs.
+#
+# def _repo_local_archive_source_defaults(repo: 'git.Repo') -> dict[str, str]:
+#     """
+#     Read repo-local archive_source defaults from Git config.
+#     """
+#     defaults = {}
+#     for field, key in _CONFIGURABLE_DEFAULTS.items():
+#         value = _get_local_git_config(repo, key)
+#         if value is not None:
+#             defaults[field] = value
+#     return defaults
+#
+#
+# def _parse_set_config_assignments(
+#     assignments: Optional[list[str] | str],
+# ) -> dict[str, str]:
+#     """
+#     Parse explicit ``--set_config key=value`` assignments.
+#     """
+#     parsed = {}
+#     if not assignments:
+#         return parsed
+#     if isinstance(assignments, str):
+#         assignments = [assignments]
+#     key_to_field = {
+#         **{field: field for field in _CONFIGURABLE_DEFAULTS},
+#         **{key: field for field, key in _CONFIGURABLE_DEFAULTS.items()},
+#     }
+#     for assignment in assignments:
+#         if '=' not in assignment:
+#             raise ValueError(
+#                 '--set_config values must be key=value assignments; '
+#                 f'got {assignment!r}'
+#             )
+#         key, value = assignment.split('=', 1)
+#         field = key_to_field.get(key)
+#         if field is None:
+#             valid = ', '.join(sorted(key_to_field))
+#             raise ValueError(
+#                 f'unknown archive_source config key {key!r}; '
+#                 f'expected one of: {valid}'
+#             )
+#         parsed[field] = value
+#     _validate_archive_source_config_values(parsed)
+#     return parsed
+#
+#
+# def _get_local_git_config(repo: 'git.Repo', key: str) -> Optional[str]:
+#     import git
+#
+#     try:
+#         return repo.git.config('--local', '--get', key).strip()
+#     except git.GitCommandError:
+#         return None
+#
+#
+# def _set_archive_source_config(
+#     repo: 'git.Repo',
+#     assignments: dict[str, str],
+# ) -> None:
+#     """
+#     Persist explicit archive defaults in the repository-local Git config.
+#     """
+#     _validate_archive_source_config_values(assignments)
+#     for field, value in assignments.items():
+#         repo.git.config('--local', _CONFIGURABLE_DEFAULTS[field], value)
+#
+#
+# def _git_config_path(repo: 'git.Repo') -> Path:
+#     """
+#     Return the path to the local Git config for this repository.
+#     """
+#     return Path(repo.git_dir) / 'config'
+#
+#
+# def _validate_archive_source_config_values(values: dict[str, str]) -> None:
+#     if 'depth' in values:
+#         _normalize_depth(values['depth'])
+#     if 'format' in values:
+#         _resolve_archive_format(None, cast(ArchiveFormatArg, values['format']))
 
 
 def _coerce_repo(repo_dpath: PathLike) -> 'git.Repo':
