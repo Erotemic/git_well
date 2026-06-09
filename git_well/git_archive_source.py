@@ -6,6 +6,7 @@ Archive committed source with full Git history and initialized submodules.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import textwrap
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 PathLike = Union[str, os.PathLike]
 DepthArg = Union[str, int, None]
+SubmoduleDepthSpecArg = Union[str, int, None, dict[str, DepthArg]]
 ArchiveFormatArg = Literal[
     'auto',
     'tar',
@@ -74,6 +76,130 @@ class SubmoduleStatus:
     line: str
 
 
+@dataclass(frozen=True)
+class SubmoduleArchiveDecision:
+    """
+    A resolved archive action for one recursive submodule.
+    """
+
+    info: SubmoduleStatus
+    omitted: bool
+    depth: Optional[int]
+    mode: str
+    reason: str
+
+
+_UNSET = object()
+
+
+@dataclass(frozen=True)
+class SubmoduleDepthPolicy:
+    """
+    Parsed ``--submodule-depth`` policy.
+
+    The user-facing spec is intentionally small: a scalar depth applies to all
+    submodules; a YAML mapping may contain exact submodule paths, fnmatch-style
+    glob patterns, ``"*"`` as a catch-all glob, and ``__default__`` as a
+    non-glob fallback.
+
+    Example:
+        >>> policy = _parse_submodule_depth_spec('0')
+        >>> _depth_label(policy.resolve('any/submodule', inherited_depth=25))
+        '0'
+        >>> policy = _parse_submodule_depth_spec('{"*": 0, special/submod: 100}')
+        >>> _depth_label(policy.resolve('special/submod', inherited_depth=25))
+        '100'
+        >>> _depth_label(policy.resolve('other/submod', inherited_depth=25))
+        '0'
+        >>> policy = _parse_submodule_depth_spec('{__default__: 0, special/*: full}')
+        >>> _depth_label(policy.resolve('special/lib', inherited_depth=25))
+        'full'
+        >>> _depth_label(policy.resolve('plain/lib', inherited_depth=25))
+        '0'
+        >>> policy = _parse_submodule_depth_spec('{special/*: 25, "*/submod": 100}')
+        >>> policy.resolve('special/submod', inherited_depth=1)
+        Traceback (most recent call last):
+        ...
+        ValueError: ambiguous submodule depth for special/submod: matched special/* -> 25, */submod -> 100; add an exact path entry to disambiguate
+    """
+
+    specified: bool
+    raw: Any = None
+    scalar_depth: Any = _UNSET
+    exact_depths: dict[str, Optional[int]] = None  # type: ignore[assignment]
+    glob_depths: dict[str, Optional[int]] = None  # type: ignore[assignment]
+    star_depth: Any = _UNSET
+    default_depth: Any = _UNSET
+
+    def __post_init__(self) -> None:
+        if self.exact_depths is None:
+            object.__setattr__(self, 'exact_depths', {})
+        if self.glob_depths is None:
+            object.__setattr__(self, 'glob_depths', {})
+
+    def resolve(self, path: str, inherited_depth: Optional[int]) -> Optional[int]:
+        """
+        Resolve the depth for one submodule path.
+        """
+        if not self.specified:
+            return inherited_depth
+        if self.scalar_depth is not _UNSET:
+            return cast(Optional[int], self.scalar_depth)
+        if path in self.exact_depths:
+            return self.exact_depths[path]
+
+        matches = [
+            (pattern, depth)
+            for pattern, depth in self.glob_depths.items()
+            if fnmatch.fnmatchcase(path, pattern)
+        ]
+        if matches:
+            depths = {depth for _pattern, depth in matches}
+            if len(depths) == 1:
+                return matches[0][1]
+            rendered = ', '.join(
+                f'{pattern} -> {_depth_label(depth)}'
+                for pattern, depth in matches
+            )
+            raise ValueError(
+                f'ambiguous submodule depth for {path}: matched {rendered}; '
+                'add an exact path entry to disambiguate'
+            )
+
+        if self.star_depth is not _UNSET:
+            return cast(Optional[int], self.star_depth)
+        if self.default_depth is not _UNSET:
+            return cast(Optional[int], self.default_depth)
+        return inherited_depth
+
+    def summary_lines(self) -> List[str]:
+        """Return human-readable manifest lines for this policy."""
+        if not self.specified:
+            return ['Submodule depth spec: (omitted; inherits superproject depth)']
+        if self.scalar_depth is not _UNSET:
+            return [
+                f'Submodule depth spec: scalar {_depth_label(cast(Optional[int], self.scalar_depth))}'
+            ]
+        lines = ['Submodule depth spec: YAML mapping']
+        if self.default_depth is not _UNSET:
+            lines.append(
+                f'  __default__: {_depth_label(cast(Optional[int], self.default_depth))}'
+            )
+        if self.star_depth is not _UNSET:
+            lines.append(
+                f'  "*": {_depth_label(cast(Optional[int], self.star_depth))}'
+            )
+        if self.exact_depths:
+            lines.append('  exact paths:')
+            for path, depth in sorted(self.exact_depths.items()):
+                lines.append(f'    {path}: {_depth_label(depth)}')
+        if self.glob_depths:
+            lines.append('  glob patterns:')
+            for pattern, depth in sorted(self.glob_depths.items()):
+                lines.append(f'    {pattern}: {_depth_label(depth)}')
+        return lines
+
+
 class ArchiveSourceCLI(scfg.DataConfig):
     """
     Archive committed source with full Git history and initialized submodules.
@@ -118,6 +244,37 @@ class ArchiveSourceCLI(scfg.DataConfig):
             integer for shallow history, or 0 for source-only git archive mode.
             """).strip(),
     )
+    submodule_depth = scfg.Value(
+        None,
+        type=str,
+        alias=['submodule-depth'],
+        help=textwrap.dedent("""
+            YAML depth spec for recursive submodules. If omitted, submodules
+            inherit --depth. A scalar such as 0, 25, or full applies to every
+            submodule. A mapping may use exact submodule paths, fnmatch-style
+            glob keys, quoted "*" as a catch-all glob, and __default__ as a
+            non-glob fallback, e.g. '{"*": 0, special/submod: 100}'.
+            """).strip(),
+    )
+    exclude_submodule = scfg.Value(
+        [],
+        nargs='*',
+        alias=['exclude-submodule'],
+        help=textwrap.dedent("""
+            Exact recursive submodule paths to omit from the archive. This may
+            be used with --submodule-depth to keep most submodules source-only
+            while dropping data-heavy submodules entirely.
+            """).strip(),
+    )
+    submodules = scfg.Value(
+        True,
+        isflag=True,
+        help=textwrap.dedent("""
+            Materialize initialized recursive submodule working trees. Pass
+            --no-submodules to omit every submodule working tree from the
+            archive while keeping superproject gitlinks and .gitmodules.
+            """).strip(),
+    )
     format = scfg.Value(
         'auto',
         help=textwrap.dedent("""
@@ -145,11 +302,16 @@ class ArchiveSourceCLI(scfg.DataConfig):
     def main(
         cls, argv: list[str] | str | bool | None = True, **kwargs: Any
     ) -> Path:
+        if 'no_submodules' in kwargs and 'submodules' not in kwargs:
+            kwargs['submodules'] = not bool(kwargs.pop('no_submodules'))
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         archive_path = archive_source(
             repo_dpath=config.repo_dpath,
             output=config.output,
             depth=config.depth,
+            submodule_depth=config.submodule_depth,
+            exclude_submodule=config.exclude_submodule,
+            no_submodules=not bool(config.submodules),
             format=config.format,
             verbose=config.verbose,
         )
@@ -167,6 +329,9 @@ def archive_source(
     repo_dpath: PathLike = '.',
     output: Optional[PathLike] = None,
     depth: DepthArg = 'full',
+    submodule_depth: SubmoduleDepthSpecArg = None,
+    exclude_submodule: Optional[Union[str, List[str]]] = None,
+    no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     verbose: int = 1,
 ) -> Path:
@@ -187,6 +352,21 @@ def archive_source(
             ``'full'`` or ``None`` includes full current-HEAD history. A
             positive integer creates shallow staged checkouts. ``0`` omits Git
             metadata and uses source-only :command:`git archive` exports.
+
+        submodule_depth:
+            Optional YAML depth spec for recursive submodules. If omitted,
+            submodules inherit ``depth``. Scalars such as ``0``, ``25``, or
+            ``'full'`` apply to every submodule. Mappings may use exact
+            submodule paths, fnmatch-style glob keys, quoted ``"*"`` as a
+            catch-all glob, and ``__default__`` as a non-glob fallback.
+
+        exclude_submodule:
+            Exact recursive submodule paths to omit from the archive. Omitted
+            submodules are recorded in the manifest but not materialized.
+
+        no_submodules:
+            If true, omit all recursive submodule working trees from the
+            archive.
 
         format:
             Archive format. ``'auto'`` infers from the output extension when
@@ -218,12 +398,23 @@ def archive_source(
     normalized_depth = _normalize_depth(depth)
     include_git_history = normalized_depth != 0
     clone_depth = None if normalized_depth in {0, None} else normalized_depth
+    submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
+    exclude_submodule_paths = _normalize_submodule_path_list(
+        exclude_submodule
+    )
 
     archive_format = _resolve_archive_format(output, format)
     archive_path = _resolve_output(repo_root, output, prefix, archive_format)
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     submodule_status = _submodule_status(repo)
+    submodule_decisions = _resolve_submodule_archive_decisions(
+        submodule_status,
+        policy=submodule_depth_policy,
+        inherited_depth=normalized_depth,
+        exclude_submodule=exclude_submodule_paths,
+        no_submodules=bool(no_submodules),
+    )
 
     log = _Logger(verbose)
     log.path('[source-archive] repo: ', repo_root)
@@ -240,6 +431,15 @@ def archive_source(
         log(f'[source-archive] history depth: {depth_label}')
     else:
         log('[source-archive] depth: 0 (source-only git archive mode)')
+    for line in submodule_depth_policy.summary_lines():
+        log(f'[source-archive] {line}')
+    if no_submodules:
+        log('[source-archive] submodules: omitted by --no-submodules')
+    elif exclude_submodule_paths:
+        log(
+            '[source-archive] excluded submodules: '
+            + ', '.join(exclude_submodule_paths)
+        )
     log(f'[source-archive] superproject HEAD: {short_sha}')
 
     import shutil
@@ -270,9 +470,16 @@ def archive_source(
             log('[source-archive] exporting superproject with git archive')
             _extract_git_archive(repo, 'HEAD', stage, prefix)
 
-        for info in submodule_status:
+        for decision in submodule_decisions:
+            info = decision.info
             path = info.path
             submodule_sha = info.sha
+            if decision.omitted:
+                log(
+                    f'[source-archive] omitting submodule {path}: '
+                    f'{decision.reason}'
+                )
+                continue
             if info.status == '-':
                 raise RuntimeError(
                     f"submodule '{path}' is not initialized; run: "
@@ -287,20 +494,26 @@ def archive_source(
             sub_repo = _coerce_repo(src_dpath)
             _assert_has_head(sub_repo)
             sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
-            log(f'[source-archive] exporting submodule {path} HEAD {sub_short}')
-            if include_git_history:
+            log(
+                f'[source-archive] exporting submodule {path} HEAD {sub_short} '
+                f'depth={_depth_label(decision.depth)} mode={decision.mode}'
+            )
+            sub_clone_depth = _clone_depth_from_normalized_depth(
+                decision.depth
+            )
+            if decision.depth != 0:
                 _clone_committed_checkout(
                     src=sub_repo,
                     dst=archive_root / path,
                     commit=submodule_sha,
                     label=f'submodule {path}',
-                    clone_depth=clone_depth,
+                    clone_depth=sub_clone_depth,
                     log=log,
                 )
             else:
                 (archive_root / path).mkdir(parents=True, exist_ok=True)
                 _extract_git_archive(
-                    sub_repo, 'HEAD', stage, f'{prefix}/{path}'
+                    sub_repo, submodule_sha, stage, f'{prefix}/{path}'
                 )
 
         if include_git_history:
@@ -319,6 +532,10 @@ def archive_source(
             include_git_history=include_git_history,
             clone_depth=clone_depth,
             submodule_status=submodule_status,
+            submodule_depth_policy=submodule_depth_policy,
+            submodule_decisions=submodule_decisions,
+            no_submodules=bool(no_submodules),
+            exclude_submodule=exclude_submodule_paths,
         )
 
         if include_git_history:
@@ -462,7 +679,7 @@ def _assert_has_head(repo: 'git.Repo') -> None:
 def _normalize_depth(depth: DepthArg) -> Optional[int]:
     import re
 
-    if depth in {None, '', 'full'}:
+    if depth is None:
         return None
     if isinstance(depth, bool):
         raise ValueError(
@@ -472,6 +689,8 @@ def _normalize_depth(depth: DepthArg) -> Optional[int]:
         value = depth
     else:
         text = str(depth)
+        if text in {'', 'full'}:
+            return None
         if text == '0':
             return 0
         if not re.match(r'^[1-9][0-9]*$', text):
@@ -484,6 +703,225 @@ def _normalize_depth(depth: DepthArg) -> Optional[int]:
             "depth must be a non-negative integer, None, or 'full'"
         )
     return value
+
+
+def _depth_label(depth: Optional[int]) -> str:
+    """
+    Render an internal normalized depth for humans.
+
+    Example:
+        >>> _depth_label(None)
+        'full'
+        >>> _depth_label(0)
+        '0'
+        >>> _depth_label(25)
+        '25'
+    """
+    return 'full' if depth is None else str(depth)
+
+
+def _clone_depth_from_normalized_depth(
+    depth: Optional[int],
+) -> Optional[int]:
+    """Return the Git clone ``--depth`` value for a normalized depth."""
+    return None if depth in {0, None} else depth
+
+
+def _parse_submodule_depth_spec(
+    spec: SubmoduleDepthSpecArg,
+) -> SubmoduleDepthPolicy:
+    """
+    Parse a ``--submodule-depth`` YAML spec.
+
+    Example:
+        >>> p = _parse_submodule_depth_spec(None)
+        >>> p.resolve('lib', inherited_depth=7)
+        7
+        >>> p = _parse_submodule_depth_spec('full')
+        >>> _depth_label(p.resolve('lib', inherited_depth=7))
+        'full'
+        >>> p = _parse_submodule_depth_spec('{__default__: 0, lib: 3}')
+        >>> p.resolve('lib', inherited_depth=7)
+        3
+        >>> p.resolve('other', inherited_depth=7)
+        0
+        >>> p = _parse_submodule_depth_spec('{lib: 3}')
+        >>> p.resolve('other', inherited_depth=7)
+        7
+    """
+    if spec is None:
+        return SubmoduleDepthPolicy(specified=False)
+
+    if isinstance(spec, dict):
+        parsed = spec
+    elif isinstance(spec, int):
+        parsed = spec
+    else:
+        text = str(spec)
+        if text == '':
+            return SubmoduleDepthPolicy(specified=False)
+        import yaml
+
+        parsed = yaml.safe_load(text)
+
+    if isinstance(parsed, dict):
+        exact_depths: dict[str, Optional[int]] = {}
+        glob_depths: dict[str, Optional[int]] = {}
+        star_depth: Any = _UNSET
+        default_depth: Any = _UNSET
+        for raw_key, raw_depth in parsed.items():
+            if not isinstance(raw_key, str):
+                raise ValueError(
+                    'submodule depth mapping keys must be strings; got '
+                    f'{raw_key!r}'
+                )
+            key = raw_key.strip()
+            if not key:
+                raise ValueError('submodule depth mapping keys cannot be empty')
+            normalized = _normalize_depth(cast(DepthArg, raw_depth))
+            if key == '__default__':
+                default_depth = normalized
+            elif key == '*':
+                star_depth = normalized
+            elif _looks_like_fnmatch_pattern(key):
+                glob_depths[key] = normalized
+            else:
+                exact_depths[key] = normalized
+        return SubmoduleDepthPolicy(
+            specified=True,
+            raw=parsed,
+            exact_depths=exact_depths,
+            glob_depths=glob_depths,
+            star_depth=star_depth,
+            default_depth=default_depth,
+        )
+    if isinstance(parsed, (list, tuple)):
+        raise ValueError(
+            'submodule depth spec must be a scalar depth or a YAML mapping, '
+            f'not {type(parsed).__name__}'
+        )
+    return SubmoduleDepthPolicy(
+        specified=True,
+        raw=parsed,
+        scalar_depth=_normalize_depth(cast(DepthArg, parsed)),
+    )
+
+
+def _looks_like_fnmatch_pattern(text: str) -> bool:
+    """
+    Return true for keys containing fnmatch glob metacharacters.
+
+    Example:
+        >>> _looks_like_fnmatch_pattern('external/lib')
+        False
+        >>> _looks_like_fnmatch_pattern('external/*')
+        True
+        >>> _looks_like_fnmatch_pattern('external/lib[12]')
+        True
+    """
+    return any(ch in text for ch in '*?[')
+
+
+def _normalize_submodule_path_list(
+    value: Optional[Union[str, List[str]]]
+) -> List[str]:
+    """
+    Normalize CLI/API submodule path lists.
+
+    Example:
+        >>> _normalize_submodule_path_list(None)
+        []
+        >>> _normalize_submodule_path_list('extern/data')
+        ['extern/data']
+        >>> _normalize_submodule_path_list(['extern/data', ' other '])
+        ['extern/data', 'other']
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    else:
+        items = list(value)
+    paths = []
+    for item in items:
+        path = str(item).strip()
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _resolve_submodule_archive_decisions(
+    submodule_status: List[SubmoduleStatus],
+    *,
+    policy: SubmoduleDepthPolicy,
+    inherited_depth: Optional[int],
+    exclude_submodule: List[str],
+    no_submodules: bool,
+) -> List[SubmoduleArchiveDecision]:
+    """
+    Resolve submodule archive decisions.
+
+    Example:
+        >>> infos = [SubmoduleStatus(' ', 'a' * 40, 'lib/a', ''), SubmoduleStatus(' ', 'b' * 40, 'lib/b', '')]
+        >>> policy = _parse_submodule_depth_spec('{"*": 0, lib/a: 5}')
+        >>> decisions = _resolve_submodule_archive_decisions(infos, policy=policy, inherited_depth=10, exclude_submodule=[], no_submodules=False)
+        >>> [(d.info.path, d.mode, _depth_label(d.depth)) for d in decisions]
+        [('lib/a', 'shallow-git-checkout', '5'), ('lib/b', 'source-only-git-archive', '0')]
+        >>> decisions = _resolve_submodule_archive_decisions(infos, policy=policy, inherited_depth=10, exclude_submodule=['lib/b'], no_submodules=False)
+        >>> [(d.info.path, d.omitted, d.reason) for d in decisions]
+        [('lib/a', False, 'included'), ('lib/b', True, 'excluded by --exclude-submodule')]
+    """
+    known_paths = {info.path for info in submodule_status}
+    unknown_excludes = sorted(set(exclude_submodule) - known_paths)
+    if unknown_excludes and not no_submodules:
+        rendered = ', '.join(unknown_excludes)
+        raise ValueError(
+            f'--exclude-submodule path does not match a recursive submodule: {rendered}'
+        )
+
+    exclude_set = set(exclude_submodule)
+    decisions: List[SubmoduleArchiveDecision] = []
+    for info in submodule_status:
+        if no_submodules:
+            decisions.append(
+                SubmoduleArchiveDecision(
+                    info=info,
+                    omitted=True,
+                    depth=inherited_depth,
+                    mode='omitted',
+                    reason='omitted by --no-submodules',
+                )
+            )
+            continue
+        if info.path in exclude_set:
+            decisions.append(
+                SubmoduleArchiveDecision(
+                    info=info,
+                    omitted=True,
+                    depth=inherited_depth,
+                    mode='omitted',
+                    reason='excluded by --exclude-submodule',
+                )
+            )
+            continue
+
+        depth = policy.resolve(info.path, inherited_depth)
+        if depth == 0:
+            mode = 'source-only-git-archive'
+        elif depth is None:
+            mode = 'full-git-checkout'
+        else:
+            mode = 'shallow-git-checkout'
+        decisions.append(
+            SubmoduleArchiveDecision(
+                info=info,
+                omitted=False,
+                depth=depth,
+                mode=mode,
+                reason='included',
+            )
+        )
+    return decisions
 
 
 def _normalize_format(format: str) -> ResolvedArchiveFormat:
@@ -714,6 +1152,10 @@ def _write_manifest(
     include_git_history: bool,
     clone_depth: Optional[int],
     submodule_status: List[SubmoduleStatus],
+    submodule_depth_policy: SubmoduleDepthPolicy,
+    submodule_decisions: List[SubmoduleArchiveDecision],
+    no_submodules: bool,
+    exclude_submodule: List[str],
 ) -> None:
     import git
 
@@ -753,13 +1195,22 @@ def _write_manifest(
             ]
         )
 
+    lines.extend(['', 'Submodule archive policy:'])
+    lines.extend(submodule_depth_policy.summary_lines())
+    lines.append(f'No submodules: {"yes" if no_submodules else "no"}')
+    if exclude_submodule:
+        lines.append('Excluded submodule paths:')
+        lines.extend(f'- {path}' for path in exclude_submodule)
+    else:
+        lines.append('Excluded submodule paths: (none)')
+
     lines.extend(
         textwrap.dedent(
             """
 
         Archive policy:
         - Includes committed/tracked files from the superproject HEAD.
-        - Includes committed/tracked files from each initialized recursive submodule HEAD.
+        - Includes committed/tracked files from each initialized recursive submodule HEAD unless omitted by policy.
         """
         ).splitlines()
     )
@@ -791,10 +1242,27 @@ def _write_manifest(
     else:
         lines.append('(none)')
 
+    lines += ['', 'Submodule materialization decisions:']
+    if submodule_decisions:
+        for decision in submodule_decisions:
+            lines.extend(
+                [
+                    f'- path: {decision.info.path}',
+                    f'  sha: {decision.info.sha}',
+                    f'  status: {"omitted" if decision.omitted else "included"}',
+                    f'  mode: {decision.mode}',
+                    f'  depth: {_depth_label(decision.depth)}',
+                    f'  reason: {decision.reason}',
+                ]
+            )
+    else:
+        lines.append('(none)')
+
     lines += ['', 'Submodule HEADs included:']
-    if submodule_status:
-        for info in submodule_status:
-            path = info.path
+    included_decisions = [d for d in submodule_decisions if not d.omitted]
+    if included_decisions:
+        for decision in included_decisions:
+            path = decision.info.path
             src = repo_root / path
             if src.exists():
                 try:
