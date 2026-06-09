@@ -6,6 +6,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Version 0.3.2 - Unreleased
 
+### Added
+
+* Add `archive_source --submodule-depth` YAML specs for source-only, shallow, full, default, and globbed per-submodule depth policies.
+* Add `archive_source --exclude-submodule` and `--no-submodules` controls for omitting large submodule working trees from source archives.
+
 
 ## Version 0.3.1 - Released 2026-05-16
 
