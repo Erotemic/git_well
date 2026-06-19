@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import kwconf as kw
+import kwconf
 
 
-class GitWellPatchDirModalCLI(kw.ModalCLI):
+class GitWellPatchDirModalCLI(kwconf.ModalCLI):
     """
     Subcommands for handling patch directories
     """

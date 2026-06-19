@@ -17,7 +17,7 @@ import os
 import warnings
 import itertools as it
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
 EXPERIMENTAL_PSEUDO_CHAIN: int = 0
@@ -28,14 +28,14 @@ from git.objects.commit import Commit
 """
 
 
-class SquashStreakCLI(kw.Config):
+class SquashStreakCLI(kwconf.Config):
     """
     Squashes consecutive commits that meet a specified criteiron.
     """
 
     __command__: str = 'squash_streaks'
 
-    timedelta: kw.Value = kw.Value(
+    timedelta: str | float = kwconf.Value(
         'sameday',
         parser=str,
         help=ub.paragraph(
@@ -47,7 +47,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    custom_streak: kw.Value = kw.Value(
+    custom_streak: list[str] | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -56,7 +56,7 @@ class SquashStreakCLI(kw.Config):
         ),
         nargs=2,
     )
-    pattern: kw.Value = kw.Value(
+    pattern: str | None = kwconf.Value(
         None,
         parser=str,
         help=ub.paragraph(
@@ -68,9 +68,9 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    tags: kw.Value = kw.Value(False, isflag=True, help='experimental')
+    tags: bool = kwconf.Value(False, isflag=True, help='experimental')
 
-    preserve_tags: kw.Value = kw.Value(
+    preserve_tags: bool | set[str] | list[str] | tuple[str, ...] = kwconf.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -81,7 +81,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    oldest_commit: kw.Value = kw.Value(
+    oldest_commit: str | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -90,7 +90,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    inplace: kw.Value = kw.Value(
+    inplace: bool = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -102,7 +102,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    auto_rollback: kw.Value = kw.Value(
+    auto_rollback: bool = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -112,7 +112,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    authors: kw.Value = kw.Value(
+    authors: str | None = kwconf.Value(
         None,
         parser=str,
         help=ub.paragraph(
@@ -123,7 +123,7 @@ class SquashStreakCLI(kw.Config):
             """
         ),
     )
-    dry: kw.Value = kw.Value(
+    dry: bool = kwconf.Value(
         True,
         isflag=True,
         mutex_group='dryrun',
@@ -136,7 +136,7 @@ class SquashStreakCLI(kw.Config):
         ),
     )
 
-    force: kw.Value = kw.Value(
+    force: bool | None = kwconf.Value(
         None,
         isflag=True,
         mutex_group='dryrun',
@@ -144,7 +144,7 @@ class SquashStreakCLI(kw.Config):
         help='turn dry mode off',
     )
 
-    verbose: kw.Value = kw.Value(
+    verbose: bool = kwconf.Value(
         True,
         mutex_group='verbose',
         short_alias=['v'],
@@ -153,9 +153,9 @@ class SquashStreakCLI(kw.Config):
 
     # TODO: kwconf needs to be extended to handle these argparse
     # use-cases
-    # dry = kw.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
+    # dry = kwconf.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
     # nargs=0)
-    # quiet = kw.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
+    # quiet = kwconf.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
 
     def __post_init__(self) -> None:
         force = self['force']

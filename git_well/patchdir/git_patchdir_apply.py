@@ -3,24 +3,24 @@ from __future__ import annotations
 
 from typing import Any
 
-import kwconf as kw
+import kwconf
 import ubelt as ub
 import json
 
 
-class GitApplyPatchCLI(kw.Config):
+class GitApplyPatchCLI(kwconf.Config):
     """
     Applies a saved patch from the patch directory.
     """
 
     __command__ = 'apply'
-    patch = kw.Value(
+    patch = kwconf.Value(
         None, help='Path to a specific patch file or JSON metadata file'
     )
-    patch_dpath = kw.Value('patches', help='Directory of saved patches')
-    list_only = kw.Flag(False, help='Only list available patches')
-    dry = kw.Flag(False, help='Show what would be applied without applying')
-    restore_patch = kw.Flag(
+    patch_dpath = kwconf.Value('patches', help='Directory of saved patches')
+    list_only = kwconf.Flag(False, help='Only list available patches')
+    dry = kwconf.Flag(False, help='Show what would be applied without applying')
+    restore_patch = kwconf.Flag(
         False, help='Restore (unstage) patch files after applying'
     )
 

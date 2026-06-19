@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
-import kwconf as kw
+import kwconf
 import ubelt as ub
 
 
@@ -10,7 +10,7 @@ import ubelt as ub
 # ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
 
 
-class GitDiscoverRemoteCLI(kw.Config):
+class GitDiscoverRemoteCLI(kwconf.Config):
     """
     Attempt to discover a ssh remote based on an ssh host.
 
@@ -20,7 +20,7 @@ class GitDiscoverRemoteCLI(kw.Config):
 
     __command__: str = 'discover_remote'
 
-    repo_dpath: kw.Value = kw.Value(
+    repo_dpath: str = kwconf.Value(
         '.',
         help=ub.paragraph(
             """
@@ -32,7 +32,7 @@ class GitDiscoverRemoteCLI(kw.Config):
         ),
     )
 
-    host: kw.Value = kw.Value(
+    host: str = kwconf.Value(
         None,
         position=1,
         required=True,
@@ -43,7 +43,7 @@ class GitDiscoverRemoteCLI(kw.Config):
         ),
     )
 
-    remote: kw.Value = kw.Value(
+    remote: str | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -53,12 +53,12 @@ class GitDiscoverRemoteCLI(kw.Config):
         ),
     )
 
-    home: kw.Value = kw.Value(
+    home: str | None = kwconf.Value(
         None,
         help='Explicitly specify where your home drive is. Usually this can be inferred',
     )
 
-    forward_ssh_agent: kw.Value = kw.Value(
+    forward_ssh_agent: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -69,7 +69,7 @@ class GitDiscoverRemoteCLI(kw.Config):
         ),
     )
 
-    test_remote: kw.Value = kw.Value(
+    test_remote: bool = kwconf.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -80,7 +80,7 @@ class GitDiscoverRemoteCLI(kw.Config):
         ),
     )
 
-    remote_cwd: kw.Value = kw.Value(
+    remote_cwd: str | None = kwconf.Value(
         None, help='path on the remote. inferred if not given'
     )
 

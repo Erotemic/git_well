@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import kwconf as kw
+import kwconf
 import ubelt as ub
 
 
-class GitUrlComponentsCLI(kw.Config):
+class GitUrlComponentsCLI(kwconf.Config):
     """
     Access components of a git URL.
 
@@ -24,16 +24,16 @@ class GitUrlComponentsCLI(kw.Config):
 
     __command__ = 'url'
 
-    url = kw.Value(None, help='the git url to parse', position=1)
-    component = kw.Value(
+    url = kwconf.Value(None, help='the git url to parse', position=1)
+    component = kwconf.Value(
         None,
         help='The component to access and print. If unspecified all info is printed in json format',
         position=2,
     )
-    protocol = kw.Value(
+    protocol = kwconf.Value(
         None, help='If specified, convert to the specified protocol first'
     )
-    verbose = kw.Flag(False, help='verbosity level')
+    verbose = kwconf.Flag(False, help='verbosity level')
 
     @classmethod
     def main(

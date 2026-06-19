@@ -58,6 +58,18 @@ def test_build_add_argv():
     ]
 
 
+def test_build_pin_add_argv():
+    from git_well.ipfs import _build_pin_add_argv
+
+    argv = _build_pin_add_argv(
+        'bafyfakecid', pin_name='pkg:generic/repo#foo bar')
+
+    assert argv == [
+        'ipfs', 'pin', 'add', '--name=pkg:generic/repo#foo bar',
+        '--progress', '--recursive', 'bafyfakecid'
+    ]
+
+
 def test_git_origin_url_to_purl_base_common_remotes():
     from git_well.ipfs import _git_origin_url_to_purl_base
     assert _git_origin_url_to_purl_base(
@@ -227,7 +239,7 @@ def test_ipfs_add_dry_run_uses_generated_name_without_origin(tmp_path, capsys):
     assert 'ipfs pin add --name' not in captured
 
 
-def test_ipfs_add_writes_effective_pin_name_to_sidecar(tmp_path, monkeypatch):
+def test_ipfs_add_writes_effective_pin_name_to_sidecar(tmp_path, monkeypatch, capsys):
     import ubelt as ub
 
     import git_well.ipfs as ipfs_mod
@@ -262,6 +274,9 @@ def test_ipfs_add_writes_effective_pin_name_to_sidecar(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert '--pin-name=pkg:generic/repo#data.txt' in calls[0]
+    captured = capsys.readouterr().out
+    assert 'Pin on another machine with:' in captured
+    assert "ipfs pin add '--name=pkg:generic/repo#data.txt' --progress --recursive bafyfakecid" in captured
     sidecar = ipfs_mod._YamlCodec.load(fpath.with_name('data.txt.ipfs'))
     assert sidecar['pin_name'] == 'pkg:generic/repo#data.txt'
     assert sidecar['pin_name_source'] == 'generated'

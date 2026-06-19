@@ -9,16 +9,16 @@ from os.path import expanduser
 from os.path import relpath
 import os
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
-class GitSyncCLI(kw.Config):
+class GitSyncCLI(kwconf.Config):
     """
     Sync a git repo with a remote server via ssh
     """
 
     __command__: str = 'sync'
-    host: kw.Value = kw.Value(
+    host: list[str] = kwconf.Value(
         None,
         position=1,
         required=True,
@@ -29,10 +29,10 @@ class GitSyncCLI(kw.Config):
         ),
         nargs=1,
     )
-    remote: kw.Value = kw.Value(
+    remote: str | None = kwconf.Value(
         None, position=2, help='The git remote to use (e.g. origin)', nargs='?'
     )
-    forward_ssh_agent: kw.Value = kw.Value(
+    forward_ssh_agent: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -42,16 +42,16 @@ class GitSyncCLI(kw.Config):
             """
         ),
     )
-    dry: kw.Value = kw.Value(
+    dry: bool = kwconf.Value(
         False, isflag=True, short_alias=['n'], help='Perform a dry run'
     )
-    message: kw.Value = kw.Value(
+    message: str = kwconf.Value(
         'wip [skip ci]',
         parser=str,
         short_alias=['m'],
         help='Specify a custom commit message',
     )
-    force: kw.Value = kw.Value(
+    force: bool = kwconf.Value(
         False, isflag=True, help='Force push and hard reset the remote.'
     )
 

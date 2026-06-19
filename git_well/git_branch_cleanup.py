@@ -4,24 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
-class CleanDevBranchConfig(kw.Config):
+class CleanDevBranchConfig(kwconf.Config):
     """
     Cleanup branches that have been merged into main.
     """
 
     __command__: str = 'branch_cleanup'
 
-    repo_dpath: kw.Value = kw.Value('.', help='location of the repo')
-    keep_last: kw.Value = kw.Value(
+    repo_dpath: str = kwconf.Value('.', help='location of the repo')
+    keep_last: int = kwconf.Value(
         1, help='previous number of dev branches to keep'
     )
-    remove_merged: kw.Value = kw.Value(
+    remove_merged: bool = kwconf.Value(
         False, isflag=True, help='if True, remove other merged branhes as well'
     )
-    yes: kw.Value = kw.Value(
+    yes: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['-y'],

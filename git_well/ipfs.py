@@ -41,14 +41,14 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote, unquote, urlparse
 
-import kwconf as kw
+import kwconf
 import ubelt as ub
 
 KUBO_PIN_NAME_MAX_BYTES = 255
 KUBO_PIN_NAME_HASH_HEX_LEN = 16
 
 
-class IPFSCLI(kw.ModalCLI):
+class IPFSCLI(kwconf.ModalCLI):
     """Utilities for git-tracked IPFS sidecar files."""
     __command__ = 'ipfs'
 
@@ -564,6 +564,28 @@ def _build_add_argv(config: Any, *, pin_name: str | None = None) -> list[str]:
     return argv
 
 
+def _build_pin_add_argv(root_cid: str, *, pin_name: str | None = None,
+                        progress: bool = True, recursive: bool = True) -> list[str]:
+    """Build a reusable ``ipfs pin add`` command."""
+    pin_argv = ['ipfs', 'pin', 'add']
+    if pin_name is not None:
+        normalized_pin_name, _shortened = _normalize_ipfs_pin_name(pin_name)
+        pin_argv.append(f'--name={normalized_pin_name}')
+    if progress:
+        pin_argv.append('--progress')
+    if recursive:
+        pin_argv.append('--recursive')
+    pin_argv.append(root_cid)
+    return pin_argv
+
+
+def _print_pin_elsewhere_command(root_cid: str, pin_name: str) -> None:
+    """Print a copy/paste command for pinning the CID on another host."""
+    pin_argv = _build_pin_add_argv(root_cid, pin_name=pin_name)
+    print('Pin on another machine with:')
+    print('    ' + argv_to_str(pin_argv))
+
+
 def _build_rehash_argv(tracked_path: Path, add_config: dict[str, Any]) -> list[str]:
     """Build a conservative ``ipfs add --only-hash`` command for verification."""
     argv = ['ipfs', 'add', '--only-hash']
@@ -642,23 +664,23 @@ def _print_status_table(rows: list[dict[str, Any]]) -> None:
 
 
 @IPFSCLI.register
-class IPFSAdd(kw.Config):
+class IPFSAdd(kwconf.Config):
     """Add a file/directory to IPFS and optionally write a sidecar."""
     __command__ = 'add'
     __alias__ = 'snapshot'
 
-    path = kw.Value(None, help='file or directory to add to IPFS', position=1)
-    name = kw.Value(None, help='optional human-readable pin name')
-    recursive = kw.Flag(True, help='add directory paths recursively')
-    progress = kw.Flag(True, short_alias=['p'], help='stream progress data')
-    cid_version = kw.Value(1, help='CID version')
-    raw_leaves = kw.Flag(False, help='use raw blocks for leaf nodes')
-    only_hash = kw.Flag(False, short_alias=['n'], help='chunk/hash only; do not write IPFS blocks')
-    pin = kw.Flag(True, help='pin locally to protect added files from garbage collection')
-    sidecar = kw.Value(True, help='true, false, or explicit sidecar path')
-    update_gitignore = kw.Flag(True, help='add the tracked path to a nearby .gitignore')
-    git_add_sidecar = kw.Flag(True, help='git-add the sidecar when inside a git worktree')
-    dry_run = kw.Flag(False, help='print the generated ipfs command without running it')
+    path = kwconf.Value(None, help='file or directory to add to IPFS', position=1)
+    name = kwconf.Value(None, help='optional human-readable pin name')
+    recursive = kwconf.Flag(True, help='add directory paths recursively')
+    progress = kwconf.Flag(True, short_alias=['p'], help='stream progress data')
+    cid_version = kwconf.Value(1, help='CID version')
+    raw_leaves = kwconf.Flag(False, help='use raw blocks for leaf nodes')
+    only_hash = kwconf.Flag(False, short_alias=['n'], help='chunk/hash only; do not write IPFS blocks')
+    pin = kwconf.Flag(True, help='pin locally to protect added files from garbage collection')
+    sidecar = kwconf.Value(True, help='true, false, or explicit sidecar path')
+    update_gitignore = kwconf.Flag(True, help='add the tracked path to a nearby .gitignore')
+    git_add_sidecar = kwconf.Flag(True, help='git-add the sidecar when inside a git worktree')
+    dry_run = kwconf.Flag(False, help='print the generated ipfs command without running it')
 
     _build_add_command = _build_add_argv
 
@@ -748,16 +770,18 @@ class IPFSAdd(kw.Config):
             print(sidecar_text)
             print(f'Wrote to: sidecar_fpath={sidecar_fpath}')
 
+        if pin_name is not None:
+            _print_pin_elsewhere_command(cid, pin_name)
 
 
 @IPFSCLI.register
-class IPFSPull(kw.Config):
+class IPFSPull(kwconf.Config):
     """Materialize content described by one or more ``*.ipfs`` sidecars."""
     __command__ = 'pull'
 
-    path = kw.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
-    dry_run = kw.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
-    recursive = kw.Flag(True, help='recurse into directories when scanning')
+    path = kwconf.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
+    dry_run = kwconf.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
+    recursive = kwconf.Flag(True, help='recurse into directories when scanning')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -780,16 +804,16 @@ class IPFSPull(kw.Config):
 
 
 @IPFSCLI.register
-class IPFSStatus(kw.Config):
+class IPFSStatus(kwconf.Config):
     """Check whether local content tracked by sidecars appears changed."""
     __command__ = 'status'
 
-    path = kw.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
-    recursive = kw.Flag(True, help='recurse into directories when scanning')
-    strict = kw.Flag(False, help='error on missing tracked paths')
-    full = kw.Flag(False, help='recompute CID using ipfs add --only-hash')
-    write_baseline = kw.Flag(False, help='update quickstat baseline in each sidecar')
-    baseline_key = kw.Value('local_quickstat', help='sidecar key containing quickstat baseline')
+    path = kwconf.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
+    recursive = kwconf.Flag(True, help='recurse into directories when scanning')
+    strict = kwconf.Flag(False, help='error on missing tracked paths')
+    full = kwconf.Flag(False, help='recompute CID using ipfs add --only-hash')
+    write_baseline = kwconf.Flag(False, help='update quickstat baseline in each sidecar')
+    baseline_key = kwconf.Value('local_quickstat', help='sidecar key containing quickstat baseline')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -843,23 +867,23 @@ class IPFSStatus(kw.Config):
 
 
 @IPFSCLI.register
-class IPFSExportPins(kw.Config):
+class IPFSExportPins(kwconf.Config):
     """Export ``ipfs pin add`` commands for sidecars."""
     __command__ = 'export'
 
-    paths = kw.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
-    recurse = kw.Flag(True, help='recurse into directories when scanning')
-    dedupe = kw.Flag(True, help='deduplicate by CID')
-    sort = kw.Flag(True, help='sort output for stable scripts')
-    name = kw.Value(None, help='override pin name for all emitted commands')
-    prefer_sidecar_name = kw.Flag(True, help='use add_config.name when present')
-    generated_names = kw.Flag(
+    paths = kwconf.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
+    recurse = kwconf.Flag(True, help='recurse into directories when scanning')
+    dedupe = kwconf.Flag(True, help='deduplicate by CID')
+    sort = kwconf.Flag(True, help='sort output for stable scripts')
+    name = kwconf.Value(None, help='override pin name for all emitted commands')
+    prefer_sidecar_name = kwconf.Flag(True, help='use add_config.name when present')
+    generated_names = kwconf.Flag(
         True,
         help='generate PURL-shaped names from git origin and repo-relative '
              'path when no explicit name is available')
-    progress = kw.Flag(False, short_alias=['p'], help='include --progress')
-    recursive = kw.Flag(True, help='include --recursive')
-    emit_bash = kw.Flag(False, help='emit a bash header')
+    progress = kwconf.Flag(False, short_alias=['p'], help='include --progress')
+    recursive = kwconf.Flag(True, help='include --recursive')
+    emit_bash = kwconf.Flag(False, help='emit a bash header')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -895,39 +919,34 @@ class IPFSExportPins(kw.Config):
             print('')
 
         for cid, name, _fpath in items:
-            pin_argv = ['ipfs', 'pin', 'add']
-            if config.progress:
-                pin_argv.append('--progress')
-            if config.recursive:
-                pin_argv.append('--recursive')
-            pin_argv.append(cid)
-            if name:
-                pin_argv.append(f'--name={name}')
+            pin_argv = _build_pin_add_argv(
+                cid, pin_name=name, progress=config.progress,
+                recursive=config.recursive)
             print(argv_to_str(pin_argv))
 
 
-class IPFSPin(kw.ModalCLI):
+class IPFSPin(kwconf.ModalCLI):
     """Wrapped ``ipfs pin`` helpers."""
     __command__ = 'pin'
 
 
 @IPFSPin.register
-class IPFSPinAdd(kw.Config):
+class IPFSPinAdd(kwconf.Config):
     """Pin a CID or the CID referenced by a sidecar."""
     __command__ = 'add'
 
-    path = kw.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
-    recursive = kw.Flag(True, help='pin recursively')
-    progress = kw.Flag(True, short_alias=['p'], help='stream progress data')
-    name = kw.Value(
+    path = kwconf.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
+    recursive = kwconf.Flag(True, help='pin recursively')
+    progress = kwconf.Flag(True, short_alias=['p'], help='stream progress data')
+    name = kwconf.Value(
         None,
         help='optional pin name; defaults to add_config.name or a generated '
              'PURL-shaped repo/path name')
-    generated_names = kw.Flag(
+    generated_names = kwconf.Flag(
         True,
         help='generate a PURL-shaped name from git origin and repo-relative '
              'path when no explicit name is available')
-    dry_run = kw.Flag(False, short_alias=['n'], help='print command without executing')
+    dry_run = kwconf.Flag(False, short_alias=['n'], help='print command without executing')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -950,14 +969,9 @@ class IPFSPinAdd(kw.Config):
             pin_name_info = _resolved_pin_name_info(config.name, 'explicit')
             pin_name = None if pin_name_info is None else pin_name_info['name']
 
-        pin_argv = ['ipfs', 'pin', 'add']
-        if pin_name is not None:
-            pin_argv += ['--name', pin_name]
-        if config.progress:
-            pin_argv.append('--progress')
-        if config.recursive:
-            pin_argv.append('--recursive')
-        pin_argv.append(root_cid)
+        pin_argv = _build_pin_add_argv(
+            root_cid, pin_name=pin_name, progress=config.progress,
+            recursive=config.recursive)
         _run(pin_argv, dry_run=config.dry_run, verbose=3)
 
 
@@ -965,12 +979,12 @@ IPFSCLI.register(IPFSPin)
 
 
 @IPFSCLI.register
-class IPFSCheckCID(kw.Config):
+class IPFSCheckCID(kwconf.Config):
     """Compare CIDs produced by common CID-version/raw-leaves settings."""
     __command__ = 'check-cid'
 
-    path = kw.Value(None, help='file or directory to hash', position=1)
-    recursive = kw.Flag(False, help='pass --recursive')
+    path = kwconf.Value(None, help='file or directory to hash', position=1)
+    recursive = kwconf.Flag(False, help='pass --recursive')
 
     @classmethod
     def main(cls, argv=1, **kwargs):

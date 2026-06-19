@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union, cast
 
-import kwconf as kw
+import kwconf
 
 if TYPE_CHECKING:  # pragma: no cover
     import git
@@ -200,7 +200,7 @@ class SubmoduleDepthPolicy:
         return lines
 
 
-class ArchiveSourceCLI(kw.Config):
+class ArchiveSourceCLI(kwconf.Config):
     """
     Archive committed source with full Git history and initialized submodules.
 
@@ -221,13 +221,13 @@ class ArchiveSourceCLI(kw.Config):
 
     __command__ = 'archive_source'
 
-    repo_dpath = kw.Value(
+    repo_dpath = kwconf.Value(
         '.',
         position=1,
         nargs='?',
         help='location of the Git repository to archive',
     )
-    output = kw.Value(
+    output = kwconf.Value(
         None,
         short_alias=['o'],
         help=textwrap.dedent("""
@@ -237,14 +237,14 @@ class ArchiveSourceCLI(kw.Config):
             <repo>-source-<timestamp>-<short-sha>.<format-extension>.
             """).strip(),
     )
-    depth = kw.Value(
+    depth = kwconf.Value(
         'full',
         help=textwrap.dedent("""
             Git history depth: "full" for all current-HEAD history, a positive
             integer for shallow history, or 0 for source-only git archive mode.
             """).strip(),
     )
-    submodule_depth = kw.Value(
+    submodule_depth = kwconf.Value(
         None,
         parser=str,
         alias=['submodule-depth'],
@@ -256,7 +256,7 @@ class ArchiveSourceCLI(kw.Config):
             non-glob fallback, e.g. '{"*": 0, special/submod: 100}'.
             """).strip(),
     )
-    exclude_submodule = kw.Value(
+    exclude_submodule = kwconf.Value(
         [],
         nargs='*',
         alias=['exclude-submodule'],
@@ -266,7 +266,7 @@ class ArchiveSourceCLI(kw.Config):
             while dropping data-heavy submodules entirely.
             """).strip(),
     )
-    submodules = kw.Value(
+    submodules = kwconf.Value(
         True,
         isflag=True,
         help=textwrap.dedent("""
@@ -275,7 +275,7 @@ class ArchiveSourceCLI(kw.Config):
             archive while keeping superproject gitlinks and .gitmodules.
             """).strip(),
     )
-    format = kw.Value(
+    format = kwconf.Value(
         'auto',
         help=textwrap.dedent("""
             Archive format. Defaults to "auto", which infers the format from
@@ -285,7 +285,7 @@ class ArchiveSourceCLI(kw.Config):
             """).strip(),
     )
     # TODO: Re-enable when kwconf fixes modal default injection semantics.
-    # set_config = kw.Value(
+    # set_config = kwconf.Value(
     #     None,
     #     nargs='+',
     #     alias=['set-config'],
@@ -296,7 +296,7 @@ class ArchiveSourceCLI(kw.Config):
     #         When specified, the config is updated and no archive is created.
     #         """).strip(),
     # )
-    verbose = kw.Value(1, help='verbosity level')
+    verbose = kwconf.Value(1, help='verbosity level')
 
     @classmethod
     def main(

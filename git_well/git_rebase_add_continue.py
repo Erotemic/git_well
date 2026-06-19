@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 import os
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
-class GitRebaseAddContinue(kw.Config):
+class GitRebaseAddContinue(kwconf.Config):
     """
     A single step to make rebasing easier.
 
@@ -19,9 +19,9 @@ class GitRebaseAddContinue(kw.Config):
 
     __command__: str = 'rebase_add_continue'
 
-    repo_dpath: kw.Value = kw.Value('.', help='location of the repo')
+    repo_dpath: str = kwconf.Value('.', help='location of the repo')
 
-    skip_editor: kw.Value = kw.Value(
+    skip_editor: bool = kwconf.Value(
         True,
         help='if True skip the editor to change the commit message on git rebase --continue',
     )

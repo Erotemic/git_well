@@ -10,12 +10,12 @@ SeeAlso:
 #!/usr/bin/env python3
 from typing import Any
 
-import kwconf as kw
+import kwconf
 import ubelt as ub
 
 
-class GitStatsCLI(kw.Config):
-    repo_dpath = kw.Value('.', help='param1', position=1)
+class GitStatsCLI(kwconf.Config):
+    repo_dpath = kwconf.Value('.', help='param1', position=1)
 
     @classmethod
     def main(

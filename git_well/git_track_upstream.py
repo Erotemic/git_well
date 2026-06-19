@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
-class TrackUpstreamCLI(kw.Config):
+class TrackUpstreamCLI(kwconf.Config):
     """
     Set the branch upstream with sensible defaults if possible.
 
@@ -28,10 +28,10 @@ class TrackUpstreamCLI(kw.Config):
     """
 
     __command__: str = 'track_upstream'
-    repo_dpath: kw.Value = kw.Value(
+    repo_dpath: str = kwconf.Value(
         '.', position=1, help='location of the repo'
     )
-    force: kw.Value = kw.Value(
+    force: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['-f'],

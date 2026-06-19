@@ -25,10 +25,10 @@ from __future__ import annotations
 
 from typing import Any
 import ubelt as ub
-import kwconf as kw
+import kwconf
 
 
-class UpdateDevBranch(kw.Config):
+class UpdateDevBranch(kwconf.Config):
     """
     Upgrade to the latest "dev" branch. I.e. search for the branch
     ``dev/<version>`` with the greatest semantic version.
@@ -36,7 +36,7 @@ class UpdateDevBranch(kw.Config):
     """
 
     __command__: str = 'branch_upgrade'
-    repo_dpath: kw.Value = kw.Value(
+    repo_dpath: str = kwconf.Value(
         '.', position=1, help='location of the repo'
     )
 

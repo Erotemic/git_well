@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # import ubelt as ub
-import kwconf as kw
+import kwconf
 import ubelt as ub
 from git_well.git_squash_streaks import (
     _squash_between,
@@ -13,7 +13,7 @@ from git_well.git_squash_streaks import (
 )
 
 
-class GitSquashCLI(kw.Config):
+class GitSquashCLI(kwconf.Config):
     """
     Squash all commits between two points (usually main and HEAD).
     This CLI is experimental and designed to eventually supercede
@@ -22,27 +22,27 @@ class GitSquashCLI(kw.Config):
 
     __command__ = 'squash'
 
-    oldest = kw.Value('main', help='The oldest commit to sqash onto')
-    newest = kw.Value(
+    oldest = kwconf.Value('main', help='The oldest commit to sqash onto')
+    newest = kwconf.Value(
         'HEAD', help='The latest commit to be included in the squash'
     )
 
-    inplace = kw.Value(
+    inplace = kwconf.Value(
         False, isflag=True, help='Apply squash directly to current branch'
     )
-    dry = kw.Value(True, isflag=True, short_alias=['n'], help='Dry run')
-    force = kw.Value(
+    dry = kwconf.Value(True, isflag=True, short_alias=['n'], help='Dry run')
+    force = kwconf.Value(
         None,
         isflag=True,
         short_alias=['f'],
         help='Force squash (opposite of dry)',
     )
-    verbose = kw.Value(
+    verbose = kwconf.Value(
         True, isflag=True, short_alias=['v'], help='Print progress'
     )
-    dpath = kw.Value('.', help='Path to repo to squash in')
+    dpath = kwconf.Value('.', help='Path to repo to squash in')
 
-    auto_rollback = kw.Value(
+    auto_rollback = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(

@@ -3,21 +3,21 @@ from __future__ import annotations
 
 from typing import Any
 
-import kwconf as kw
+import kwconf
 import ubelt as ub
 
 
-class GitSavePatchCLI(kw.Config):
+class GitSavePatchCLI(kwconf.Config):
     """
     Saves the diff into a folder of patches that can be applied later.
     """
 
     __command__ = 'save'
-    paths = kw.Value(
+    paths = kwconf.Value(
         [], nargs='+', help='one or more files to save patches from', position=1
     )
-    out_dpath = kw.Value('patches', help='output directory to save patches')
-    message = kw.Value(
+    out_dpath = kwconf.Value('patches', help='output directory to save patches')
+    message = kwconf.Value(
         None,
         help='if specified also associates a message with this patch in a sidecar file',
         short_alias=['m'],
