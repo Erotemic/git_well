@@ -30,6 +30,7 @@ Export pin commands for all sidecars under the current repo:
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -37,11 +38,14 @@ import shlex
 import shutil
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
 from typing import Any, Iterable
+from urllib.parse import quote, unquote, urlparse
 
 import kwconf as kw
 import ubelt as ub
+
+KUBO_PIN_NAME_MAX_BYTES = 255
+KUBO_PIN_NAME_HASH_HEX_LEN = 16
 
 
 class IPFSCLI(kw.ModalCLI):
@@ -349,6 +353,75 @@ def _path_to_purl_subpath(repo_rel_path: os.PathLike | str) -> str:
     return '/'.join(_purl_quote(part) for part in parts)
 
 
+def _trim_utf8_to_byte_length(text: str, max_bytes: int) -> str:
+    """Return a prefix of ``text`` that encodes within ``max_bytes``."""
+    if max_bytes <= 0:
+        return ''
+    used = 0
+    keep: list[str] = []
+    for char in text:
+        char_nbytes = len(char.encode('utf8'))
+        if used + char_nbytes > max_bytes:
+            break
+        keep.append(char)
+        used += char_nbytes
+    return ''.join(keep)
+
+
+def _normalize_ipfs_pin_name(pin_name: str, *, max_bytes: int = KUBO_PIN_NAME_MAX_BYTES) -> tuple[str, bool]:
+    """Validate and, when necessary, shorten a Kubo pin name.
+
+    Kubo 0.39 enforces a 255-byte UTF-8 limit for pin names.  The generated
+    names in this module are normally short PURL-shaped labels, but deeply
+    nested paths can exceed that limit.  Long names are shortened with a stable
+    hash suffix instead of being naively truncated, preserving deterministic
+    behavior while avoiding most accidental collisions.
+    """
+    if not isinstance(pin_name, str):
+        raise TypeError(f'pin_name must be str, got {type(pin_name)!r}')
+    if not pin_name:
+        raise ValueError('IPFS pin name must not be empty')
+    bad_chars = {'\x00': 'NUL', '\n': 'newline', '\r': 'carriage return'}
+    for bad, label in bad_chars.items():
+        if bad in pin_name:
+            raise ValueError(f'IPFS pin name must not contain {label}')
+
+    encoded = pin_name.encode('utf8')
+    if len(encoded) <= max_bytes:
+        return pin_name, False
+
+    digest = hashlib.sha256(encoded).hexdigest()[:KUBO_PIN_NAME_HASH_HEX_LEN]
+    suffix = f'~gw-{digest}'
+    suffix_nbytes = len(suffix.encode('utf8'))
+    if suffix_nbytes >= max_bytes:
+        raise ValueError(
+            f'Cannot shorten IPFS pin name to {max_bytes} bytes; '
+            f'hash suffix alone needs {suffix_nbytes} bytes')
+    prefix = _trim_utf8_to_byte_length(pin_name, max_bytes - suffix_nbytes)
+    short_name = prefix + suffix
+    assert len(short_name.encode('utf8')) <= max_bytes
+    return short_name, True
+
+
+def _resolved_pin_name_info(raw_name: str | None, source: str | None) -> dict[str, Any] | None:
+    """Normalize a raw pin name and return sidecar-friendly metadata."""
+    if raw_name is None:
+        return None
+    name, shortened = _normalize_ipfs_pin_name(raw_name)
+    info: dict[str, Any] = {
+        'name': name,
+        'source': source or 'unknown',
+        'shortened': shortened,
+    }
+    if shortened:
+        encoded = raw_name.encode('utf8')
+        info.update({
+            'original_nbytes': len(encoded),
+            'original_sha256': hashlib.sha256(encoded).hexdigest(),
+        })
+    return info
+
+
 def _generated_ipfs_pin_name(tracked_path: os.PathLike | str) -> str | None:
     """
     Generate a stable, PURL-shaped pin name for a path in a git worktree.
@@ -395,22 +468,34 @@ def _sidecar_pin_name(sidecar_fpath: os.PathLike | str,
                       prefer_sidecar_name: bool = True,
                       generated_names: bool = True) -> str | None:
     """
-    Resolve the pin name for a sidecar.
+    Resolve a validated Kubo pin name for a sidecar.
 
     Precedence is:
         1. explicit caller override,
-        2. explicit user name recorded in ``add_config.name``,
-        3. generated PURL-shaped repo/path name.
+        2. effective ``pin_name`` persisted in the sidecar,
+        3. explicit user name recorded in ``add_config.name`` by older sidecars,
+        4. generated PURL-shaped repo/path name.
     """
+    raw_name = None
+    source = None
     if override_name is not None:
-        return override_name
-    if prefer_sidecar_name:
-        pin_name = meta.get('add_config', {}).get('name')
-        if pin_name:
-            return pin_name
-    if generated_names:
-        return _generated_ipfs_pin_name(_tracked_path(sidecar_fpath, meta))
-    return None
+        raw_name = override_name
+        source = 'override'
+    elif prefer_sidecar_name:
+        raw_name = meta.get('pin_name')
+        if raw_name:
+            source = meta.get('pin_name_source') or 'sidecar'
+        else:
+            raw_name = meta.get('add_config', {}).get('name')
+            if raw_name:
+                source = 'explicit'
+    if raw_name is None and generated_names:
+        raw_name = _generated_ipfs_pin_name(_tracked_path(sidecar_fpath, meta))
+        if raw_name:
+            source = 'generated'
+    if raw_name is None:
+        return None
+    return _resolved_pin_name_info(raw_name, source)['name']
 
 
 def _append_unique_line(fpath: Path, line: str) -> bool:
@@ -461,7 +546,7 @@ def _parse_ipfs_progress_size(stderr: str) -> str | None:
     return None
 
 
-def _build_add_argv(config: Any) -> list[str]:
+def _build_add_argv(config: Any, *, pin_name: str | None = None) -> list[str]:
     cfg = dict(config)
     argv = ['ipfs', 'add']
     bool_flags = ['pin', 'progress', 'recursive', 'only_hash']
@@ -469,6 +554,9 @@ def _build_add_argv(config: Any) -> list[str]:
     for key in bool_flags:
         if cfg.get(key):
             argv.append('--' + key.replace('_', '-'))
+    if cfg.get('pin') and not cfg.get('only_hash') and pin_name:
+        normalized_pin_name, _shortened = _normalize_ipfs_pin_name(pin_name)
+        argv.append(f'--pin-name={normalized_pin_name}')
     for key in keyval_flags:
         if key in cfg and cfg[key] is not None:
             argv.append('--{}={}'.format(key.replace('_', '-'), json.dumps(cfg[key])))
@@ -595,18 +683,18 @@ class IPFSAdd(kw.Config):
         else:
             sidecar_fpath = None
 
-        add_argv = _build_add_argv(config)
-        pin_name = config.name or _generated_ipfs_pin_name(path)
+        if config.pin and not config.only_hash:
+            raw_pin_name = config.name or _generated_ipfs_pin_name(path)
+            pin_name_source = 'explicit' if config.name else ('generated' if raw_pin_name else None)
+            pin_name_info = _resolved_pin_name_info(raw_pin_name, pin_name_source)
+        else:
+            pin_name_info = None
+        pin_name = None if pin_name_info is None else pin_name_info['name']
+        add_argv = _build_add_argv(config, pin_name=pin_name)
         if config.dry_run:
             print(argv_to_str(add_argv))
             if sidecar_fpath is not None:
                 print(f'would write sidecar: {sidecar_fpath}')
-            if config.pin and not config.only_hash and pin_name:
-                pin_argv = ['ipfs', 'pin', 'add', '--name', pin_name]
-                if config.progress:
-                    pin_argv.append('--progress')
-                pin_argv.append('<cid-from-ipfs-add>')
-                print(argv_to_str(pin_argv))
             return
 
         with ub.Timer() as timer:
@@ -633,6 +721,13 @@ class IPFSAdd(kw.Config):
                 'add_duration': timer.elapsed,
                 'local_quickstat': _compute_quickstat(path),
             }
+            if pin_name_info is not None:
+                sidecar_metadata['pin_name'] = pin_name_info['name']
+                sidecar_metadata['pin_name_source'] = pin_name_info['source']
+                if pin_name_info['shortened']:
+                    sidecar_metadata['pin_name_shortened'] = True
+                    sidecar_metadata['pin_name_original_nbytes'] = pin_name_info['original_nbytes']
+                    sidecar_metadata['pin_name_original_sha256'] = pin_name_info['original_sha256']
             sidecar_text = _YamlCodec.dumps(sidecar_metadata)
             print(f'write to: sidecar_fpath={sidecar_fpath}')
             sidecar_fpath.write_text(sidecar_text)
@@ -653,12 +748,6 @@ class IPFSAdd(kw.Config):
             print(sidecar_text)
             print(f'Wrote to: sidecar_fpath={sidecar_fpath}')
 
-        if config.pin and pin_name:
-            pin_argv = ['ipfs', 'pin', 'add', '--name', pin_name]
-            if config.progress:
-                pin_argv.append('--progress')
-            pin_argv.append(cid)
-            _run(pin_argv, verbose=3)
 
 
 @IPFSCLI.register
@@ -850,13 +939,16 @@ class IPFSPinAdd(kw.Config):
         if candidate.exists():
             meta = _read_sidecar(candidate)
             root_cid = meta['cid']
-            pin_name = config.name
-            if pin_name is None:
+            if config.name is not None:
+                pin_name_info = _resolved_pin_name_info(config.name, 'explicit')
+                pin_name = None if pin_name_info is None else pin_name_info['name']
+            else:
                 pin_name = _sidecar_pin_name(
                     candidate, meta, generated_names=config.generated_names)
         else:
             root_cid = config.path
-            pin_name = config.name
+            pin_name_info = _resolved_pin_name_info(config.name, 'explicit')
+            pin_name = None if pin_name_info is None else pin_name_info['name']
 
         pin_argv = ['ipfs', 'pin', 'add']
         if pin_name is not None:
