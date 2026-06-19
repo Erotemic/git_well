@@ -9,16 +9,16 @@ from os.path import expanduser
 from os.path import relpath
 import os
 import ubelt as ub
-import scriptconfig as scfg
+import kwconf as kw
 
 
-class GitSyncCLI(scfg.DataConfig):
+class GitSyncCLI(kw.Config):
     """
     Sync a git repo with a remote server via ssh
     """
 
     __command__: str = 'sync'
-    host: scfg.Value = scfg.Value(
+    host: kw.Value = kw.Value(
         None,
         position=1,
         required=True,
@@ -29,10 +29,10 @@ class GitSyncCLI(scfg.DataConfig):
         ),
         nargs=1,
     )
-    remote: scfg.Value = scfg.Value(
+    remote: kw.Value = kw.Value(
         None, position=2, help='The git remote to use (e.g. origin)', nargs='?'
     )
-    forward_ssh_agent: scfg.Value = scfg.Value(
+    forward_ssh_agent: kw.Value = kw.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -42,16 +42,16 @@ class GitSyncCLI(scfg.DataConfig):
             """
         ),
     )
-    dry: scfg.Value = scfg.Value(
+    dry: kw.Value = kw.Value(
         False, isflag=True, short_alias=['n'], help='Perform a dry run'
     )
-    message: scfg.Value = scfg.Value(
+    message: kw.Value = kw.Value(
         'wip [skip ci]',
-        type=str,
+        parser=str,
         short_alias=['m'],
         help='Specify a custom commit message',
     )
-    force: scfg.Value = scfg.Value(
+    force: kw.Value = kw.Value(
         False, isflag=True, help='Force push and hard reset the remote.'
     )
 

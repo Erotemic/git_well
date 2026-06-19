@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 import os
 import ubelt as ub
-import scriptconfig as scfg
+import kwconf as kw
 
 
-class GitRebaseAddContinue(scfg.DataConfig):
+class GitRebaseAddContinue(kw.Config):
     """
     A single step to make rebasing easier.
 
@@ -19,9 +19,9 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
     __command__: str = 'rebase_add_continue'
 
-    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
+    repo_dpath: kw.Value = kw.Value('.', help='location of the repo')
 
-    skip_editor: scfg.Value = scfg.Value(
+    skip_editor: kw.Value = kw.Value(
         True,
         help='if True skip the editor to change the commit message on git rebase --continue',
     )

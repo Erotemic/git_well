@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 from git_well._utils import GitURL
 
@@ -12,7 +12,7 @@ from git_well._utils import GitURL
 VALID_PROTOCOLS: list[str] = ['git', 'https', 'ssh']
 
 
-class GitRemoteProtocol(scfg.DataConfig):
+class GitRemoteProtocol(kw.Config):
     """
     Change the protocol for all remotes that match a specific user / group.
 
@@ -25,7 +25,7 @@ class GitRemoteProtocol(scfg.DataConfig):
     __command__: str = 'remote_protocol'
     __alias__: list[str] = ['permit']
 
-    group: scfg.Value = scfg.Value(
+    group: kw.Value = kw.Value(
         'special:auto',
         position=1,
         help=ub.paragraph(
@@ -37,7 +37,7 @@ class GitRemoteProtocol(scfg.DataConfig):
         ),
     )
 
-    protocol: scfg.Value = scfg.Value(
+    protocol: kw.Value = kw.Value(
         'git',
         position=2,
         choices=VALID_PROTOCOLS,
@@ -48,7 +48,7 @@ class GitRemoteProtocol(scfg.DataConfig):
         ),
     )
 
-    repo_dpath: scfg.Value = scfg.Value(
+    repo_dpath: kw.Value = kw.Value(
         '.',
         position=3,
         help=ub.paragraph(

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
-class GitAutoconfGpgsignCLI(scfg.DataConfig):
+class GitAutoconfGpgsignCLI(kw.Config):
     __command__ = 'autoconf-gpg'
 
-    remote = scfg.Value(None, help='param1')
-    repo_dpath = scfg.Value('.', help='repo to set gpg for')
-    email = scfg.Value(
+    remote = kw.Value(None, help='param1')
+    repo_dpath = kw.Value('.', help='repo to set gpg for')
+    email = kw.Value(
         None,
         help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials',
     )

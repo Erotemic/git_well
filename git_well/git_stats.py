@@ -10,12 +10,12 @@ SeeAlso:
 #!/usr/bin/env python3
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
-class GitStatsCLI(scfg.DataConfig):
-    repo_dpath = scfg.Value('.', help='param1', position=1)
+class GitStatsCLI(kw.Config):
+    repo_dpath = kw.Value('.', help='param1', position=1)
 
     @classmethod
     def main(

@@ -6,7 +6,7 @@ This git-squash-streaks command
 Requirements:
     pip install ubelt
     pip install GitPython
-    pip install scriptconfig
+    pip install kwconf
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import os
 import warnings
 import itertools as it
 import ubelt as ub
-import scriptconfig as scfg
+import kwconf as kw
 
 
 EXPERIMENTAL_PSEUDO_CHAIN: int = 0
@@ -28,16 +28,16 @@ from git.objects.commit import Commit
 """
 
 
-class SquashStreakCLI(scfg.DataConfig):
+class SquashStreakCLI(kw.Config):
     """
     Squashes consecutive commits that meet a specified criteiron.
     """
 
     __command__: str = 'squash_streaks'
 
-    timedelta: scfg.Value = scfg.Value(
+    timedelta: kw.Value = kw.Value(
         'sameday',
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             strategy mode or max number of seconds to determine how far
@@ -47,7 +47,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    custom_streak: scfg.Value = scfg.Value(
+    custom_streak: kw.Value = kw.Value(
         None,
         help=ub.paragraph(
             """
@@ -56,9 +56,9 @@ class SquashStreakCLI(scfg.DataConfig):
         ),
         nargs=2,
     )
-    pattern: scfg.Value = scfg.Value(
+    pattern: kw.Value = kw.Value(
         None,
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             instead of squashing messages with the same name, squash
@@ -68,9 +68,9 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    tags: scfg.Value = scfg.Value(False, isflag=True, help='experimental')
+    tags: kw.Value = kw.Value(False, isflag=True, help='experimental')
 
-    preserve_tags: scfg.Value = scfg.Value(
+    preserve_tags: kw.Value = kw.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -81,7 +81,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    oldest_commit: scfg.Value = scfg.Value(
+    oldest_commit: kw.Value = kw.Value(
         None,
         help=ub.paragraph(
             """
@@ -90,7 +90,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    inplace: scfg.Value = scfg.Value(
+    inplace: kw.Value = kw.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -102,7 +102,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    auto_rollback: scfg.Value = scfg.Value(
+    auto_rollback: kw.Value = kw.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -112,9 +112,9 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    authors: scfg.Value = scfg.Value(
+    authors: kw.Value = kw.Value(
         None,
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             "level-set" of authors who's commits can be squashed
@@ -123,7 +123,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    dry: scfg.Value = scfg.Value(
+    dry: kw.Value = kw.Value(
         True,
         isflag=True,
         mutex_group='dryrun',
@@ -136,7 +136,7 @@ class SquashStreakCLI(scfg.DataConfig):
         ),
     )
 
-    force: scfg.Value = scfg.Value(
+    force: kw.Value = kw.Value(
         None,
         isflag=True,
         mutex_group='dryrun',
@@ -144,18 +144,18 @@ class SquashStreakCLI(scfg.DataConfig):
         help='turn dry mode off',
     )
 
-    verbose: scfg.Value = scfg.Value(
+    verbose: kw.Value = kw.Value(
         True,
         mutex_group='verbose',
         short_alias=['v'],
         help='verbosity flag flag',
     )
 
-    # TODO: scriptconfig needs to be extended to handle these argparse
+    # TODO: kwconf needs to be extended to handle these argparse
     # use-cases
-    # dry = scfg.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
+    # dry = kw.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
     # nargs=0)
-    # quiet = scfg.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
+    # quiet = kw.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
 
     def __post_init__(self) -> None:
         force = self['force']

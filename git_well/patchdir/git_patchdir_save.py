@@ -3,21 +3,21 @@ from __future__ import annotations
 
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
-class GitSavePatchCLI(scfg.DataConfig):
+class GitSavePatchCLI(kw.Config):
     """
     Saves the diff into a folder of patches that can be applied later.
     """
 
     __command__ = 'save'
-    paths = scfg.Value(
+    paths = kw.Value(
         [], nargs='+', help='one or more files to save patches from', position=1
     )
-    out_dpath = scfg.Value('patches', help='output directory to save patches')
-    message = scfg.Value(
+    out_dpath = kw.Value('patches', help='output directory to save patches')
+    message = kw.Value(
         None,
         help='if specified also associates a message with this patch in a sidecar file',
         short_alias=['m'],

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
-class GitUrlComponentsCLI(scfg.DataConfig):
+class GitUrlComponentsCLI(kw.Config):
     """
     Access components of a git URL.
 
@@ -24,16 +24,16 @@ class GitUrlComponentsCLI(scfg.DataConfig):
 
     __command__ = 'url'
 
-    url = scfg.Value(None, help='the git url to parse', position=1)
-    component = scfg.Value(
+    url = kw.Value(None, help='the git url to parse', position=1)
+    component = kw.Value(
         None,
         help='The component to access and print. If unspecified all info is printed in json format',
         position=2,
     )
-    protocol = scfg.Value(
+    protocol = kw.Value(
         None, help='If specified, convert to the specified protocol first'
     )
-    verbose = scfg.Flag(False, help='verbosity level')
+    verbose = kw.Flag(False, help='verbosity level')
 
     @classmethod
     def main(

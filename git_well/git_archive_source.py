@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union, cast
 
-import scriptconfig as scfg
+import kwconf as kw
 
 if TYPE_CHECKING:  # pragma: no cover
     import git
@@ -58,7 +58,7 @@ _FORMAT_ALIASES = {
 }
 
 # TODO: Re-enable repo-local archive_source defaults after kwconf /
-# scriptconfig modal dispatch preserves omitted values distinctly from
+# legacy modal dispatch preserved omitted values distinctly from
 # injected defaults. The intended Git config keys were:
 # - git-well.archive-source.depth
 # - git-well.archive-source.format
@@ -200,7 +200,7 @@ class SubmoduleDepthPolicy:
         return lines
 
 
-class ArchiveSourceCLI(scfg.DataConfig):
+class ArchiveSourceCLI(kw.Config):
     """
     Archive committed source with full Git history and initialized submodules.
 
@@ -221,13 +221,13 @@ class ArchiveSourceCLI(scfg.DataConfig):
 
     __command__ = 'archive_source'
 
-    repo_dpath = scfg.Value(
+    repo_dpath = kw.Value(
         '.',
         position=1,
         nargs='?',
         help='location of the Git repository to archive',
     )
-    output = scfg.Value(
+    output = kw.Value(
         None,
         short_alias=['o'],
         help=textwrap.dedent("""
@@ -237,16 +237,16 @@ class ArchiveSourceCLI(scfg.DataConfig):
             <repo>-source-<timestamp>-<short-sha>.<format-extension>.
             """).strip(),
     )
-    depth = scfg.Value(
+    depth = kw.Value(
         'full',
         help=textwrap.dedent("""
             Git history depth: "full" for all current-HEAD history, a positive
             integer for shallow history, or 0 for source-only git archive mode.
             """).strip(),
     )
-    submodule_depth = scfg.Value(
+    submodule_depth = kw.Value(
         None,
-        type=str,
+        parser=str,
         alias=['submodule-depth'],
         help=textwrap.dedent("""
             YAML depth spec for recursive submodules. If omitted, submodules
@@ -256,7 +256,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
             non-glob fallback, e.g. '{"*": 0, special/submod: 100}'.
             """).strip(),
     )
-    exclude_submodule = scfg.Value(
+    exclude_submodule = kw.Value(
         [],
         nargs='*',
         alias=['exclude-submodule'],
@@ -266,7 +266,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
             while dropping data-heavy submodules entirely.
             """).strip(),
     )
-    submodules = scfg.Value(
+    submodules = kw.Value(
         True,
         isflag=True,
         help=textwrap.dedent("""
@@ -275,7 +275,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
             archive while keeping superproject gitlinks and .gitmodules.
             """).strip(),
     )
-    format = scfg.Value(
+    format = kw.Value(
         'auto',
         help=textwrap.dedent("""
             Archive format. Defaults to "auto", which infers the format from
@@ -285,7 +285,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
             """).strip(),
     )
     # TODO: Re-enable when kwconf fixes modal default injection semantics.
-    # set_config = scfg.Value(
+    # set_config = kw.Value(
     #     None,
     #     nargs='+',
     #     alias=['set-config'],
@@ -296,7 +296,7 @@ class ArchiveSourceCLI(scfg.DataConfig):
     #         When specified, the config is updated and no archive is created.
     #         """).strip(),
     # )
-    verbose = scfg.Value(1, help='verbosity level')
+    verbose = kw.Value(1, help='verbosity level')
 
     @classmethod
     def main(
@@ -572,7 +572,7 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
     return archive_source(*args, **kwargs)
 
 
-# TODO: Land this when kwconf / scriptconfig modal dispatch can distinguish
+# TODO: Land this when kwconf modal dispatch can distinguish
 # omitted values from defaults injected through modal kwargs.
 #
 # def _repo_local_archive_source_defaults(repo: 'git.Repo') -> dict[str, str]:

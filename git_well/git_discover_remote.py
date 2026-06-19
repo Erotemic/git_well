@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
@@ -10,7 +10,7 @@ import ubelt as ub
 # ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
 
 
-class GitDiscoverRemoteCLI(scfg.DataConfig):
+class GitDiscoverRemoteCLI(kw.Config):
     """
     Attempt to discover a ssh remote based on an ssh host.
 
@@ -20,7 +20,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
 
     __command__: str = 'discover_remote'
 
-    repo_dpath: scfg.Value = scfg.Value(
+    repo_dpath: kw.Value = kw.Value(
         '.',
         help=ub.paragraph(
             """
@@ -32,7 +32,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    host: scfg.Value = scfg.Value(
+    host: kw.Value = kw.Value(
         None,
         position=1,
         required=True,
@@ -43,7 +43,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    remote: scfg.Value = scfg.Value(
+    remote: kw.Value = kw.Value(
         None,
         help=ub.paragraph(
             """
@@ -53,12 +53,12 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    home: scfg.Value = scfg.Value(
+    home: kw.Value = kw.Value(
         None,
         help='Explicitly specify where your home drive is. Usually this can be inferred',
     )
 
-    forward_ssh_agent: scfg.Value = scfg.Value(
+    forward_ssh_agent: kw.Value = kw.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -69,7 +69,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    test_remote: scfg.Value = scfg.Value(
+    test_remote: kw.Value = kw.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -80,7 +80,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    remote_cwd: scfg.Value = scfg.Value(
+    remote_cwd: kw.Value = kw.Value(
         None, help='path on the remote. inferred if not given'
     )
 

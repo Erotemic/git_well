@@ -3,24 +3,24 @@ from __future__ import annotations
 
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 import json
 
 
-class GitApplyPatchCLI(scfg.DataConfig):
+class GitApplyPatchCLI(kw.Config):
     """
     Applies a saved patch from the patch directory.
     """
 
     __command__ = 'apply'
-    patch = scfg.Value(
+    patch = kw.Value(
         None, help='Path to a specific patch file or JSON metadata file'
     )
-    patch_dpath = scfg.Value('patches', help='Directory of saved patches')
-    list_only = scfg.Flag(False, help='Only list available patches')
-    dry = scfg.Flag(False, help='Show what would be applied without applying')
-    restore_patch = scfg.Flag(
+    patch_dpath = kw.Value('patches', help='Directory of saved patches')
+    list_only = kw.Flag(False, help='Only list available patches')
+    dry = kw.Flag(False, help='Show what would be applied without applying')
+    restore_patch = kw.Flag(
         False, help='Restore (unstage) patch files after applying'
     )
 

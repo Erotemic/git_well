@@ -1,23 +1,19 @@
-# git ipfs hardening overlay v8
+# git-well kwconf migration overlay
 
-This overlay fixes the Windows fake-IPFS integration test by avoiding platform
-PATH / PATHEXT lookup for the test double.
+This overlay migrates git-well from `scriptconfig` to `kwconf`.
 
 Changes:
 
-- Add `GIT_WELL_IPFS_COMMAND_JSON`, a test/user override for the logical `ipfs`
-  executable. It accepts a JSON argv prefix, e.g. `["python", "fake_ipfs.py"]`.
-- Keep `GIT_WELL_IPFS_EXE` as a simpler single-executable override.
-- Rewrite logical `ipfs ...` commands through the configured prefix inside
-  `_run`, while still using the logical argv for user-facing diagnostics.
-- Update `git ipfs doctor` to report configured IPFS command prefixes.
-- Update the fake-IPFS test fixture to set `GIT_WELL_IPFS_COMMAND_JSON` to
-  `[sys.executable, _fake_ipfs.py]`, so Windows does not need to discover
-  `ipfs`, `ipfs.cmd`, or `ipfs.bat` via `shutil.which`.
+- Replace `scriptconfig` imports with `kwconf`.
+- Replace `scfg.DataConfig` bases with `kw.Config`.
+- Keep existing `kw.Value`, `kw.Flag`, and `kw.ModalCLI` definitions using the kwconf public API.
+- Rename remaining `type=str` `Value` metadata to `parser=str` to avoid deprecated kwconf compatibility aliases.
+- Replace the runtime dependency on `scriptconfig` with `kwconf>=0.10.0`.
+- Update the Sphinx intersphinx mapping from scriptconfig to kwconf.
 
 Validation performed in this sandbox:
 
-- `python -m py_compile git_well/ipfs.py tests/test_ipfs.py`
-
-The sandbox does not have the runtime test dependency `scriptconfig`, so the
-full pytest suite was not run here.
+- Installed local `kwconf` source and the migrated `git_well` package into a fresh virtual environment.
+- `python -m py_compile $(find git_well tests -name '*.py' -print)`
+- `pytest -q tests` -> 22 passed, 1 skipped.
+- `pytest -q` ran the package tests and doctests; the only failure was an existing network-dependent doctest in `git_track_upstream.py` at `git fetch origin`.

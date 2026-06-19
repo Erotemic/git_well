@@ -40,11 +40,11 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 from typing import Any, Iterable
 
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 
 
-class IPFSCLI(scfg.ModalCLI):
+class IPFSCLI(kw.ModalCLI):
     """Utilities for git-tracked IPFS sidecar files."""
     __command__ = 'ipfs'
 
@@ -505,23 +505,23 @@ def _print_status_table(rows: list[dict[str, Any]]) -> None:
 
 
 @IPFSCLI.register
-class IPFSAdd(scfg.DataConfig):
+class IPFSAdd(kw.Config):
     """Add a file/directory to IPFS and optionally write a sidecar."""
     __command__ = 'add'
     __alias__ = 'snapshot'
 
-    path = scfg.Value(None, help='file or directory to add to IPFS', position=1)
-    name = scfg.Value(None, help='optional human-readable pin name')
-    recursive = scfg.Flag(True, help='add directory paths recursively')
-    progress = scfg.Flag(True, short_alias=['p'], help='stream progress data')
-    cid_version = scfg.Value(1, help='CID version')
-    raw_leaves = scfg.Flag(False, help='use raw blocks for leaf nodes')
-    only_hash = scfg.Flag(False, short_alias=['n'], help='chunk/hash only; do not write IPFS blocks')
-    pin = scfg.Flag(True, help='pin locally to protect added files from garbage collection')
-    sidecar = scfg.Value(True, help='true, false, or explicit sidecar path')
-    update_gitignore = scfg.Flag(True, help='add the tracked path to a nearby .gitignore')
-    git_add_sidecar = scfg.Flag(True, help='git-add the sidecar when inside a git worktree')
-    dry_run = scfg.Flag(False, help='print the generated ipfs command without running it')
+    path = kw.Value(None, help='file or directory to add to IPFS', position=1)
+    name = kw.Value(None, help='optional human-readable pin name')
+    recursive = kw.Flag(True, help='add directory paths recursively')
+    progress = kw.Flag(True, short_alias=['p'], help='stream progress data')
+    cid_version = kw.Value(1, help='CID version')
+    raw_leaves = kw.Flag(False, help='use raw blocks for leaf nodes')
+    only_hash = kw.Flag(False, short_alias=['n'], help='chunk/hash only; do not write IPFS blocks')
+    pin = kw.Flag(True, help='pin locally to protect added files from garbage collection')
+    sidecar = kw.Value(True, help='true, false, or explicit sidecar path')
+    update_gitignore = kw.Flag(True, help='add the tracked path to a nearby .gitignore')
+    git_add_sidecar = kw.Flag(True, help='git-add the sidecar when inside a git worktree')
+    dry_run = kw.Flag(False, help='print the generated ipfs command without running it')
 
     _build_add_command = _build_add_argv
 
@@ -613,13 +613,13 @@ class IPFSAdd(scfg.DataConfig):
 
 
 @IPFSCLI.register
-class IPFSPull(scfg.DataConfig):
+class IPFSPull(kw.Config):
     """Materialize content described by one or more ``*.ipfs`` sidecars."""
     __command__ = 'pull'
 
-    path = scfg.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
-    dry_run = scfg.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
-    recursive = scfg.Flag(True, help='recurse into directories when scanning')
+    path = kw.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
+    dry_run = kw.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
+    recursive = kw.Flag(True, help='recurse into directories when scanning')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -642,16 +642,16 @@ class IPFSPull(scfg.DataConfig):
 
 
 @IPFSCLI.register
-class IPFSStatus(scfg.DataConfig):
+class IPFSStatus(kw.Config):
     """Check whether local content tracked by sidecars appears changed."""
     __command__ = 'status'
 
-    path = scfg.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
-    recursive = scfg.Flag(True, help='recurse into directories when scanning')
-    strict = scfg.Flag(False, help='error on missing tracked paths')
-    full = scfg.Flag(False, help='recompute CID using ipfs add --only-hash')
-    write_baseline = scfg.Flag(False, help='update quickstat baseline in each sidecar')
-    baseline_key = scfg.Value('local_quickstat', help='sidecar key containing quickstat baseline')
+    path = kw.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
+    recursive = kw.Flag(True, help='recurse into directories when scanning')
+    strict = kw.Flag(False, help='error on missing tracked paths')
+    full = kw.Flag(False, help='recompute CID using ipfs add --only-hash')
+    write_baseline = kw.Flag(False, help='update quickstat baseline in each sidecar')
+    baseline_key = kw.Value('local_quickstat', help='sidecar key containing quickstat baseline')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -705,23 +705,23 @@ class IPFSStatus(scfg.DataConfig):
 
 
 @IPFSCLI.register
-class IPFSExportPins(scfg.DataConfig):
+class IPFSExportPins(kw.Config):
     """Export ``ipfs pin add`` commands for sidecars."""
     __command__ = 'export'
 
-    paths = scfg.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
-    recurse = scfg.Flag(True, help='recurse into directories when scanning')
-    dedupe = scfg.Flag(True, help='deduplicate by CID')
-    sort = scfg.Flag(True, help='sort output for stable scripts')
-    name = scfg.Value(None, help='override pin name for all emitted commands')
-    prefer_sidecar_name = scfg.Flag(True, help='use add_config.name when present')
-    generated_names = scfg.Flag(
+    paths = kw.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
+    recurse = kw.Flag(True, help='recurse into directories when scanning')
+    dedupe = kw.Flag(True, help='deduplicate by CID')
+    sort = kw.Flag(True, help='sort output for stable scripts')
+    name = kw.Value(None, help='override pin name for all emitted commands')
+    prefer_sidecar_name = kw.Flag(True, help='use add_config.name when present')
+    generated_names = kw.Flag(
         True,
         help='generate PURL-shaped names from git origin and repo-relative '
              'path when no explicit name is available')
-    progress = scfg.Flag(False, short_alias=['p'], help='include --progress')
-    recursive = scfg.Flag(True, help='include --recursive')
-    emit_bash = scfg.Flag(False, help='emit a bash header')
+    progress = kw.Flag(False, short_alias=['p'], help='include --progress')
+    recursive = kw.Flag(True, help='include --recursive')
+    emit_bash = kw.Flag(False, help='emit a bash header')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -768,28 +768,28 @@ class IPFSExportPins(scfg.DataConfig):
             print(argv_to_str(pin_argv))
 
 
-class IPFSPin(scfg.ModalCLI):
+class IPFSPin(kw.ModalCLI):
     """Wrapped ``ipfs pin`` helpers."""
     __command__ = 'pin'
 
 
 @IPFSPin.register
-class IPFSPinAdd(scfg.DataConfig):
+class IPFSPinAdd(kw.Config):
     """Pin a CID or the CID referenced by a sidecar."""
     __command__ = 'add'
 
-    path = scfg.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
-    recursive = scfg.Flag(True, help='pin recursively')
-    progress = scfg.Flag(True, short_alias=['p'], help='stream progress data')
-    name = scfg.Value(
+    path = kw.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
+    recursive = kw.Flag(True, help='pin recursively')
+    progress = kw.Flag(True, short_alias=['p'], help='stream progress data')
+    name = kw.Value(
         None,
         help='optional pin name; defaults to add_config.name or a generated '
              'PURL-shaped repo/path name')
-    generated_names = scfg.Flag(
+    generated_names = kw.Flag(
         True,
         help='generate a PURL-shaped name from git origin and repo-relative '
              'path when no explicit name is available')
-    dry_run = scfg.Flag(False, short_alias=['n'], help='print command without executing')
+    dry_run = kw.Flag(False, short_alias=['n'], help='print command without executing')
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -824,12 +824,12 @@ IPFSCLI.register(IPFSPin)
 
 
 @IPFSCLI.register
-class IPFSCheckCID(scfg.DataConfig):
+class IPFSCheckCID(kw.Config):
     """Compare CIDs produced by common CID-version/raw-leaves settings."""
     __command__ = 'check-cid'
 
-    path = scfg.Value(None, help='file or directory to hash', position=1)
-    recursive = scfg.Flag(False, help='pass --recursive')
+    path = kw.Value(None, help='file or directory to hash', position=1)
+    recursive = kw.Flag(False, help='pass --recursive')
 
     @classmethod
     def main(cls, argv=1, **kwargs):

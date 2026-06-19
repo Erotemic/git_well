@@ -4,24 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 import ubelt as ub
-import scriptconfig as scfg
+import kwconf as kw
 
 
-class CleanDevBranchConfig(scfg.DataConfig):
+class CleanDevBranchConfig(kw.Config):
     """
     Cleanup branches that have been merged into main.
     """
 
     __command__: str = 'branch_cleanup'
 
-    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
-    keep_last: scfg.Value = scfg.Value(
+    repo_dpath: kw.Value = kw.Value('.', help='location of the repo')
+    keep_last: kw.Value = kw.Value(
         1, help='previous number of dev branches to keep'
     )
-    remove_merged: scfg.Value = scfg.Value(
+    remove_merged: kw.Value = kw.Value(
         False, isflag=True, help='if True, remove other merged branhes as well'
     )
-    yes: scfg.Value = scfg.Value(
+    yes: kw.Value = kw.Value(
         False,
         isflag=True,
         short_alias=['-y'],

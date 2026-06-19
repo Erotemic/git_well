@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # import ubelt as ub
-import scriptconfig as scfg
+import kwconf as kw
 import ubelt as ub
 from git_well.git_squash_streaks import (
     _squash_between,
@@ -13,7 +13,7 @@ from git_well.git_squash_streaks import (
 )
 
 
-class GitSquashCLI(scfg.DataConfig):
+class GitSquashCLI(kw.Config):
     """
     Squash all commits between two points (usually main and HEAD).
     This CLI is experimental and designed to eventually supercede
@@ -22,27 +22,27 @@ class GitSquashCLI(scfg.DataConfig):
 
     __command__ = 'squash'
 
-    oldest = scfg.Value('main', help='The oldest commit to sqash onto')
-    newest = scfg.Value(
+    oldest = kw.Value('main', help='The oldest commit to sqash onto')
+    newest = kw.Value(
         'HEAD', help='The latest commit to be included in the squash'
     )
 
-    inplace = scfg.Value(
+    inplace = kw.Value(
         False, isflag=True, help='Apply squash directly to current branch'
     )
-    dry = scfg.Value(True, isflag=True, short_alias=['n'], help='Dry run')
-    force = scfg.Value(
+    dry = kw.Value(True, isflag=True, short_alias=['n'], help='Dry run')
+    force = kw.Value(
         None,
         isflag=True,
         short_alias=['f'],
         help='Force squash (opposite of dry)',
     )
-    verbose = scfg.Value(
+    verbose = kw.Value(
         True, isflag=True, short_alias=['v'], help='Print progress'
     )
-    dpath = scfg.Value('.', help='Path to repo to squash in')
+    dpath = kw.Value('.', help='Path to repo to squash in')
 
-    auto_rollback = scfg.Value(
+    auto_rollback = kw.Value(
         False,
         isflag=True,
         help=ub.paragraph(
