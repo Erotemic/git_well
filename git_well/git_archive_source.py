@@ -9,20 +9,21 @@ from __future__ import annotations
 import fnmatch
 import os
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import kwconf
 
 if TYPE_CHECKING:  # pragma: no cover
-    import git
     import tarfile
     import zipfile
 
-PathLike = Union[str, os.PathLike]
-DepthArg = Union[str, int, None]
-SubmoduleDepthSpecArg = Union[str, int, None, dict[str, DepthArg]]
+    import git
+
+PathLike = str | os.PathLike
+DepthArg = str | int | None
+SubmoduleDepthSpecArg = str | int | None | dict[str, DepthArg]
 ArchiveFormatArg = Literal[
     'auto',
     'tar',
@@ -84,7 +85,7 @@ class SubmoduleArchiveDecision:
 
     info: SubmoduleStatus
     omitted: bool
-    depth: Optional[int]
+    depth: int | None
     mode: str
     reason: str
 
@@ -126,25 +127,19 @@ class SubmoduleDepthPolicy:
     specified: bool
     raw: Any = None
     scalar_depth: Any = _UNSET
-    exact_depths: dict[str, Optional[int]] = None  # type: ignore[assignment]
-    glob_depths: dict[str, Optional[int]] = None  # type: ignore[assignment]
+    exact_depths: dict[str, int | None] = field(default_factory=dict)
+    glob_depths: dict[str, int | None] = field(default_factory=dict)
     star_depth: Any = _UNSET
     default_depth: Any = _UNSET
 
-    def __post_init__(self) -> None:
-        if self.exact_depths is None:
-            object.__setattr__(self, 'exact_depths', {})
-        if self.glob_depths is None:
-            object.__setattr__(self, 'glob_depths', {})
-
-    def resolve(self, path: str, inherited_depth: Optional[int]) -> Optional[int]:
+    def resolve(self, path: str, inherited_depth: int | None) -> int | None:
         """
         Resolve the depth for one submodule path.
         """
         if not self.specified:
             return inherited_depth
         if self.scalar_depth is not _UNSET:
-            return cast(Optional[int], self.scalar_depth)
+            return cast(int | None, self.scalar_depth)
         if path in self.exact_depths:
             return self.exact_depths[path]
 
@@ -167,27 +162,27 @@ class SubmoduleDepthPolicy:
             )
 
         if self.star_depth is not _UNSET:
-            return cast(Optional[int], self.star_depth)
+            return cast(int | None, self.star_depth)
         if self.default_depth is not _UNSET:
-            return cast(Optional[int], self.default_depth)
+            return cast(int | None, self.default_depth)
         return inherited_depth
 
-    def summary_lines(self) -> List[str]:
+    def summary_lines(self) -> list[str]:
         """Return human-readable manifest lines for this policy."""
         if not self.specified:
             return ['Submodule depth spec: (omitted; inherits superproject depth)']
         if self.scalar_depth is not _UNSET:
             return [
-                f'Submodule depth spec: scalar {_depth_label(cast(Optional[int], self.scalar_depth))}'
+                f'Submodule depth spec: scalar {_depth_label(cast(int | None, self.scalar_depth))}'
             ]
         lines = ['Submodule depth spec: YAML mapping']
         if self.default_depth is not _UNSET:
             lines.append(
-                f'  __default__: {_depth_label(cast(Optional[int], self.default_depth))}'
+                f'  __default__: {_depth_label(cast(int | None, self.default_depth))}'
             )
         if self.star_depth is not _UNSET:
             lines.append(
-                f'  "*": {_depth_label(cast(Optional[int], self.star_depth))}'
+                f'  "*": {_depth_label(cast(int | None, self.star_depth))}'
             )
         if self.exact_depths:
             lines.append('  exact paths:')
@@ -327,10 +322,10 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> Path:
 
 def archive_source(
     repo_dpath: PathLike = '.',
-    output: Optional[PathLike] = None,
+    output: PathLike | None = None,
     depth: DepthArg = 'full',
     submodule_depth: SubmoduleDepthSpecArg = None,
-    exclude_submodule: Optional[Union[str, List[str]]] = None,
+    exclude_submodule: str | list[str] | None = None,
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     verbose: int = 1,
@@ -588,7 +583,7 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
 #
 #
 # def _parse_set_config_assignments(
-#     assignments: Optional[list[str] | str],
+#     assignments: list[str] | str | None,
 # ) -> dict[str, str]:
 #     """
 #     Parse explicit ``--set_config key=value`` assignments.
@@ -621,7 +616,7 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
 #     return parsed
 #
 #
-# def _get_local_git_config(repo: 'git.Repo', key: str) -> Optional[str]:
+# def _get_local_git_config(repo: 'git.Repo', key: str) -> str | None:
 #     import git
 #
 #     try:
@@ -676,7 +671,7 @@ def _assert_has_head(repo: 'git.Repo') -> None:
         raise RuntimeError('repository has no HEAD commit to archive') from ex
 
 
-def _normalize_depth(depth: DepthArg) -> Optional[int]:
+def _normalize_depth(depth: DepthArg) -> int | None:
     import re
 
     if depth is None:
@@ -705,7 +700,7 @@ def _normalize_depth(depth: DepthArg) -> Optional[int]:
     return value
 
 
-def _depth_label(depth: Optional[int]) -> str:
+def _depth_label(depth: int | None) -> str:
     """
     Render an internal normalized depth for humans.
 
@@ -721,8 +716,8 @@ def _depth_label(depth: Optional[int]) -> str:
 
 
 def _clone_depth_from_normalized_depth(
-    depth: Optional[int],
-) -> Optional[int]:
+    depth: int | None,
+) -> int | None:
     """Return the Git clone ``--depth`` value for a normalized depth."""
     return None if depth in {0, None} else depth
 
@@ -765,8 +760,8 @@ def _parse_submodule_depth_spec(
         parsed = yaml.safe_load(text)
 
     if isinstance(parsed, dict):
-        exact_depths: dict[str, Optional[int]] = {}
-        glob_depths: dict[str, Optional[int]] = {}
+        exact_depths: dict[str, int | None] = {}
+        glob_depths: dict[str, int | None] = {}
         star_depth: Any = _UNSET
         default_depth: Any = _UNSET
         for raw_key, raw_depth in parsed.items():
@@ -823,8 +818,8 @@ def _looks_like_fnmatch_pattern(text: str) -> bool:
 
 
 def _normalize_submodule_path_list(
-    value: Optional[Union[str, List[str]]]
-) -> List[str]:
+    value: str | list[str] | None
+) -> list[str]:
     """
     Normalize CLI/API submodule path lists.
 
@@ -851,13 +846,13 @@ def _normalize_submodule_path_list(
 
 
 def _resolve_submodule_archive_decisions(
-    submodule_status: List[SubmoduleStatus],
+    submodule_status: list[SubmoduleStatus],
     *,
     policy: SubmoduleDepthPolicy,
-    inherited_depth: Optional[int],
-    exclude_submodule: List[str],
+    inherited_depth: int | None,
+    exclude_submodule: list[str],
     no_submodules: bool,
-) -> List[SubmoduleArchiveDecision]:
+) -> list[SubmoduleArchiveDecision]:
     """
     Resolve submodule archive decisions.
 
@@ -880,7 +875,7 @@ def _resolve_submodule_archive_decisions(
         )
 
     exclude_set = set(exclude_submodule)
-    decisions: List[SubmoduleArchiveDecision] = []
+    decisions: list[SubmoduleArchiveDecision] = []
     for info in submodule_status:
         if no_submodules:
             decisions.append(
@@ -954,7 +949,7 @@ def _infer_format_from_output(output: PathLike) -> ResolvedArchiveFormat:
 
 
 def _resolve_archive_format(
-    output: Optional[PathLike],
+    output: PathLike | None,
     format: ArchiveFormatArg,
 ) -> ResolvedArchiveFormat:
     if str(format).lower() == 'auto':
@@ -966,7 +961,7 @@ def _resolve_archive_format(
 
 def _resolve_output(
     repo_root: Path,
-    output: Optional[PathLike],
+    output: PathLike | None,
     prefix: str,
     archive_format: ResolvedArchiveFormat,
 ) -> Path:
@@ -981,14 +976,14 @@ def _resolve_output(
     return archive_path.resolve()
 
 
-def _submodule_status(repo: 'git.Repo') -> List[SubmoduleStatus]:
+def _submodule_status(repo: 'git.Repo') -> list[SubmoduleStatus]:
     import git
 
     try:
         stdout = repo.git.submodule('status', '--recursive')
     except git.GitCommandError:
         return []
-    infos: List[SubmoduleStatus] = []
+    infos: list[SubmoduleStatus] = []
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -1010,7 +1005,7 @@ def _submodule_status(repo: 'git.Repo') -> List[SubmoduleStatus]:
     return infos
 
 
-def _clone_options_for_depth(clone_depth: Optional[int]) -> List[str]:
+def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
     options = ['--quiet', '--no-local', '--single-branch', '--no-checkout']
     if clone_depth is not None:
         options += ['--depth', str(clone_depth)]
@@ -1022,11 +1017,12 @@ def _clone_committed_checkout(
     dst: PathLike,
     commit: str,
     label: str,
-    clone_depth: Optional[int],
+    clone_depth: int | None,
     log: '_Logger',
 ) -> None:
-    import git
     import shutil
+
+    import git
 
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1069,7 +1065,7 @@ def _checkout_commit(
     repo: 'git.Repo',
     commit: str,
     label: str,
-    clone_depth: Optional[int],
+    clone_depth: int | None,
     log: '_Logger',
 ) -> None:
     import git
@@ -1150,12 +1146,12 @@ def _write_manifest(
     head_sha: str,
     short_sha: str,
     include_git_history: bool,
-    clone_depth: Optional[int],
-    submodule_status: List[SubmoduleStatus],
+    clone_depth: int | None,
+    submodule_status: list[SubmoduleStatus],
     submodule_depth_policy: SubmoduleDepthPolicy,
-    submodule_decisions: List[SubmoduleArchiveDecision],
+    submodule_decisions: list[SubmoduleArchiveDecision],
     no_submodules: bool,
-    exclude_submodule: List[str],
+    exclude_submodule: list[str],
 ) -> None:
     import git
 

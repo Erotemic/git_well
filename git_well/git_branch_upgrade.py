@@ -24,8 +24,9 @@ Requires:
 from __future__ import annotations
 
 from typing import Any
-import ubelt as ub
+
 import kwconf
+import ubelt as ub
 
 
 class UpdateDevBranch(kwconf.Config):
@@ -154,8 +155,9 @@ def dev_branches(repo: Any) -> list[dict[str, Any]]:
 
     dev_infos = []
     for info in branch_infos:
-        if info['branch_name'].startswith('dev/'):
-            vstr = info['branch_name'].split('/')[-1]
+        branch_name = info.get('branch_name')
+        if isinstance(branch_name, str) and branch_name.startswith('dev/'):
+            vstr = branch_name.split('/')[-1]
             try:
                 info['version'] = Version(vstr)
             except Exception:

@@ -2,14 +2,12 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
-from typing import Any
-from os.path import normpath
-from os.path import realpath
-from os.path import expanduser
-from os.path import relpath
 import os
-import ubelt as ub
+from os.path import expanduser, normpath, realpath, relpath
+from typing import Any
+
 import kwconf
+import ubelt as ub
 
 
 class GitSyncCLI(kwconf.Config):
@@ -18,7 +16,7 @@ class GitSyncCLI(kwconf.Config):
     """
 
     __command__: str = 'sync'
-    host: list[str] = kwconf.Value(
+    host: list[str] | None = kwconf.Value(
         None,
         position=1,
         required=True,

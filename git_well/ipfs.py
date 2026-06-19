@@ -495,7 +495,9 @@ def _sidecar_pin_name(sidecar_fpath: os.PathLike | str,
             source = 'generated'
     if raw_name is None:
         return None
-    return _resolved_pin_name_info(raw_name, source)['name']
+    pin_name_info = _resolved_pin_name_info(raw_name, source)
+    assert pin_name_info is not None
+    return pin_name_info['name']
 
 
 def _append_unique_line(fpath: Path, line: str) -> bool:

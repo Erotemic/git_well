@@ -254,8 +254,15 @@ def lookup_gpg_keyinfos(
 
     if mintrust:
         mintrust_level = TRUST_CODE_TO_LEVEL[mintrust]
+
+        def _candidate_trust_level(candidate):
+            value = candidate.get('trust_level', 6)
+            if isinstance(value, int):
+                return value
+            return int(value)
+
         candidates = [
-            c for c in candidates if c.get('trust_level', 6) <= mintrust_level
+            c for c in candidates if _candidate_trust_level(c) <= mintrust_level
         ]
 
     return candidates

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from typing import Any
+
 import kwconf
 import ubelt as ub
-
 
 # NOTE: SeeAlso
 # ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
@@ -32,7 +32,7 @@ class GitDiscoverRemoteCLI(kwconf.Config):
         ),
     )
 
-    host: str = kwconf.Value(
+    host: str | None = kwconf.Value(
         None,
         position=1,
         required=True,
@@ -107,9 +107,10 @@ class GitDiscoverRemoteCLI(kwconf.Config):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
-        from git_well.repo import Repo
-        from os.path import expanduser, relpath, join
         import shlex
+        from os.path import expanduser, relpath
+
+        from git_well.repo import Repo
 
         repo = Repo.coerce(config.repo_dpath)
         info = ub.cmd(
@@ -190,8 +191,9 @@ def fsspec_shh_connect(host: str) -> Any:
     # Paramiko does not respect the ssh config by default, but it does
     # give us tools to parse it. However, it is still not straightforward
     # Might look into "fabric"?
-    import paramiko
     import os
+
+    import paramiko
 
     ssh_config = paramiko.SSHConfig()
     user_config_file = os.path.expanduser('~/.ssh/config')
