@@ -37,7 +37,7 @@ import shlex
 import shutil
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from typing import Any, Iterable
 
 import kwconf as kw
@@ -301,6 +301,47 @@ def _git_origin_url_to_purl_base(origin_url: str) -> str | None:
     return 'pkg:{}{}'.format(purl_type, '/' + '/'.join(encoded_parts))
 
 
+def _local_repo_name_from_origin_url(origin_url: str) -> str | None:
+    """
+    Extract a safe repository name from a local or otherwise unparsed origin.
+
+    This intentionally keeps only the basename, so generated pin names do not
+    leak user names, machine-local parent directories, or absolute paths.
+    """
+    origin_url = origin_url.strip()
+    if not origin_url:
+        return None
+
+    parsed = urlparse(origin_url)
+    if parsed.scheme == 'file':
+        candidate = unquote(parsed.path)
+    else:
+        candidate = origin_url
+
+    candidate = candidate.rstrip('/\\').replace('\\', '/')
+    repo_name = candidate.rsplit('/', 1)[-1]
+    repo_name = _strip_dot_git(repo_name)
+    if repo_name in {'', '.', '..'}:
+        return None
+    return repo_name
+
+
+def _generic_repo_purl_base(repo_name: str) -> str | None:
+    """Build a local-safe generic PURL base from a repository name."""
+    repo_name = _strip_dot_git(repo_name.strip())
+    if repo_name in {'', '.', '..'}:
+        return None
+    return 'pkg:generic/{}'.format(_purl_quote(repo_name))
+
+
+def _local_origin_url_to_purl_base(origin_url: str) -> str | None:
+    """Build a generic PURL base from a local or unparseable origin URL."""
+    repo_name = _local_repo_name_from_origin_url(origin_url)
+    if repo_name is None:
+        return None
+    return _generic_repo_purl_base(repo_name)
+
+
 def _path_to_purl_subpath(repo_rel_path: os.PathLike | str) -> str:
     """Encode a repo-relative path for use as a PURL subpath."""
     path = Path(repo_rel_path).as_posix()
@@ -312,26 +353,34 @@ def _generated_ipfs_pin_name(tracked_path: os.PathLike | str) -> str | None:
     """
     Generate a stable, PURL-shaped pin name for a path in a git worktree.
 
-    The generated name is based on the repository origin and the current
-    repo-relative path. It intentionally avoids local absolute paths, so it
-    returns ``None`` outside a git worktree or when the origin is local or
-    otherwise unparseable.
+    The preferred name is based on a parseable network origin and the current
+    repo-relative path. When origin is missing, local-only, or otherwise not
+    parseable as a network git remote, this falls back to ``pkg:generic`` using
+    only a safe repository basename. It intentionally avoids local absolute
+    paths, so it still returns ``None`` outside a git worktree or for paths that
+    cannot be related to the worktree root.
     """
     tracked_path = Path(tracked_path)
     search_dir = _git_search_dir(tracked_path)
     repo_root = _git_toplevel(search_dir)
     if repo_root is None:
         return None
-    origin_url = _git_origin_url(repo_root)
-    if origin_url is None:
-        return None
-    purl_base = _git_origin_url_to_purl_base(origin_url)
-    if purl_base is None:
-        return None
     try:
         repo_rel_path = tracked_path.resolve().relative_to(repo_root.resolve())
     except ValueError:
         return None
+
+    purl_base = None
+    origin_url = _git_origin_url(repo_root)
+    if origin_url is not None:
+        purl_base = _git_origin_url_to_purl_base(origin_url)
+        if purl_base is None:
+            purl_base = _local_origin_url_to_purl_base(origin_url)
+    if purl_base is None:
+        purl_base = _generic_repo_purl_base(repo_root.name)
+    if purl_base is None:
+        return None
+
     subpath = _path_to_purl_subpath(repo_rel_path)
     if subpath:
         return f'{purl_base}#{subpath}'

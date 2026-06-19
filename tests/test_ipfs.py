@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -110,3 +111,74 @@ def test_ipfs_add_name_requires_pin(tmp_path):
         IPFSAdd.main(
             cmdline=0, path=fpath, name='explicit-name',
             pin=False, dry_run=True)
+
+def test_generated_ipfs_pin_name_falls_back_without_origin(tmp_path):
+    import ubelt as ub
+    from git_well.ipfs import _generated_ipfs_pin_name
+
+    repo = tmp_path / 'repo without origin'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    data_fpath = repo / 'data' / 'foo bar.txt'
+    data_fpath.parent.mkdir()
+    data_fpath.write_text('payload')
+
+    assert _generated_ipfs_pin_name(data_fpath) == (
+        'pkg:generic/repo%20without%20origin#data/foo%20bar.txt')
+
+
+def test_generated_ipfs_pin_name_falls_back_for_local_origin(tmp_path):
+    import ubelt as ub
+    from git_well.ipfs import _generated_ipfs_pin_name
+
+    repo = tmp_path / 'worktree'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    local_origin = tmp_path / 'local project.git'
+    ub.cmd(['git', 'remote', 'add', 'origin', os.fspath(local_origin)], cwd=repo, check=True)
+    data_fpath = repo / 'data' / 'payload.txt'
+    data_fpath.parent.mkdir()
+    data_fpath.write_text('payload')
+
+    assert _generated_ipfs_pin_name(data_fpath) == (
+        'pkg:generic/local%20project#data/payload.txt')
+
+
+def test_ipfs_add_dry_run_uses_generated_name_without_origin(tmp_path, capsys):
+    import ubelt as ub
+    from git_well.ipfs import IPFSCLI
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    fpath = repo / 'data.txt'
+    fpath.write_text('payload')
+
+    IPFSAdd = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                   if item['cls'].__command__ == 'add')
+    IPFSAdd.main(cmdline=0, path=fpath, dry_run=True)
+    captured = capsys.readouterr().out
+
+    assert "ipfs pin add --name 'pkg:generic/repo#data.txt'" in captured
+
+
+def test_ipfs_export_uses_generated_name_without_origin(tmp_path, capsys):
+    import ubelt as ub
+    from git_well.ipfs import IPFSCLI
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    (repo / 'data.txt').write_text('payload')
+    (repo / 'data.txt.ipfs').write_text(
+        'type: ipfs-sidecar\n'
+        'cid: bafyfakecid\n'
+        'rel_path: data.txt\n'
+    )
+
+    IPFSExportPins = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                          if item['cls'].__command__ == 'export')
+    IPFSExportPins.main(cmdline=0, paths=[repo])
+    captured = capsys.readouterr().out
+
+    assert '--name=pkg:generic/repo#data.txt' in captured
