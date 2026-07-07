@@ -473,6 +473,7 @@ def test_archive_source_exclude_submodule(tmp_path):
 
 
 def test_archive_source_exclude_submodule_glob_resolution():
+    import pytest
     from git_well.git_archive_source import (
         SubmoduleStatus,
         _resolve_exclude_submodule_paths,
