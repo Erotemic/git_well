@@ -458,7 +458,7 @@ def test_archive_source_exclude_submodule(tmp_path):
         output=tmp_path / 'exclude-submodule.tar.gz',
         depth=0,
         submodule_depth=0,
-        exclude_submodule=['external/big-data'],
+        exclude_submodule=['external/*data'],
         verbose=0,
     )
 
@@ -470,6 +470,35 @@ def test_archive_source_exclude_submodule(tmp_path):
     assert 'path: external/big-data' in manifest_text
     assert 'status: omitted' in manifest_text
     assert 'reason: excluded by --exclude-submodule' in manifest_text
+
+
+def test_archive_source_exclude_submodule_glob_resolution():
+    import pytest
+    from git_well.git_archive_source import (
+        SubmoduleStatus,
+        _resolve_exclude_submodule_paths,
+    )
+
+    infos = [
+        SubmoduleStatus(' ', 'a' * 40, 'external/keep', ''),
+        SubmoduleStatus(' ', 'b' * 40, 'external/big-data', ''),
+        SubmoduleStatus(' ', 'c' * 40, 'vendor/big-data', ''),
+    ]
+
+    assert _resolve_exclude_submodule_paths(
+        infos, ['external/*'], no_submodules=False
+    ) == {'external/keep', 'external/big-data'}
+    assert _resolve_exclude_submodule_paths(
+        infos, ['*/big-data'], no_submodules=False
+    ) == {'external/big-data', 'vendor/big-data'}
+    assert _resolve_exclude_submodule_paths(
+        infos, ['external/keep'], no_submodules=False
+    ) == {'external/keep'}
+
+    with pytest.raises(ValueError, match='selector does not match'):
+        _resolve_exclude_submodule_paths(
+            infos, ['external/missing-*'], no_submodules=False
+        )
 
 
 def test_archive_source_no_submodules(tmp_path):

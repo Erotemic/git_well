@@ -256,9 +256,13 @@ class ArchiveSourceCLI(kwconf.Config):
         nargs='*',
         alias=['exclude-submodule'],
         help=textwrap.dedent("""
-            Exact recursive submodule paths to omit from the archive. This may
-            be used with --submodule-depth to keep most submodules source-only
-            while dropping data-heavy submodules entirely.
+            Recursive submodule path selectors to omit from the archive. Each
+            selector may be an exact recursive submodule path or a
+            fnmatch-style glob pattern. Quote glob patterns such as
+            'external/*' to prevent the shell from expanding them before
+            git-well sees them. This may be used with --submodule-depth to keep
+            most submodules source-only while dropping data-heavy submodules
+            entirely.
             """).strip(),
     )
     submodules = kwconf.Value(
@@ -356,8 +360,11 @@ def archive_source(
             catch-all glob, and ``__default__`` as a non-glob fallback.
 
         exclude_submodule:
-            Exact recursive submodule paths to omit from the archive. Omitted
-            submodules are recorded in the manifest but not materialized.
+            Recursive submodule path selectors to omit from the archive. Each
+            selector may be an exact recursive submodule path or a
+            fnmatch-style glob pattern. Quote shell glob metacharacters when
+            passing patterns through a shell. Omitted submodules are recorded
+            in the manifest but not materialized.
 
         no_submodules:
             If true, omit all recursive submodule working trees from the
@@ -432,7 +439,7 @@ def archive_source(
         log('[source-archive] submodules: omitted by --no-submodules')
     elif exclude_submodule_paths:
         log(
-            '[source-archive] excluded submodules: '
+            '[source-archive] excluded submodule selectors: '
             + ', '.join(exclude_submodule_paths)
         )
     log(f'[source-archive] superproject HEAD: {short_sha}')
@@ -845,6 +852,75 @@ def _normalize_submodule_path_list(
     return paths
 
 
+def _resolve_exclude_submodule_paths(
+    submodule_status: List[SubmoduleStatus],
+    exclude_submodule: List[str],
+    *,
+    no_submodules: bool,
+) -> set[str]:
+    """
+    Resolve ``--exclude-submodule`` selectors to recursive submodule paths.
+
+    Each selector may be either an exact recursive submodule path or an
+    fnmatch-style pattern over recursive submodule paths. Shell-expanded globs
+    arrive here as ordinary argv entries, so those entries still have to match
+    known recursive submodule paths individually.
+
+    Example:
+        >>> infos = [
+        ...     SubmoduleStatus(' ', 'a' * 40, 'lib/a', ''),
+        ...     SubmoduleStatus(' ', 'b' * 40, 'lib/b', ''),
+        ...     SubmoduleStatus(' ', 'c' * 40, 'third_party/c', ''),
+        ... ]
+        >>> sorted(_resolve_exclude_submodule_paths(infos, ['lib/*'], no_submodules=False))
+        ['lib/a', 'lib/b']
+        >>> sorted(_resolve_exclude_submodule_paths(infos, ['lib/a'], no_submodules=False))
+        ['lib/a']
+        >>> _resolve_exclude_submodule_paths(infos, ['missing/*'], no_submodules=False)
+        Traceback (most recent call last):
+        ...
+        ValueError: --exclude-submodule selector does not match a recursive submodule: missing/*
+    """
+    if not exclude_submodule:
+        return set()
+
+    known_paths = sorted({info.path for info in submodule_status})
+    exclude_set: set[str] = set()
+    unmatched: List[str] = []
+
+    for selector in exclude_submodule:
+        if selector in known_paths:
+            exclude_set.add(selector)
+            continue
+
+        if _looks_like_fnmatch_pattern(selector):
+            matches = [
+                path
+                for path in known_paths
+                if fnmatch.fnmatchcase(path, selector)
+            ]
+            if matches:
+                exclude_set.update(matches)
+                continue
+
+        unmatched.append(selector)
+
+    if unmatched and not no_submodules:
+        rendered = ', '.join(unmatched)
+        message = (
+            '--exclude-submodule selector does not match a recursive '
+            f'submodule: {rendered}'
+        )
+        if any(_looks_like_fnmatch_pattern(item) for item in unmatched):
+            message += (
+                "; quote glob patterns such as 'external/*' so your "
+                'shell does not expand them before git-well sees them'
+            )
+        raise ValueError(message)
+
+    return exclude_set
+
+
 def _resolve_submodule_archive_decisions(
     submodule_status: list[SubmoduleStatus],
     *,
@@ -866,15 +942,11 @@ def _resolve_submodule_archive_decisions(
         >>> [(d.info.path, d.omitted, d.reason) for d in decisions]
         [('lib/a', False, 'included'), ('lib/b', True, 'excluded by --exclude-submodule')]
     """
-    known_paths = {info.path for info in submodule_status}
-    unknown_excludes = sorted(set(exclude_submodule) - known_paths)
-    if unknown_excludes and not no_submodules:
-        rendered = ', '.join(unknown_excludes)
-        raise ValueError(
-            f'--exclude-submodule path does not match a recursive submodule: {rendered}'
-        )
-
-    exclude_set = set(exclude_submodule)
+    exclude_set = _resolve_exclude_submodule_paths(
+        submodule_status,
+        exclude_submodule,
+        no_submodules=no_submodules,
+    )
     decisions: list[SubmoduleArchiveDecision] = []
     for info in submodule_status:
         if no_submodules:
@@ -1195,10 +1267,10 @@ def _write_manifest(
     lines.extend(submodule_depth_policy.summary_lines())
     lines.append(f'No submodules: {"yes" if no_submodules else "no"}')
     if exclude_submodule:
-        lines.append('Excluded submodule paths:')
+        lines.append('Excluded submodule selectors:')
         lines.extend(f'- {path}' for path in exclude_submodule)
     else:
-        lines.append('Excluded submodule paths: (none)')
+        lines.append('Excluded submodule selectors: (none)')
 
     lines.extend(
         textwrap.dedent(
