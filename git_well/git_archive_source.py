@@ -853,8 +853,8 @@ def _normalize_submodule_path_list(
 
 
 def _resolve_exclude_submodule_paths(
-    submodule_status: List[SubmoduleStatus],
-    exclude_submodule: List[str],
+    submodule_status: list[SubmoduleStatus],
+    exclude_submodule: list[str],
     *,
     no_submodules: bool,
 ) -> set[str]:
@@ -879,14 +879,14 @@ def _resolve_exclude_submodule_paths(
         >>> _resolve_exclude_submodule_paths(infos, ['missing/*'], no_submodules=False)
         Traceback (most recent call last):
         ...
-        ValueError: --exclude-submodule selector does not match a recursive submodule: missing/*
+        ValueError: --exclude-submodule selector does not match a recursive submodule: missing/*...
     """
     if not exclude_submodule:
         return set()
 
     known_paths = sorted({info.path for info in submodule_status})
     exclude_set: set[str] = set()
-    unmatched: List[str] = []
+    unmatched: list[str] = []
 
     for selector in exclude_submodule:
         if selector in known_paths:
