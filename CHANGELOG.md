@@ -10,6 +10,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 * Add `archive_source --submodule-depth` YAML specs for source-only, shallow, full, default, and globbed per-submodule depth policies.
 * Add `archive_source --exclude-submodule` and `--no-submodules` controls for omitting large submodule working trees from source archives.
+* Add `archive_source --redact-local-paths` to omit local source/output paths and generated local clone origins from distributable archives.
+
+### Changed
+
+* Replace the verbose `SOURCE_ARCHIVE_MANIFEST.txt` with a concise `GIT_WELL_ARCHIVE_INFO.txt` receipt that records archive paths, commits, history depth, and intentional pruning without embedding `git status` output.
+* Resolve recursive submodules from committed Git trees instead of the current index, including support for valid paths containing spaces.
+
+### Fixed
+
+* Refuse to overwrite a repository-owned archive information path, including symlinks and dangling symlinks.
+* Make parent submodule exclusions apply to all nested descendants.
+* Report malformed committed gitlinks instead of silently treating submodule discovery failures as an empty submodule set.
+* Keep mixed superproject/submodule history descriptions accurate, avoid duplicate `.git/info/exclude` entries, preserve the caller's working directory, and honor the documented `format=auto` fallback.
 
 
 ## Version 0.3.1 - Released 2026-05-16

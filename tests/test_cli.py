@@ -79,7 +79,7 @@ def test_archive_source_depth_zero_source_only(tmp_path):
         names = set(tar.getnames())
     assert any(name.endswith('/tracked.txt') for name in names)
     assert not any(name.endswith('/untracked.txt') for name in names)
-    assert any(name.endswith('/SOURCE_ARCHIVE_MANIFEST.txt') for name in names)
+    assert any(name.endswith('/GIT_WELL_ARCHIVE_INFO.txt') for name in names)
     assert not any('/.git/' in name for name in names)
 
 
@@ -110,8 +110,32 @@ def test_archive_source_auto_zip(tmp_path):
         names = set(zfile.namelist())
     assert any(name.endswith('/tracked.txt') for name in names)
     assert not any(name.endswith('/untracked.txt') for name in names)
-    assert any(name.endswith('/SOURCE_ARCHIVE_MANIFEST.txt') for name in names)
+    assert any(name.endswith('/GIT_WELL_ARCHIVE_INFO.txt') for name in names)
     assert not any('/.git/' in name for name in names)
+
+
+def test_archive_source_auto_unknown_extension_falls_back_to_tar_gz(tmp_path):
+    import tarfile
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_auto_fallback'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'demo-source.custom',
+        depth=0,
+        format='auto',
+        verbose=0,
+    )
+
+    with tarfile.open(archive, 'r:gz') as tar:
+        names = set(tar.getnames())
+    assert any(name.endswith('/tracked.txt') for name in names)
 
 
 def test_archive_source_cli_options():
@@ -138,12 +162,14 @@ def test_archive_source_cli_options():
             '--exclude-submodule',
             'external/big-data',
             '--no-submodules',
+            '--redact-local-paths',
         ],
         strict=True,
     )
     assert str(config.submodule_depth) == '{"*": 0, special/submod: 100}'
     assert config.exclude_submodule == ['external/big-data']
     assert config.submodules is False
+    assert config.redact_local_paths is True
 
 
 def test_archive_source_repo_local_config_defaults(tmp_path):
@@ -226,7 +252,6 @@ def test_archive_source_with_history(tmp_path):
     archive = archive_source(
         repo_dpath=repo,
         output=tmp_path / 'demo-history-source.tar.gz',
-        depth=1,
         verbose=0,
     )
 
@@ -241,6 +266,93 @@ def test_archive_source_with_history(tmp_path):
     assert (unpacked / '.git').exists()
     proc = ub.cmd(['git', 'log', '--oneline', '-1'], cwd=unpacked, check=True)
     assert 'initial' in proc.stdout
+    status = ub.cmd(['git', 'status', '--short'], cwd=unpacked, check=True)
+    assert status.stdout.strip() == ''
+    exclude_text = (unpacked / '.git' / 'info' / 'exclude').read_text()
+    assert exclude_text.count('/GIT_WELL_ARCHIVE_INFO.txt') == 1
+    info_text = _tar_manifest_text(archive)
+    assert 'Superproject history: full' in info_text
+    assert 'Content pruning: none' in info_text
+
+
+def test_archive_source_info_paths_status_and_redaction(tmp_path):
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_info'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    (repo / 'private-untracked-name.txt').write_text('private\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    default_output = tmp_path / 'default-info.tar.gz'
+    default_archive = archive_source(
+        repo_dpath=repo,
+        output=default_output,
+        depth=1,
+        verbose=0,
+    )
+    default_info = _tar_manifest_text(default_archive)
+    assert f'Source repository path: {repo.resolve()}' in default_info
+    assert f'Archive output path: {default_output.resolve()}' in default_info
+    assert 'private-untracked-name.txt' not in default_info
+    assert 'Archive policy:' not in default_info
+
+    default_root = _extract_tar_root(
+        default_archive, tmp_path / 'default-extract'
+    )
+    origin = ub.cmd(
+        ['git', 'remote', 'get-url', 'origin'],
+        cwd=default_root,
+        check=True,
+    ).stdout.strip()
+    assert origin == str(repo.resolve())
+
+    redacted_output = tmp_path / 'redacted-info.tar.gz'
+    redacted_archive = archive_source(
+        repo_dpath=repo,
+        output=redacted_output,
+        depth=1,
+        redact_local_paths=True,
+        verbose=0,
+    )
+    redacted_info = _tar_manifest_text(redacted_archive)
+    assert str(repo.resolve()) not in redacted_info
+    assert str(redacted_output.resolve()) not in redacted_info
+    assert redacted_info.count('(redacted by --redact-local-paths)') == 2
+
+    redacted_root = _extract_tar_root(
+        redacted_archive, tmp_path / 'redacted-extract'
+    )
+    remotes = ub.cmd(
+        ['git', 'remote'], cwd=redacted_root, check=True
+    ).stdout.strip()
+    assert remotes == ''
+
+
+def test_archive_source_info_path_collision_is_safe(tmp_path):
+    import os
+    import pytest
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_collision'
+    target = tmp_path / 'outside-target.txt'
+    target.write_text('sentinel\n')
+    _init_demo_repo(repo)
+    os.symlink(target, repo / 'GIT_WELL_ARCHIVE_INFO.txt')
+    ub.cmd(['git', 'add', 'GIT_WELL_ARCHIVE_INFO.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'add collision'], cwd=repo, check=True)
+
+    with pytest.raises(FileExistsError, match='committed repository'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'collision.tar.gz',
+            depth=0,
+            verbose=0,
+        )
+    assert target.read_text() == 'sentinel\n'
 
 
 def test_rich_link_path_markup():
@@ -344,11 +456,24 @@ def _tar_manifest_text(archive):
 
     with tarfile.open(archive, 'r:gz') as tar:
         manifest_member = next(
-            name for name in tar.getnames() if name.endswith('/SOURCE_ARCHIVE_MANIFEST.txt')
+            name for name in tar.getnames() if name.endswith('/GIT_WELL_ARCHIVE_INFO.txt')
         )
         file = tar.extractfile(manifest_member)
         assert file is not None
         return file.read().decode('utf8')
+
+
+def _extract_tar_root(archive, dst):
+    import tarfile
+
+    with tarfile.open(archive, 'r:gz') as tar:
+        try:
+            tar.extractall(dst, filter='fully_trusted')
+        except TypeError:
+            tar.extractall(dst)
+    roots = [path for path in dst.iterdir() if path.is_dir()]
+    assert len(roots) == 1
+    return roots[0]
 
 
 def test_archive_source_submodule_depth_spec_resolution():
@@ -400,8 +525,94 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
 
     manifest_text = _tar_manifest_text(archive)
     assert 'path: external/lib' in manifest_text
-    assert 'mode: source-only-git-archive' in manifest_text
-    assert 'depth: 0' in manifest_text
+    assert 'history: source-only (depth 0)' in manifest_text
+    assert 'Content pruning: yes' in manifest_text
+
+
+def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'staged_only_src')
+    super_repo = tmp_path / 'staged_only_super'
+    _init_demo_repo(super_repo)
+    (super_repo / 'root.txt').write_text('root\n')
+    _commit_all(super_repo, 'initial superproject content')
+    ub.cmd(
+        [
+            'git',
+            '-c',
+            'protocol.file.allow=always',
+            'submodule',
+            'add',
+            str(sub_repo),
+            'external/staged-only',
+        ],
+        cwd=super_repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'staged-only.tar.gz',
+        depth=0,
+        verbose=0,
+    )
+
+    names = _tar_names(archive)
+    assert not any('/external/staged-only/' in name for name in names)
+    assert not any(name.endswith('/.gitmodules') for name in names)
+    manifest_text = _tar_manifest_text(archive)
+    assert 'Submodules:\n(none)' in manifest_text
+
+
+def test_archive_source_submodule_path_with_spaces(tmp_path):
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'space_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib space': sub_repo}
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'space-submodule.tar.gz',
+        depth=0,
+        submodule_depth=0,
+        verbose=0,
+    )
+
+    names = _tar_names(archive)
+    assert any(
+        name.endswith('/external/lib space/tracked.txt') for name in names
+    )
+    manifest_text = _tar_manifest_text(archive)
+    assert 'path: external/lib space' in manifest_text
+
+
+def test_archive_source_missing_gitmodules_mapping_fails(tmp_path):
+    import pytest
+    import ubelt as ub
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'broken_mapping_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'broken-sub': sub_repo}
+    )
+    ub.cmd(['git', 'rm', '.gitmodules'], cwd=super_repo, check=True)
+    ub.cmd(
+        ['git', 'commit', '-m', 'remove submodule mapping'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match='no .gitmodules path mapping'):
+        archive_source(
+            repo_dpath=super_repo,
+            output=tmp_path / 'broken-mapping.tar.gz',
+            depth=0,
+            verbose=0,
+        )
 
 
 def test_archive_source_submodule_depth_glob_and_exact_override(tmp_path):
@@ -433,9 +644,9 @@ def test_archive_source_submodule_depth_glob_and_exact_override(tmp_path):
 
     manifest_text = _tar_manifest_text(archive)
     assert 'path: external/ordinary' in manifest_text
-    assert 'mode: source-only-git-archive' in manifest_text
+    assert 'history: source-only (depth 0)' in manifest_text
     assert 'path: special/submod' in manifest_text
-    assert 'mode: shallow-git-checkout' in manifest_text
+    assert 'history: shallow (depth 1)' in manifest_text
 
 
 def test_archive_source_exclude_submodule(tmp_path):
@@ -472,6 +683,40 @@ def test_archive_source_exclude_submodule(tmp_path):
     assert 'reason: excluded by --exclude-submodule' in manifest_text
 
 
+def test_archive_source_excluding_parent_omits_nested_submodules(tmp_path):
+    from git_well.git_archive_source import archive_source
+
+    inner_src = _make_submodule_repo(
+        tmp_path,
+        'inner_src',
+        filename='inner.txt',
+        content='inner\n',
+    )
+    parent_src = _make_repo_with_submodules(
+        tmp_path, {'nested/inner': inner_src}
+    )
+    parent_src = parent_src.rename(tmp_path / 'parent_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/parent': parent_src}
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'exclude-parent.tar.gz',
+        depth=0,
+        exclude_submodule=['external/parent'],
+        verbose=0,
+    )
+
+    names = _tar_names(archive)
+    assert not any('/external/parent/root.txt' in name for name in names)
+    assert not any('/external/parent/nested/inner/' in name for name in names)
+    manifest_text = _tar_manifest_text(archive)
+    assert 'path: external/parent\n' in manifest_text
+    assert 'path: external/parent/nested/inner\n' in manifest_text
+    assert manifest_text.count('reason: excluded by --exclude-submodule') == 2
+
+
 def test_archive_source_exclude_submodule_glob_resolution():
     import pytest
     from git_well.git_archive_source import (
@@ -483,17 +728,24 @@ def test_archive_source_exclude_submodule_glob_resolution():
         SubmoduleStatus(' ', 'a' * 40, 'external/keep', ''),
         SubmoduleStatus(' ', 'b' * 40, 'external/big-data', ''),
         SubmoduleStatus(' ', 'c' * 40, 'vendor/big-data', ''),
+        SubmoduleStatus(
+            ' ', 'd' * 40, 'external/keep/nested/inner', ''
+        ),
     ]
 
     assert _resolve_exclude_submodule_paths(
         infos, ['external/*'], no_submodules=False
-    ) == {'external/keep', 'external/big-data'}
+    ) == {
+        'external/keep',
+        'external/keep/nested/inner',
+        'external/big-data',
+    }
     assert _resolve_exclude_submodule_paths(
         infos, ['*/big-data'], no_submodules=False
     ) == {'external/big-data', 'vendor/big-data'}
     assert _resolve_exclude_submodule_paths(
         infos, ['external/keep'], no_submodules=False
-    ) == {'external/keep'}
+    ) == {'external/keep', 'external/keep/nested/inner'}
 
     with pytest.raises(ValueError, match='selector does not match'):
         _resolve_exclude_submodule_paths(
@@ -522,6 +774,6 @@ def test_archive_source_no_submodules(tmp_path):
     assert not any(name.endswith('/external/lib/tracked.txt') for name in names)
 
     manifest_text = _tar_manifest_text(archive)
-    assert 'No submodules: yes' in manifest_text
+    assert 'Content pruning: yes' in manifest_text
     assert 'path: external/lib' in manifest_text
     assert 'reason: omitted by --no-submodules' in manifest_text

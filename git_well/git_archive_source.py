@@ -10,7 +10,7 @@ import fnmatch
 import os
 import textwrap
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import kwconf
@@ -58,6 +58,8 @@ _FORMAT_ALIASES = {
     'txz': 'tar.xz',
 }
 
+_ARCHIVE_INFO_FNAME = 'GIT_WELL_ARCHIVE_INFO.txt'
+
 # TODO: Re-enable repo-local archive_source defaults after kwconf /
 # legacy modal dispatch preserved omitted values distinctly from
 # injected defaults. The intended Git config keys were:
@@ -68,7 +70,7 @@ _FORMAT_ALIASES = {
 @dataclass(frozen=True)
 class SubmoduleStatus:
     """
-    Parsed information from ``git submodule status --recursive``.
+    Committed recursive submodule information resolved from Git trees.
     """
 
     status: str
@@ -283,6 +285,17 @@ class ArchiveSourceCLI(kwconf.Config):
             auto cannot infer from --output, it falls back to tar.gz.
             """).strip(),
     )
+    redact_local_paths = kwconf.Value(
+        False,
+        isflag=True,
+        alias=['redact-local-paths'],
+        help=textwrap.dedent("""
+            Redact absolute local paths from the archive information file and
+            remove the generated clone origins whose URLs point back to local
+            working trees. By default these paths and origins are retained for
+            agent handoff and overlay workflows.
+            """).strip(),
+    )
     # TODO: Re-enable when kwconf fixes modal default injection semantics.
     # set_config = kwconf.Value(
     #     None,
@@ -312,6 +325,7 @@ class ArchiveSourceCLI(kwconf.Config):
             exclude_submodule=config.exclude_submodule,
             no_submodules=not bool(config.submodules),
             format=config.format,
+            redact_local_paths=bool(config.redact_local_paths),
             verbose=config.verbose,
         )
         return archive_path
@@ -332,6 +346,7 @@ def archive_source(
     exclude_submodule: str | list[str] | None = None,
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
+    redact_local_paths: bool = False,
     verbose: int = 1,
 ) -> Path:
     """
@@ -374,6 +389,11 @@ def archive_source(
             Archive format. ``'auto'`` infers from the output extension when
             possible and otherwise defaults to ``'tar.gz'``.
 
+        redact_local_paths:
+            If true, redact absolute source/output paths from the generated
+            archive information file and remove generated clone origins that
+            point back to local working trees.
+
         verbose:
             Verbosity level.
 
@@ -383,7 +403,10 @@ def archive_source(
     Notes:
         This function only archives committed/tracked source. Local edits,
         untracked files, ignored files, and build outputs are deliberately
-        excluded.
+        excluded. Every archive contains ``GIT_WELL_ARCHIVE_INFO.txt`` with
+        the source/output paths, commits, history depths, and any intentional
+        pruning. Use ``redact_local_paths=True`` when those local paths should
+        not be included in the artifact.
     """
     repo = _coerce_repo(repo_dpath)
     _assert_has_head(repo)
@@ -466,6 +489,7 @@ def archive_source(
                 commit=head_sha,
                 label='superproject',
                 clone_depth=clone_depth,
+                redact_local_paths=redact_local_paths,
                 log=log,
             )
         else:
@@ -493,7 +517,12 @@ def archive_source(
                     f"submodule path '{path}' is missing; run: "
                     'git submodule update --init --recursive'
                 )
-            sub_repo = _coerce_repo(src_dpath)
+            sub_repo = _open_exact_repo(src_dpath)
+            if sub_repo is None:
+                raise RuntimeError(
+                    f"submodule path '{path}' is not an initialized Git "
+                    'working tree; run: git submodule update --init --recursive'
+                )
             _assert_has_head(sub_repo)
             sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
             log(
@@ -510,6 +539,7 @@ def archive_source(
                     commit=submodule_sha,
                     label=f'submodule {path}',
                     clone_depth=sub_clone_depth,
+                    redact_local_paths=redact_local_paths,
                     log=log,
                 )
             else:
@@ -518,14 +548,15 @@ def archive_source(
                     sub_repo, submodule_sha, stage, f'{prefix}/{path}'
                 )
 
+        manifest = archive_root / _ARCHIVE_INFO_FNAME
+        _assert_archive_info_path_available(manifest)
         if include_git_history:
             _append_manifest_exclude(archive_root)
 
-        manifest = archive_root / 'SOURCE_ARCHIVE_MANIFEST.txt'
         _write_manifest(
             manifest=manifest,
-            repo=repo,
             repo_root=repo_root,
+            archive_path=archive_path,
             repo_name=repo_name,
             prefix=prefix,
             timestamp=timestamp,
@@ -533,17 +564,9 @@ def archive_source(
             short_sha=short_sha,
             include_git_history=include_git_history,
             clone_depth=clone_depth,
-            submodule_status=submodule_status,
-            submodule_depth_policy=submodule_depth_policy,
             submodule_decisions=submodule_decisions,
-            no_submodules=bool(no_submodules),
-            exclude_submodule=exclude_submodule_paths,
+            redact_local_paths=redact_local_paths,
         )
-
-        if include_git_history:
-            # Re-run exclusion after writing the manifest so the archived
-            # checkout opens cleanly with `git status`.
-            _append_manifest_exclude(archive_root)
 
         _write_archive(stage, prefix, archive_path, archive_format)
     finally:
@@ -918,6 +941,16 @@ def _resolve_exclude_submodule_paths(
             )
         raise ValueError(message)
 
+    inherited_excludes = {
+        path
+        for path in known_paths
+        if any(
+            path == excluded or path.startswith(excluded.rstrip('/') + '/')
+            for excluded in exclude_set
+        )
+    }
+    exclude_set.update(inherited_excludes)
+
     return exclude_set
 
 
@@ -1027,7 +1060,10 @@ def _resolve_archive_format(
     if str(format).lower() == 'auto':
         if output is None:
             return 'tar.gz'
-        return _infer_format_from_output(output)
+        try:
+            return _infer_format_from_output(output)
+        except ValueError:
+            return 'tar.gz'
     return _normalize_format(str(format))
 
 
@@ -1049,32 +1085,163 @@ def _resolve_output(
 
 
 def _submodule_status(repo: 'git.Repo') -> list[SubmoduleStatus]:
+    infos: list[SubmoduleStatus] = []
+    repo_root = Path(cast(str, repo.working_tree_dir)).resolve()
+    _collect_committed_submodules(
+        repo=repo,
+        treeish='HEAD',
+        superproject_root=repo_root,
+        prefix='',
+        infos=infos,
+    )
+    return infos
+
+
+def _collect_committed_submodules(
+    repo: 'git.Repo',
+    treeish: str,
+    superproject_root: Path,
+    prefix: str,
+    infos: list[SubmoduleStatus],
+) -> None:
+    """Recursively enumerate gitlinks from committed trees, not the index."""
+    gitlinks = _committed_gitlinks(repo, treeish)
+    if not gitlinks:
+        return
+
+    mapped_paths = _committed_gitmodule_paths(repo, treeish)
+    missing_mappings = [
+        path for _sha, path in gitlinks if path not in mapped_paths
+    ]
+    if missing_mappings:
+        rendered = ', '.join(repr(path) for path in missing_mappings)
+        raise RuntimeError(
+            f'committed gitlink has no .gitmodules path mapping: {rendered}'
+        )
+
+    for sha, relative_path in gitlinks:
+        full_path = (
+            PurePosixPath(prefix, relative_path).as_posix()
+            if prefix
+            else PurePosixPath(relative_path).as_posix()
+        )
+        local_dpath = superproject_root.joinpath(
+            *PurePosixPath(full_path).parts
+        )
+        sub_repo = _open_exact_repo(local_dpath)
+        if sub_repo is None:
+            status = '-'
+        else:
+            try:
+                current_sha = sub_repo.head.commit.hexsha
+            except ValueError:
+                status = '-'
+            else:
+                status = ' ' if current_sha == sha else '+'
+
+        line = f'{status}{sha} {full_path}'
+        infos.append(
+            SubmoduleStatus(
+                status=status,
+                sha=sha,
+                path=full_path,
+                line=line,
+            )
+        )
+
+        if sub_repo is not None and _repo_has_commit(sub_repo, sha):
+            _collect_committed_submodules(
+                repo=sub_repo,
+                treeish=sha,
+                superproject_root=superproject_root,
+                prefix=full_path,
+                infos=infos,
+            )
+
+
+def _committed_gitlinks(
+    repo: 'git.Repo', treeish: str
+) -> list[tuple[str, str]]:
+    """Return ``(sha, path)`` gitlinks from one committed tree."""
+    stdout = repo.git.ls_tree('-r', '-z', treeish)
+    gitlinks = []
+    for record in stdout.split('\0'):
+        if not record:
+            continue
+        try:
+            header, path = record.split('\t', 1)
+            mode, object_type, sha = header.split(' ', 2)
+        except ValueError as ex:
+            raise RuntimeError(
+                f'could not parse git ls-tree record: {record!r}'
+            ) from ex
+        if mode == '160000':
+            if object_type != 'commit':
+                raise RuntimeError(
+                    'invalid gitlink tree entry: '
+                    f'{mode} {object_type} {sha} {path!r}'
+                )
+            gitlinks.append((sha, path))
+    return gitlinks
+
+
+def _committed_gitmodule_paths(repo: 'git.Repo', treeish: str) -> set[str]:
+    """Read submodule path mappings from the committed ``.gitmodules``."""
+    import git
+
+    blob = f'{treeish}:.gitmodules'
+    try:
+        repo.git.show(blob)
+    except git.GitCommandError:
+        return set()
+
+    try:
+        stdout = repo.git.config(
+            '-z',
+            f'--blob={blob}',
+            '--get-regexp',
+            r'^submodule\..*\.path$',
+        )
+    except git.GitCommandError as ex:
+        raise RuntimeError(
+            f'could not parse committed .gitmodules at {treeish}'
+        ) from ex
+
+    paths = set()
+    for record in stdout.split('\0'):
+        if not record:
+            continue
+        try:
+            _key, path = record.split('\n', 1)
+        except ValueError as ex:
+            raise RuntimeError(
+                f'could not parse committed .gitmodules record: {record!r}'
+            ) from ex
+        paths.add(path)
+    return paths
+
+
+def _open_exact_repo(path: Path) -> 'git.Repo | None':
+    """Open a repository rooted at ``path`` without climbing to a parent."""
     import git
 
     try:
-        stdout = repo.git.submodule('status', '--recursive')
+        repo = git.Repo(path, search_parent_directories=False)
+    except (git.InvalidGitRepositoryError, git.NoSuchPathError):
+        return None
+    if repo.working_tree_dir is None:
+        return None
+    return repo
+
+
+def _repo_has_commit(repo: 'git.Repo', commit: str) -> bool:
+    import git
+
+    try:
+        repo.git.cat_file('-e', f'{commit}^{{commit}}')
     except git.GitCommandError:
-        return []
-    infos: list[SubmoduleStatus] = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            raise RuntimeError(f'could not parse submodule status line: {line}')
-        status = line[0]
-        first = parts[0]
-        if status == ' ':
-            sha = first
-        else:
-            sha = first[1:]
-        path = parts[1]
-        if not path or not sha:
-            raise RuntimeError(f'could not parse submodule status line: {line}')
-        infos.append(
-            SubmoduleStatus(status=status, sha=sha, path=path, line=line)
-        )
-    return infos
+        return False
+    return True
 
 
 def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
@@ -1090,6 +1257,7 @@ def _clone_committed_checkout(
     commit: str,
     label: str,
     clone_depth: int | None,
+    redact_local_paths: bool,
     log: '_Logger',
 ) -> None:
     import shutil
@@ -1102,21 +1270,20 @@ def _clone_committed_checkout(
         shutil.rmtree(dst)
 
     src_root = Path(cast(str, src.working_tree_dir)).resolve()
-    try:
-        old_cwd = os.getcwd()
-    except FileNotFoundError:
-        old_cwd = None
-    os.chdir(src_root.parent)
-    try:
-        cloned = git.Repo.clone_from(
-            str(src_root),
-            str(dst),
-            multi_options=_clone_options_for_depth(clone_depth),
-        )
-    finally:
-        if old_cwd is not None:
-            os.chdir(old_cwd)
+    clone_command = [
+        'git',
+        'clone',
+        *_clone_options_for_depth(clone_depth),
+        str(src_root),
+        str(dst),
+    ]
+    git.Git(str(src_root.parent)).execute(clone_command)
+    cloned = git.Repo(dst)
     _checkout_commit(cloned, commit, label, clone_depth, log)
+
+    if redact_local_paths:
+        for remote in list(cloned.remotes):
+            cloned.git.remote('remove', remote.name)
 
     # The archive is for inspection, not local recovery. Expire the clone's
     # fresh reflogs so they do not keep extra objects alive, then repack to make
@@ -1195,23 +1362,41 @@ def _append_manifest_exclude(repo_dpath: PathLike) -> None:
     info = Path(repo_dpath) / '.git' / 'info'
     if info.exists():
         exclude = info / 'exclude'
-        with exclude.open('a') as file:
-            file.write(
-                textwrap.dedent(
-                    """
-
-                # Added by git-well archive_source so the archive manifest does not
-                # dirty the checkout.
-                /SOURCE_ARCHIVE_MANIFEST.txt
-                """
-                ).lstrip('\n')
+        rule = f'/{_ARCHIVE_INFO_FNAME}'
+        existing = exclude.read_text() if exclude.exists() else ''
+        if rule not in existing.splitlines():
+            block = (
+                '\n# Added by git-well archive_source for generated metadata.\n'
+                f'{rule}\n'
             )
+            with exclude.open('a') as file:
+                file.write(block)
+
+
+def _assert_archive_info_path_available(manifest: Path) -> None:
+    """Refuse to overwrite or follow any repository-owned path."""
+    if os.path.lexists(manifest):
+        import stat
+
+        mode = manifest.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            kind = 'symlink'
+        elif stat.S_ISDIR(mode):
+            kind = 'directory'
+        elif stat.S_ISREG(mode):
+            kind = 'file'
+        else:
+            kind = 'filesystem entry'
+        raise FileExistsError(
+            f'cannot create {_ARCHIVE_INFO_FNAME}: the committed repository '
+            f'already contains a {kind} at that path'
+        )
 
 
 def _write_manifest(
     manifest: Path,
-    repo: 'git.Repo',
     repo_root: Path,
+    archive_path: Path,
     repo_name: str,
     prefix: str,
     timestamp: str,
@@ -1219,125 +1404,89 @@ def _write_manifest(
     short_sha: str,
     include_git_history: bool,
     clone_depth: int | None,
-    submodule_status: list[SubmoduleStatus],
-    submodule_depth_policy: SubmoduleDepthPolicy,
     submodule_decisions: list[SubmoduleArchiveDecision],
-    no_submodules: bool,
-    exclude_submodule: list[str],
+    redact_local_paths: bool,
 ) -> None:
-    import git
+    from git_well import __version__
 
-    depth_label = 'full' if clone_depth is None else str(clone_depth)
-    try:
-        super_status = repo.git.status('--short', '--branch').rstrip()
-    except git.GitCommandError:
-        super_status = ''
-
-    lines = textwrap.dedent(
-        f"""
-        Source archive manifest
-        =======================
-
-        Generated timestamp: {timestamp}
-        Repository: {repo_name}
-        Repository root: {repo_root}
-        Archive prefix: {prefix}
-        Superproject HEAD: {head_sha}
-        Superproject short HEAD: {short_sha}
-        Git history included: {'yes' if include_git_history else 'no'}
-        """
-    ).splitlines()
-
-    if include_git_history:
-        lines.extend(
-            [
-                f'Git history depth: {depth_label}',
-                f'Shallow clone: {"yes" if clone_depth is not None else "no"}',
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                'Git history depth: 0',
-                'Shallow clone: no',
-            ]
-        )
-
-    lines.extend(['', 'Submodule archive policy:'])
-    lines.extend(submodule_depth_policy.summary_lines())
-    lines.append(f'No submodules: {"yes" if no_submodules else "no"}')
-    if exclude_submodule:
-        lines.append('Excluded submodule selectors:')
-        lines.extend(f'- {path}' for path in exclude_submodule)
-    else:
-        lines.append('Excluded submodule selectors: (none)')
-
-    lines.extend(
-        textwrap.dedent(
-            """
-
-        Archive policy:
-        - Includes committed/tracked files from the superproject HEAD.
-        - Includes committed/tracked files from each initialized recursive submodule HEAD unless omitted by policy.
-        """
-        ).splitlines()
+    source_path_text = (
+        '(redacted by --redact-local-paths)'
+        if redact_local_paths
+        else os.fspath(repo_root)
     )
-    if include_git_history:
-        lines.extend(
-            [
-                '- Includes .git metadata for the superproject and initialized recursive submodules.',
-                '- Excludes local edits, untracked files, ignored files, and build outputs.',
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                '- Uses git archive source-only exports.',
-                '- Excludes local edits, untracked files, ignored files, build outputs, and .git directories.',
-            ]
-        )
-    lines.extend(
-        [
-            '',
-            'Superproject status at archive time:',
-            super_status,
-            '',
-            'Recursive submodule status at archive time:',
-        ]
+    archive_path_text = (
+        '(redacted by --redact-local-paths)'
+        if redact_local_paths
+        else os.fspath(archive_path)
     )
-    if submodule_status:
-        lines.extend(info.line for info in submodule_status)
+    if not include_git_history:
+        superproject_history = 'source-only (depth 0)'
+    elif clone_depth is None:
+        superproject_history = 'full'
     else:
-        lines.append('(none)')
+        superproject_history = f'shallow (depth {clone_depth})'
 
-    lines += ['', 'Submodule materialization decisions:']
+    pruning_details = []
+    if not include_git_history:
+        pruning_details.append('superproject Git history omitted')
+    elif clone_depth is not None:
+        pruning_details.append(
+            f'superproject Git history limited to depth {clone_depth}'
+        )
+    for decision in submodule_decisions:
+        path = decision.info.path
+        if decision.omitted:
+            pruning_details.append(
+                f'submodule {path!r} omitted: {decision.reason}'
+            )
+        elif decision.depth == 0:
+            pruning_details.append(f'submodule {path!r} Git history omitted')
+        elif decision.depth is not None:
+            pruning_details.append(
+                f'submodule {path!r} Git history limited to depth '
+                f'{decision.depth}'
+            )
+
+    lines = [
+        'git-well source archive',
+        '=======================',
+        '',
+        f'Generated by: git-well {__version__}',
+        f'Generated timestamp: {timestamp}',
+        f'Repository: {repo_name}',
+        f'Source repository path: {source_path_text}',
+        f'Archive output path: {archive_path_text}',
+        f'Archive prefix: {prefix}',
+        f'Superproject commit: {head_sha}',
+        f'Superproject short commit: {short_sha}',
+        f'Superproject history: {superproject_history}',
+        '',
+        f'Content pruning: {"yes" if pruning_details else "none"}',
+    ]
+    if pruning_details:
+        lines.append('Pruning details:')
+        lines.extend(f'- {detail}' for detail in pruning_details)
+
+    lines += ['', 'Submodules:']
     if submodule_decisions:
         for decision in submodule_decisions:
+            if decision.omitted:
+                history = 'omitted'
+            elif decision.depth == 0:
+                history = 'source-only (depth 0)'
+            elif decision.depth is None:
+                history = 'full'
+            else:
+                history = f'shallow (depth {decision.depth})'
             lines.extend(
                 [
                     f'- path: {decision.info.path}',
-                    f'  sha: {decision.info.sha}',
+                    f'  commit: {decision.info.sha}',
                     f'  status: {"omitted" if decision.omitted else "included"}',
-                    f'  mode: {decision.mode}',
-                    f'  depth: {_depth_label(decision.depth)}',
+                    f'  history: {history}',
                     f'  reason: {decision.reason}',
                 ]
             )
-    else:
-        lines.append('(none)')
-
-    lines += ['', 'Submodule HEADs included:']
-    included_decisions = [d for d in submodule_decisions if not d.omitted]
-    if included_decisions:
-        for decision in included_decisions:
-            path = decision.info.path
-            src = repo_root / path
-            if src.exists():
-                try:
-                    sub_repo = _coerce_repo(src)
-                    lines.append(f'{sub_repo.head.commit.hexsha} {path}')
-                except RuntimeError:
-                    pass
     else:
         lines.append('(none)')
     manifest.write_text('\n'.join(lines).rstrip() + '\n')
