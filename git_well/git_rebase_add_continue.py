@@ -55,7 +55,9 @@ class GitRebaseAddContinue(kwconf.Config):
 
         fpaths = parsed_rebase_git_status(repo_dpath)
 
-        num_paths = ub.udict(fpaths).map_values(len)
+        num_paths: dict[str, int] = {
+            key: len(paths) for key, paths in fpaths.items()
+        }
         print('num_paths = {}'.format(ub.urepr(num_paths, nl=1)))
 
         if 0:

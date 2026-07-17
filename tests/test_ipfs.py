@@ -22,6 +22,7 @@ def test_quickstat_file(tmp_path):
     fpath = tmp_path / 'data.txt'
     fpath.write_text('data')
     stat = _compute_quickstat(fpath)
+    assert stat is not None
     assert stat['kind'] == 'file'
     assert stat['bytes'] == 4
 

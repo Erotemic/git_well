@@ -28,6 +28,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Report `discover_remote` cross-drive path errors without referencing an uninitialized variable, and gate the network upstream doctest behind `NETWORK==1`.
 * Refuse to overwrite a repository-owned archive information path, including symlinks and dangling symlinks.
 * Write archive information with deterministic LF newlines on every platform.
+* Resolve `ty` and mypy diagnostics in command-output handling, Git URL metadata, CLI registration, and configuration annotations.
 * Make parent submodule exclusions apply to all nested descendants.
 * Report malformed committed gitlinks instead of silently treating submodule discovery failures as an empty submodule set.
 * Keep mixed superproject/submodule history descriptions accurate, avoid duplicate `.git/info/exclude` entries, preserve the caller's working directory, and honor the documented `format=auto` fallback.

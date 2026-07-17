@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import ubelt as ub
 
 
 def rich_print(*args: Any, **kwargs: Any) -> Any:
     try:
-        from rich import print as printer
+        from rich import print as rich_printer
     except Exception:
-        printer: Any = print
-    return printer(*args, **kwargs)
+        return print(*args, **kwargs)
+    else:
+        return rich_printer(*args, **kwargs)
 
 
 def rich_link_path(path: str | os.PathLike[str]) -> str:
@@ -41,24 +42,38 @@ def rich_print_path(
     """
     path_text = os.fspath(path)
     try:
-        from rich import print as printer
+        from rich import print as rich_printer
     except Exception:
-        printer: Any = print
         msg = f'{prefix}{path_text}{suffix}'
+        return print(msg, **kwargs)
     else:
         msg = f'{prefix}{rich_link_path(path_text)}{suffix}'
-    return printer(msg, **kwargs)
+        return rich_printer(msg, **kwargs)
+
+
+def cmd_output_text(output: str | bytes | None) -> str:
+    """Normalize command output into text.
+
+    ``ub.cmd`` can be configured to return text, bytes, or no captured output.
+    Centralizing this conversion keeps call sites honest and makes the expected
+    behavior visible to static type checkers.
+    """
+    if output is None:
+        return ''
+    if isinstance(output, bytes):
+        return output.decode(errors='replace')
+    return output
 
 
 def find_merged_branches(repo: Any, main_branch: str = 'main') -> Any:
     # git branch --merged main
     # main_branch = 'main'
-    merged_branches = [
+    merged_branch_names = [
         p.replace('*', '').strip()
         for p in repo.git.branch(merged=main_branch).split('\n')
         if p.strip()
     ]
-    merged_branches = ub.oset(merged_branches) - {main_branch}
+    merged_branches = ub.oset(merged_branch_names) - {main_branch}
     return merged_branches
 
 
@@ -171,6 +186,21 @@ def find_git_root(dpath: str | os.PathLike[str]) -> ub.Path:
     return found
 
 
+class _GitURLInfoRequired(TypedDict):
+    host: str | None
+    port: int | None
+    group: str
+    repo_name: str
+    repo_endpoint: str
+    user: str | None
+    protocol: str
+    url: str
+
+
+class GitURLInfo(_GitURLInfoRequired, total=False):
+    path: str
+
+
 class GitURL(str):
     """Parse and convert common network Git remote URL forms.
 
@@ -193,7 +223,7 @@ class GitURL(str):
     """
 
     def __init__(self, data: str) -> None:
-        self._info: dict[str, Any] | None = None
+        self._info: GitURLInfo | None = None
 
     @staticmethod
     def _fixup_endpoint(repo_endpoint: str) -> tuple[str, str]:
@@ -224,7 +254,7 @@ class GitURL(str):
         return group, repo_name, repo_endpoint
 
     @property
-    def info(self) -> dict[str, Any]:
+    def info(self) -> GitURLInfo:
         if self._info is not None:
             return self._info
 
@@ -232,7 +262,7 @@ class GitURL(str):
         from urllib.parse import unquote, urlsplit
 
         url = str(self)
-        info: dict[str, Any]
+        info: GitURLInfo
         parsed = urlsplit(url) if '://' in url else None
         if parsed is not None:
             protocol = parsed.scheme.lower()
@@ -246,6 +276,7 @@ class GitURL(str):
                     'user': parsed.username,
                     'protocol': 'file',
                     'path': unquote(parsed.path),
+                    'url': url,
                 }
             elif protocol in {'http', 'https', 'ssh', 'git'}:
                 group, repo_name, repo_endpoint = self._split_repo_path(
@@ -259,6 +290,7 @@ class GitURL(str):
                     'repo_endpoint': repo_endpoint,
                     'user': parsed.username,
                     'protocol': protocol,
+                    'url': url,
                 }
             else:
                 raise ValueError(f'Unsupported Git URL protocol: {protocol!r}')
@@ -282,6 +314,7 @@ class GitURL(str):
                     'repo_endpoint': repo_endpoint,
                     'user': user,
                     'protocol': 'git' if user == 'git' else 'scp',
+                    'url': url,
                 }
             else:
                 local_path = Path(url)
@@ -300,8 +333,8 @@ class GitURL(str):
                     'user': None,
                     'protocol': 'local',
                     'path': url,
+                    'url': url,
                 }
-        info['url'] = url
         self._info = info
         return info
 

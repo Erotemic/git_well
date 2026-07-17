@@ -69,7 +69,8 @@ class GitUrlComponentsCLI(kwconf.Config):
         if config.component is None:
             print(json.dumps(url.info, indent='    '))
         else:
-            print(url.info[config.component])
+            info = dict(url.info)
+            print(info[config.component])
 
 
 __cli__ = GitUrlComponentsCLI

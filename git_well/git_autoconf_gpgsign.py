@@ -58,22 +58,24 @@ class GitAutoconfGpgsignCLI(kwconf.Config):
                 else:
                     infos.append(info)
 
-        identify_file_cands = ub.oset()
+        identify_file_cands: list[ub.Path] = []
         for info in infos:
             for line in info.stderr.split('\n'):
                 if 'identity file' in line:
                     cand = line.split(' ')[3]
                     cand = ub.Path(cand)
-                    if cand.exists():
-                        identify_file_cands.add(cand)
+                    if cand.exists() and cand not in identify_file_cands:
+                        identify_file_cands.append(cand)
 
+        email_candidates: list[str]
         if config.email is None:
-            email_candidates = ub.oset()
+            email_candidates = []
             for id_fpath in identify_file_cands:
                 pub_key_fpath = id_fpath.augment(tail='.pub')
                 if pub_key_fpath.exists():
                     pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
-                    email_candidates.add(pub_email)
+                    if pub_email not in email_candidates:
+                        email_candidates.append(pub_email)
         else:
             email_candidates = [config.email]
 

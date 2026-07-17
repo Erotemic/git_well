@@ -13,7 +13,7 @@ class GitSavePatchCLI(kwconf.Config):
     """
 
     __command__ = 'save'
-    paths = kwconf.Value(
+    paths: list[str] = kwconf.Value(
         [], nargs='+', help='one or more files to save patches from', position=1
     )
     out_dpath = kwconf.Value('patches', help='output directory to save patches')

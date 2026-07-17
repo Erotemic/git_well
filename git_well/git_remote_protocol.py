@@ -2,15 +2,22 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 import kwconf
 import ubelt as ub
 
-from git_well._utils import GitURL
+from git_well._utils import GitURL, cmd_output_text
 
 # TODO: more protocols? ssh?
 VALID_PROTOCOLS: list[str] = ['git', 'https', 'ssh']
+
+
+class RemoteEntry(TypedDict):
+    remote: str
+    key: str
+    index: int
+    url: GitURL
 
 
 class GitRemoteProtocol(kwconf.Config):
@@ -68,10 +75,7 @@ def _config_values(repo: Any, key: str) -> list[str]:
         return []
     if info.returncode:
         raise RuntimeError(f'Unable to read git config key: {key}')
-    stdout = info.stdout or ''
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode(errors='replace')
-    return stdout.splitlines()
+    return cmd_output_text(info.stdout).splitlines()
 
 
 def _replace_config_values(repo: Any, key: str, values: list[str]) -> None:
@@ -124,7 +128,7 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
     if new_protocol not in VALID_PROTOCOLS:
         raise KeyError(new_protocol)
 
-    remote_entries = []
+    remote_entries: list[RemoteEntry] = []
     for remote in repo.remotes:
         for value_name in ['url', 'pushurl']:
             key = f'remote.{remote.name}.{value_name}'
@@ -153,7 +157,7 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
         )
     )
 
-    group = config['group']
+    group = str(config['group'])
     if group == 'special:auto':
         print('Automatically determining group to change protocol for')
         choices = list(
@@ -192,7 +196,7 @@ def main(argv: list[str] | str | bool | None = True, **kwargs: Any) -> None:
 
 
 __cli__ = GitRemoteProtocol
-__cli__.main = main
+setattr(__cli__, 'main', main)
 
 if __name__ == '__main__':
     """

@@ -253,7 +253,7 @@ class ArchiveSourceCLI(kwconf.Config):
             non-glob fallback, e.g. '{"*": 0, special/submod: 100}'.
             """).strip(),
     )
-    exclude_submodule = kwconf.Value(
+    exclude_submodule: list[str] = kwconf.Value(
         [],
         nargs='*',
         alias=['exclude-submodule'],
@@ -777,6 +777,7 @@ def _parse_submodule_depth_spec(
     if spec is None:
         return SubmoduleDepthPolicy(specified=False)
 
+    parsed: Any
     if isinstance(spec, dict):
         parsed = spec
     elif isinstance(spec, int):

@@ -1,3 +1,12 @@
+from typing import Any
+
+
+def _stdout_text(info: Any) -> str:
+    from git_well._utils import cmd_output_text
+
+    return cmd_output_text(info.stdout)
+
+
 def test_cli_main_help():
     """
     Run help for each modal CLI
@@ -11,10 +20,11 @@ def test_cli_main_help():
     except SystemExit:
         ...
 
-    try:
-        sub_commands = [c.__command__ for c in modal.sub_clis]
-    except AttributeError:
+    sub_clis = getattr(modal, 'sub_clis', None)
+    if sub_clis is None:
         sub_commands = [d['command'] for d in modal._subconfig_metadata]
+    else:
+        sub_commands = [c.__command__ for c in sub_clis]
     for command in sub_commands:
         try:
             modal.run(argv=[command, '--help'])
@@ -58,7 +68,9 @@ def test_archive_source_depth_zero_source_only(tmp_path):
     .git metadata are excluded.
     """
     import tarfile
+
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo'
@@ -88,7 +100,9 @@ def test_archive_source_auto_zip(tmp_path):
     Build a source-only zip archive by inferring the format from the extension.
     """
     import zipfile
+
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo_zip'
@@ -116,7 +130,9 @@ def test_archive_source_auto_zip(tmp_path):
 
 def test_archive_source_auto_unknown_extension_falls_back_to_tar_gz(tmp_path):
     import tarfile
+
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo_auto_fallback'
@@ -181,7 +197,9 @@ def test_archive_source_repo_local_config_defaults(tmp_path):
     pytest.skip('TODO: re-enable when kwconf fixes modal default semantics')
 
     import zipfile
+
     import ubelt as ub
+
     from git_well.git_archive_source import ArchiveSourceCLI
 
     repo = tmp_path / 'demo_config'
@@ -206,16 +224,18 @@ def test_archive_source_repo_local_config_defaults(tmp_path):
     assert config_fpath == repo / '.git' / 'config'
     assert not first_archive.exists()
 
-    depth = ub.cmd(
+    depth_info = ub.cmd(
         ['git', 'config', '--local', '--get', 'git-well.archive-source.depth'],
         cwd=repo,
         check=True,
-    ).stdout.strip()
-    format = ub.cmd(
+    )
+    depth = _stdout_text(depth_info).strip()
+    format_info = ub.cmd(
         ['git', 'config', '--local', '--get', 'git-well.archive-source.format'],
         cwd=repo,
         check=True,
-    ).stdout.strip()
+    )
+    format = _stdout_text(format_info).strip()
     assert depth == '0'
     assert format == 'zip'
 
@@ -240,7 +260,9 @@ def test_archive_source_with_history(tmp_path):
     Build a history-preserving archive and ensure it unpacks as a Git checkout.
     """
     import tarfile
+
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo_history'
@@ -265,9 +287,9 @@ def test_archive_source_with_history(tmp_path):
     unpacked = roots[0]
     assert (unpacked / '.git').exists()
     proc = ub.cmd(['git', 'log', '--oneline', '-1'], cwd=unpacked, check=True)
-    assert 'initial' in proc.stdout
+    assert 'initial' in _stdout_text(proc)
     status = ub.cmd(['git', 'status', '--short'], cwd=unpacked, check=True)
-    assert status.stdout.strip() == ''
+    assert _stdout_text(status).strip() == ''
     exclude_text = (unpacked / '.git' / 'info' / 'exclude').read_text()
     assert exclude_text.count('/GIT_WELL_ARCHIVE_INFO.txt') == 1
     info_text = _tar_manifest_text(archive)
@@ -277,6 +299,7 @@ def test_archive_source_with_history(tmp_path):
 
 def test_archive_source_info_paths_status_and_redaction(tmp_path):
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo_info'
@@ -302,11 +325,12 @@ def test_archive_source_info_paths_status_and_redaction(tmp_path):
     default_root = _extract_tar_root(
         default_archive, tmp_path / 'default-extract'
     )
-    origin = ub.cmd(
+    origin_info = ub.cmd(
         ['git', 'remote', 'get-url', 'origin'],
         cwd=default_root,
         check=True,
-    ).stdout.strip()
+    )
+    origin = _stdout_text(origin_info).strip()
     assert origin == str(repo.resolve())
 
     redacted_output = tmp_path / 'redacted-info.tar.gz'
@@ -325,16 +349,17 @@ def test_archive_source_info_paths_status_and_redaction(tmp_path):
     redacted_root = _extract_tar_root(
         redacted_archive, tmp_path / 'redacted-extract'
     )
-    remotes = ub.cmd(
-        ['git', 'remote'], cwd=redacted_root, check=True
-    ).stdout.strip()
+    remote_info = ub.cmd(['git', 'remote'], cwd=redacted_root, check=True)
+    remotes = _stdout_text(remote_info).strip()
     assert remotes == ''
 
 
 def test_archive_source_info_path_collision_is_safe(tmp_path):
     import os
+
     import pytest
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     repo = tmp_path / 'demo_collision'
@@ -363,7 +388,9 @@ def test_rich_link_path_markup():
 
 def test_archive_source_prints_output_directory(tmp_path, monkeypatch):
     import os
+
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     linked_paths = []
@@ -482,6 +509,7 @@ def _extract_tar_root(archive, dst):
 
 def test_archive_source_submodule_depth_spec_resolution():
     import pytest
+
     from git_well.git_archive_source import (
         _depth_label,
         _parse_submodule_depth_spec,
@@ -535,6 +563,7 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
 
 def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'staged_only_src')
@@ -600,6 +629,7 @@ def test_archive_source_submodule_path_with_spaces(tmp_path):
 def test_archive_source_missing_gitmodules_mapping_fails(tmp_path):
     import pytest
     import ubelt as ub
+
     from git_well.git_archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'broken_mapping_src')
@@ -726,6 +756,7 @@ def test_archive_source_excluding_parent_omits_nested_submodules(tmp_path):
 
 def test_archive_source_exclude_submodule_glob_resolution():
     import pytest
+
     from git_well.git_archive_source import (
         SubmoduleStatus,
         _resolve_exclude_submodule_paths,

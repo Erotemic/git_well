@@ -10,6 +10,8 @@ from typing import Any
 import kwconf
 import ubelt as ub
 
+from git_well._utils import cmd_output_text
+
 
 class GitSyncCLI(kwconf.Config):
     """
@@ -96,9 +98,7 @@ def git_default_push_remote_name() -> str | None:
     local_remotes = ub.cmd(['git', 'remote', '-v'], verbose=0)
     if local_remotes.returncode:
         return None
-    stdout = local_remotes.stdout or ''
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode(errors='replace')
+    stdout = cmd_output_text(local_remotes.stdout)
     candidates = []
     for line in stdout.splitlines():
         if not line:
@@ -232,11 +232,10 @@ def git_sync(
         )
 
     remote_cwd = relcwd
-    local_branch_name = ub.cmd(
+    branch_info = ub.cmd(
         ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], check=True
-    ).stdout.strip()
-    if isinstance(local_branch_name, bytes):
-        local_branch_name = local_branch_name.decode()
+    )
+    local_branch_name = cmd_output_text(branch_info.stdout).strip()
     remote_branch_name = local_branch_name
 
     if force and remote is None:
@@ -254,6 +253,8 @@ def git_sync(
 
     remote_parts = [f'cd {shlex.quote(remote_cwd)}']
     if force:
+        if remote is None:
+            raise AssertionError('force sync remote should already be resolved')
         quoted_remote = shlex.quote(remote)
         remote_parts.extend(
             [
@@ -337,7 +338,7 @@ def git_sync(
 
 
 __cli__ = GitSyncCLI
-__cli__.main = main
+setattr(__cli__, 'main', main)
 
 
 if __name__ == '__main__':

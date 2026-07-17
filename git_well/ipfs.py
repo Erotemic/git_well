@@ -934,7 +934,12 @@ class IPFSExportPins(kwconf.Config):
     """Export ``ipfs pin add`` commands for sidecars."""
     __command__ = 'export'
 
-    paths = kwconf.Value([], position=1, nargs='*', help='paths/globs/dirs/.ipfs files; default: .')
+    paths: list[str | os.PathLike[str]] = kwconf.Value(
+        [],
+        position=1,
+        nargs='*',
+        help='paths/globs/dirs/.ipfs files; default: .',
+    )
     recurse = kwconf.Flag(True, help='recurse into directories when scanning')
     dedupe = kwconf.Flag(True, help='deduplicate by CID')
     sort = kwconf.Flag(True, help='sort output for stable scripts')

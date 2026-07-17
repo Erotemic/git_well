@@ -1307,8 +1307,8 @@ def git_squash_streaks(
             print('Finished the dry run. Use -f to force')
 
 
-SquashStreakCLI.main = git_squash_streaks
-main = SquashStreakCLI.main
+setattr(SquashStreakCLI, 'main', git_squash_streaks)
+main = git_squash_streaks
 __cli__ = SquashStreakCLI
 
 
