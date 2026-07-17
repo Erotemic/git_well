@@ -19,6 +19,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Make `branch_cleanup --remove-merged` opt-in instead of deleting all merged branches unconditionally.
+* Make `sync` stage untracked files, propagate commit-hook failures, and check out the intended remote branch before pulling or resetting it.
+* Confine IPFS sidecar pulls to the enclosing worktree by default and atomically replace destinations so stale files cannot survive a CID update.
+* Restore the original branch after `squash`, including in-place operation, and permit an excluded root commit as the squash boundary.
+* Update only remote URL config keys in `remote_protocol`, while supporting nested groups, SCP-style users, local URLs, and SSH ports.
+* Inspect rebase conflicts with NUL-delimited Git plumbing instead of parsing human-readable `git status`.
+* Report `discover_remote` cross-drive path errors without referencing an uninitialized variable, and gate the network upstream doctest behind `NETWORK==1`.
 * Refuse to overwrite a repository-owned archive information path, including symlinks and dangling symlinks.
 * Make parent submodule exclusions apply to all nested descendants.
 * Report malformed committed gitlinks instead of silently treating submodule discovery failures as an empty submodule set.

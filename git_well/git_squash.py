@@ -7,6 +7,7 @@ from typing import Any
 # import ubelt as ub
 import kwconf
 import ubelt as ub
+
 from git_well.git_squash_streaks import (
     _squash_between,
     checkout_temporary_branch,
@@ -129,15 +130,15 @@ def squash_commits(config: Any) -> None:
     if config['dry']:
         print('Dry run finished. No changes made.')
     elif config['inplace']:
-        repo.git.checkout(repo.active_branch.name)
+        repo.git.checkout(orig_branch_name)
         repo.git.reset(temp_branch, hard=True)
         repo.git.branch('-D', temp_branch)
         print('Squash applied. You should now push with --force if needed.')
     else:
-        repo.git.checkout(repo.active_branch.name)
+        repo.git.checkout(orig_branch_name)
         print(f'Squashed branch is: {temp_branch}')
         print('Review the changes with:')
-        print(f'    gitk {repo.active_branch.name} {temp_branch}')
+        print(f'    gitk {orig_branch_name} {temp_branch}')
         print('Run again with --inplace to apply or manually reset.')
 
 

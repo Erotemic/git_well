@@ -11,14 +11,14 @@ Requirements:
 
 from __future__ import annotations
 
-from typing import Any
-import sys
-import os
-import warnings
 import itertools as it
-import ubelt as ub
-import kwconf
+import os
+import sys
+import warnings
+from typing import Any
 
+import kwconf
+import ubelt as ub
 
 EXPERIMENTAL_PSEUDO_CHAIN: int = 0
 EXPERIMENTAL_REBASE: int = 0
@@ -823,6 +823,7 @@ def commits_between(
         >>> assert len(commits2) == 4
     """
     import binascii
+
     import git
 
     if start_inclusive:
@@ -851,11 +852,16 @@ def _squash_between(
     inplace squash between, use external function that sets up temp branches to
     use this directly from the commandline.
     """
-    import git
     import email.utils
 
-    if len(start.parents) != 1:
-        raise AssertionError('cant handle case with multiple parents')
+    import git
+
+    if len(start.parents) > 1:
+        raise AssertionError('cannot squash from a merge commit')
+    if start_inclusive and not start.parents:
+        raise NotImplementedError(
+            'inclusive squashing from a root commit is not supported'
+        )
         # TODO: Is it possible to do the reset --hard trick here?
         # The idea is that you reset --hard onto the branch with the
         # state you want to end up at, you make a list of all the files

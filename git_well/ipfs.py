@@ -183,12 +183,54 @@ def _read_sidecar(fpath: os.PathLike | str) -> dict[str, Any]:
     return data
 
 
-def _tracked_path(sidecar_fpath: os.PathLike | str, meta: dict[str, Any]) -> Path:
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    else:
+        return True
+
+
+def _resolve_tracked_path(
+    dpath: os.PathLike | str,
+    rel_path: os.PathLike | str,
+    *,
+    allowed_root: os.PathLike | str | None = None,
+    allow_external: bool = False,
+) -> Path:
+    dpath = Path(dpath).resolve()
+    raw_path = dpath / os.fspath(rel_path)
+    out_path = raw_path.parent.resolve() / raw_path.name
+    if allowed_root is None:
+        allowed_root = dpath
+    allowed_root = Path(allowed_root).resolve()
+    if not allow_external and not _path_is_within(out_path, allowed_root):
+        raise ValueError(
+            'IPFS sidecar path escapes its allowed root: '
+            f'rel_path={rel_path!r}, root={allowed_root!s}'
+        )
+    return out_path
+
+
+def _tracked_path(
+    sidecar_fpath: os.PathLike | str,
+    meta: dict[str, Any],
+    *,
+    allow_external: bool = False,
+) -> Path:
     sidecar_fpath = Path(sidecar_fpath)
     rel_path = meta.get('rel_path')
     if rel_path is None:
         raise KeyError(f'Missing required "rel_path" field in {sidecar_fpath!s}')
-    return sidecar_fpath.parent / os.fspath(rel_path)
+    repo_root = _git_toplevel(_git_search_dir(sidecar_fpath.parent))
+    allowed_root = repo_root or sidecar_fpath.parent
+    return _resolve_tracked_path(
+        sidecar_fpath.parent,
+        rel_path,
+        allowed_root=allowed_root,
+        allow_external=allow_external,
+    )
 
 
 def _git_toplevel(start: os.PathLike | str) -> Path | None:
@@ -784,6 +826,10 @@ class IPFSPull(kwconf.Config):
     path = kwconf.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
     dry_run = kwconf.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
     recursive = kwconf.Flag(True, help='recurse into directories when scanning')
+    allow_external = kwconf.Flag(
+        False,
+        help='allow rel_path to resolve outside the enclosing git worktree',
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -798,11 +844,26 @@ class IPFSPull(kwconf.Config):
             root_cid = meta['cid']
             rel_path = meta['rel_path']
             dpath = sidecar_fpath.parent
+            repo_root = _git_toplevel(_git_search_dir(dpath))
+            allowed_root = repo_root or dpath
+            tracked_path = _resolve_tracked_path(
+                dpath,
+                rel_path,
+                allowed_root=allowed_root,
+                allow_external=config.allow_external,
+            )
             if config.dry_run:
                 print(f'sidecar={sidecar_fpath}')
+                print(f'tracked_path={tracked_path}')
                 print(_YamlCodec.dumps(meta))
             else:
-                sync_ipfs_pull(root_cid, dpath, rel_path)
+                sync_ipfs_pull(
+                    root_cid,
+                    dpath,
+                    rel_path,
+                    allowed_root=allowed_root,
+                    allow_external=config.allow_external,
+                )
 
 
 @IPFSCLI.register
@@ -1016,44 +1077,50 @@ class IPFSCheckCID(kwconf.Config):
             print(f'{label:<{width}} = {cid}')
 
 
-def sync_ipfs_pull(root_cid: str, dpath: os.PathLike | str, rel_path: os.PathLike | str) -> None:
-    """
-    Download a CID into ``dpath / rel_path`` using a temporary staging path.
-
-    Existing directories are updated with rsync when available, and replaced via
-    a conservative backup/swap fallback otherwise.
-    """
+def sync_ipfs_pull(
+    root_cid: str,
+    dpath: os.PathLike | str,
+    rel_path: os.PathLike | str,
+    *,
+    allowed_root: os.PathLike | str | None = None,
+    allow_external: bool = False,
+) -> None:
+    """Download a CID and atomically replace the tracked path with it."""
     dpath = Path(dpath)
-    out_path = dpath / rel_path
-    dpath.mkdir(parents=True, exist_ok=True)
-    tmp_root = Path(tempfile.mkdtemp(prefix='git-well-ipfs-', dir=os.fspath(dpath)))
+    out_path = _resolve_tracked_path(
+        dpath,
+        rel_path,
+        allowed_root=allowed_root,
+        allow_external=allow_external,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root = Path(
+        tempfile.mkdtemp(
+            prefix='.git-well-ipfs-', dir=os.fspath(out_path.parent)
+        )
+    )
     tmp_path = tmp_root / 'payload'
+    backup_path = tmp_root / 'previous'
+    had_existing = out_path.exists() or out_path.is_symlink()
     try:
-        _run(['ipfs', 'get', '--progress=true', f'--output={tmp_path}', root_cid], verbose=3)
-        if out_path.exists():
-            if out_path.is_dir() and tmp_path.is_dir() and shutil.which('rsync'):
-                _run(['rsync', '-avprP', os.fspath(tmp_path) + '/', os.fspath(out_path)], verbose=3)
-            else:
-                backup = out_path.with_name(out_path.name + '.old')
-                if backup.exists():
-                    if backup.is_dir():
-                        shutil.rmtree(backup)
-                    else:
-                        backup.unlink()
-                out_path.rename(backup)
-                try:
-                    tmp_path.rename(out_path)
-                except Exception:
-                    backup.rename(out_path)
-                    raise
-                else:
-                    if backup.is_dir():
-                        shutil.rmtree(backup)
-                    else:
-                        backup.unlink()
-        else:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                'ipfs',
+                'get',
+                '--progress=true',
+                f'--output={tmp_path}',
+                root_cid,
+            ],
+            verbose=3,
+        )
+        if had_existing:
+            out_path.rename(backup_path)
+        try:
             tmp_path.rename(out_path)
+        except Exception:
+            if had_existing and backup_path.exists():
+                backup_path.rename(out_path)
+            raise
     finally:
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)

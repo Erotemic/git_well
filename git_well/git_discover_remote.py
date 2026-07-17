@@ -134,8 +134,8 @@ class GitDiscoverRemoteCLI(kwconf.Config):
             raise ValueError(
                 (
                     'We assume that you are running relative '
-                    'to your home directory. rel_dpath={}, home={}'
-                ).format(rel_dpath, home)
+                    'to your home directory. root_dpath={}, home={}'
+                ).format(root_dpath, home)
             )
 
         remote_cwd = config.remote_cwd

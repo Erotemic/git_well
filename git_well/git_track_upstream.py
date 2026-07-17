@@ -8,8 +8,9 @@ Requirements:
 from __future__ import annotations
 
 from typing import Any
-import ubelt as ub
+
 import kwconf
+import ubelt as ub
 
 
 class TrackUpstreamCLI(kwconf.Config):
@@ -44,6 +45,7 @@ class TrackUpstreamCLI(kwconf.Config):
     ) -> None:
         """
         Example:
+            >>> # xdoctest: +REQUIRES(env:NETWORK==1)
             >>> from git_well.git_track_upstream import TrackUpstreamCLI
             >>> from git_well.repo import Repo
             >>> repo = Repo.demo()
