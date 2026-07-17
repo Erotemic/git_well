@@ -4,7 +4,37 @@ We are currently working on porting this changelog to the specifications in
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Version 0.3.1 - Unreleased
+## Version 0.3.2 - Unreleased
+
+### Added
+
+* Add `archive_source --submodule-depth` YAML specs for source-only, shallow, full, default, and globbed per-submodule depth policies.
+* Add `archive_source --exclude-submodule` and `--no-submodules` controls for omitting large submodule working trees from source archives.
+* Add `archive_source --redact-local-paths` to omit local source/output paths and generated local clone origins from distributable archives.
+
+### Changed
+
+* Replace the verbose `SOURCE_ARCHIVE_MANIFEST.txt` with a concise `GIT_WELL_ARCHIVE_INFO.txt` receipt that records archive paths, commits, history depth, and intentional pruning without embedding `git status` output.
+* Resolve recursive submodules from committed Git trees instead of the current index, including support for valid paths containing spaces.
+
+### Fixed
+
+* Make `branch_cleanup --remove-merged` opt-in instead of deleting all merged branches unconditionally.
+* Make `sync` stage untracked files, propagate commit-hook failures, and check out the intended remote branch before pulling or resetting it.
+* Confine IPFS sidecar pulls to the enclosing worktree by default and atomically replace destinations so stale files cannot survive a CID update.
+* Restore the original branch after `squash`, including in-place operation, and permit an excluded root commit as the squash boundary.
+* Update only remote URL config keys in `remote_protocol`, while supporting nested groups, SCP-style users, local URLs, and SSH ports.
+* Inspect rebase conflicts with NUL-delimited Git plumbing instead of parsing human-readable `git status`.
+* Report `discover_remote` cross-drive path errors without referencing an uninitialized variable, and gate the network upstream doctest behind `NETWORK==1`.
+* Refuse to overwrite a repository-owned archive information path, including symlinks and dangling symlinks.
+* Write archive information with deterministic LF newlines on every platform.
+* Resolve `ty` and mypy diagnostics in command-output handling, Git URL metadata, CLI registration, and configuration annotations.
+* Make parent submodule exclusions apply to all nested descendants.
+* Report malformed committed gitlinks instead of silently treating submodule discovery failures as an empty submodule set.
+* Keep mixed superproject/submodule history descriptions accurate, avoid duplicate `.git/info/exclude` entries, preserve the caller's working directory, and honor the documented `format=auto` fallback.
+
+
+## Version 0.3.1 - Released 2026-05-16
 
 
 ## Version 0.3.0 - Released 2026-05-16

@@ -15,7 +15,7 @@ Notes:
         git fetch --prune
 
 Requires:
-    scriptconfig
+    kwconf
     git-python
     packaging
     ubelt
@@ -24,11 +24,12 @@ Requires:
 from __future__ import annotations
 
 from typing import Any
+
+import kwconf
 import ubelt as ub
-import scriptconfig as scfg
 
 
-class UpdateDevBranch(scfg.DataConfig):
+class UpdateDevBranch(kwconf.Config):
     """
     Upgrade to the latest "dev" branch. I.e. search for the branch
     ``dev/<version>`` with the greatest semantic version.
@@ -36,7 +37,7 @@ class UpdateDevBranch(scfg.DataConfig):
     """
 
     __command__: str = 'branch_upgrade'
-    repo_dpath: scfg.Value = scfg.Value(
+    repo_dpath: str = kwconf.Value(
         '.', position=1, help='location of the repo'
     )
 
@@ -154,8 +155,9 @@ def dev_branches(repo: Any) -> list[dict[str, Any]]:
 
     dev_infos = []
     for info in branch_infos:
-        if info['branch_name'].startswith('dev/'):
-            vstr = info['branch_name'].split('/')[-1]
+        branch_name = info.get('branch_name')
+        if isinstance(branch_name, str) and branch_name.startswith('dev/'):
+            vstr = branch_name.split('/')[-1]
             try:
                 info['version'] = Version(vstr)
             except Exception:

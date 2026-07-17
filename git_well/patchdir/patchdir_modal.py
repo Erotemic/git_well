@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import scriptconfig as scfg
+import kwconf
 
 
-class GitWellPatchDirModalCLI(scfg.ModalCLI):
+class GitWellPatchDirModalCLI(kwconf.ModalCLI):
     """
     Subcommands for handling patch directories
     """

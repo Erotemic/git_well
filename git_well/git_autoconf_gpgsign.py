@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf
 import ubelt as ub
 
 
-class GitAutoconfGpgsignCLI(scfg.DataConfig):
+class GitAutoconfGpgsignCLI(kwconf.Config):
     __command__ = 'autoconf-gpg'
 
-    remote = scfg.Value(None, help='param1')
-    repo_dpath = scfg.Value('.', help='repo to set gpg for')
-    email = scfg.Value(
+    remote = kwconf.Value(None, help='param1')
+    repo_dpath = kwconf.Value('.', help='repo to set gpg for')
+    email = kwconf.Value(
         None,
         help='The email the the signing GPG key is associated with. If unspecified attempt to infer via ssh credentials',
     )
@@ -58,22 +58,24 @@ class GitAutoconfGpgsignCLI(scfg.DataConfig):
                 else:
                     infos.append(info)
 
-        identify_file_cands = ub.oset()
+        identify_file_cands: list[ub.Path] = []
         for info in infos:
             for line in info.stderr.split('\n'):
                 if 'identity file' in line:
                     cand = line.split(' ')[3]
                     cand = ub.Path(cand)
-                    if cand.exists():
-                        identify_file_cands.add(cand)
+                    if cand.exists() and cand not in identify_file_cands:
+                        identify_file_cands.append(cand)
 
+        email_candidates: list[str]
         if config.email is None:
-            email_candidates = ub.oset()
+            email_candidates = []
             for id_fpath in identify_file_cands:
                 pub_key_fpath = id_fpath.augment(tail='.pub')
                 if pub_key_fpath.exists():
                     pub_email = pub_key_fpath.read_text().strip().split(' ')[-1]
-                    email_candidates.add(pub_email)
+                    if pub_email not in email_candidates:
+                        email_candidates.append(pub_email)
         else:
             email_candidates = [config.email]
 
@@ -254,8 +256,15 @@ def lookup_gpg_keyinfos(
 
     if mintrust:
         mintrust_level = TRUST_CODE_TO_LEVEL[mintrust]
+
+        def _candidate_trust_level(candidate):
+            value = candidate.get('trust_level', 6)
+            if isinstance(value, int):
+                return value
+            return int(value)
+
         candidates = [
-            c for c in candidates if c.get('trust_level', 6) <= mintrust_level
+            c for c in candidates if _candidate_trust_level(c) <= mintrust_level
         ]
 
     return candidates

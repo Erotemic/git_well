@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, cast
 import os
+from typing import Any, cast
+
 import git
 import ubelt as ub
 
@@ -66,8 +67,9 @@ class Repo(git.Repo):
         Returns:
             Repo
         """
-        from git_well._utils import find_git_root
         import os
+
+        from git_well._utils import find_git_root
 
         if isinstance(data, cls):
             self = data
@@ -99,10 +101,10 @@ class Repo(git.Repo):
     def find_merged_branches(repo: Repo, main_branch: str = 'main') -> Any:
         # git branch --merged main
         # main_branch = 'main'
-        merged_branches = [
+        merged_branch_names = [
             p.replace('*', '').strip()
             for p in repo.git.branch(merged=main_branch).split('\n')
             if p.strip()
         ]
-        merged_branches = ub.oset(merged_branches) - {main_branch}
+        merged_branches = ub.oset(merged_branch_names) - {main_branch}
         return merged_branches

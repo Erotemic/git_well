@@ -1,17 +1,20 @@
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
 from typing import Any
 
 # import ubelt as ub
-import scriptconfig as scfg
+import kwconf
 import ubelt as ub
+
 from git_well.git_squash_streaks import (
     _squash_between,
     checkout_temporary_branch,
 )
 
 
-class GitSquashCLI(scfg.DataConfig):
+class GitSquashCLI(kwconf.Config):
     """
     Squash all commits between two points (usually main and HEAD).
     This CLI is experimental and designed to eventually supercede
@@ -20,27 +23,27 @@ class GitSquashCLI(scfg.DataConfig):
 
     __command__ = 'squash'
 
-    oldest = scfg.Value('main', help='The oldest commit to sqash onto')
-    newest = scfg.Value(
+    oldest = kwconf.Value('main', help='The oldest commit to sqash onto')
+    newest = kwconf.Value(
         'HEAD', help='The latest commit to be included in the squash'
     )
 
-    inplace = scfg.Value(
+    inplace = kwconf.Value(
         False, isflag=True, help='Apply squash directly to current branch'
     )
-    dry = scfg.Value(True, isflag=True, short_alias=['n'], help='Dry run')
-    force = scfg.Value(
+    dry = kwconf.Value(True, isflag=True, short_alias=['n'], help='Dry run')
+    force = kwconf.Value(
         None,
         isflag=True,
         short_alias=['f'],
         help='Force squash (opposite of dry)',
     )
-    verbose = scfg.Value(
+    verbose = kwconf.Value(
         True, isflag=True, short_alias=['v'], help='Print progress'
     )
-    dpath = scfg.Value('.', help='Path to repo to squash in')
+    dpath = kwconf.Value('.', help='Path to repo to squash in')
 
-    auto_rollback = scfg.Value(
+    auto_rollback = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -127,15 +130,15 @@ def squash_commits(config: Any) -> None:
     if config['dry']:
         print('Dry run finished. No changes made.')
     elif config['inplace']:
-        repo.git.checkout(repo.active_branch.name)
+        repo.git.checkout(orig_branch_name)
         repo.git.reset(temp_branch, hard=True)
         repo.git.branch('-D', temp_branch)
         print('Squash applied. You should now push with --force if needed.')
     else:
-        repo.git.checkout(repo.active_branch.name)
+        repo.git.checkout(orig_branch_name)
         print(f'Squashed branch is: {temp_branch}')
         print('Review the changes with:')
-        print(f'    gitk {repo.active_branch.name} {temp_branch}')
+        print(f'    gitk {orig_branch_name} {temp_branch}')
         print('Run again with --inplace to apply or manually reset.')
 
 

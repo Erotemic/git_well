@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
 """
@@ -8,12 +10,12 @@ SeeAlso:
 #!/usr/bin/env python3
 from typing import Any
 
-import scriptconfig as scfg
+import kwconf
 import ubelt as ub
 
 
-class GitStatsCLI(scfg.DataConfig):
-    repo_dpath = scfg.Value('.', help='param1', position=1)
+class GitStatsCLI(kwconf.Config):
+    repo_dpath = kwconf.Value('.', help='param1', position=1)
 
     @classmethod
     def main(

@@ -2,10 +2,10 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
-import scriptconfig as scfg
+import kwconf
 
 
-class GitWellModalCLI(scfg.ModalCLI):
+class GitWellModalCLI(kwconf.ModalCLI):
     # When adding a new top-level CLI, need to update:
     # ~/code/git_well/pyproject.toml
     from git_well.git_squash_streaks import __cli__ as squash_streaks

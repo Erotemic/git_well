@@ -1,27 +1,79 @@
 from __future__ import annotations
 
-from typing import Any
 import os
+from pathlib import Path
+from typing import Any, TypedDict
+
 import ubelt as ub
 
 
 def rich_print(*args: Any, **kwargs: Any) -> Any:
     try:
-        from rich import print as printer
+        from rich import print as rich_printer
     except Exception:
-        printer: Any = print
-    return printer(*args, **kwargs)
+        return print(*args, **kwargs)
+    else:
+        return rich_printer(*args, **kwargs)
+
+
+def rich_link_path(path: str | os.PathLike[str]) -> str:
+    """
+    Return rich markup that makes a filesystem path clickable.
+
+    This intentionally uses rich's link markup form so terminals that support
+    hyperlinks can open local paths directly. Callers should print this with
+    :func:`rich_print` or :func:`rich_print_path` when rich is available.
+    """
+    path_text = os.fspath(path)
+    return f'[link={path_text}]{path_text}[/link]'
+
+
+def rich_print_path(
+    prefix: str,
+    path: str | os.PathLike[str],
+    suffix: str = '',
+    **kwargs: Any,
+) -> Any:
+    """
+    Print a filesystem path as a rich hyperlink when rich is available.
+
+    If rich cannot be imported, fall back to builtin :func:`print` with the
+    plain path text so users do not see raw rich markup.
+    """
+    path_text = os.fspath(path)
+    try:
+        from rich import print as rich_printer
+    except Exception:
+        msg = f'{prefix}{path_text}{suffix}'
+        return print(msg, **kwargs)
+    else:
+        msg = f'{prefix}{rich_link_path(path_text)}{suffix}'
+        return rich_printer(msg, **kwargs)
+
+
+def cmd_output_text(output: str | bytes | None) -> str:
+    """Normalize command output into text.
+
+    ``ub.cmd`` can be configured to return text, bytes, or no captured output.
+    Centralizing this conversion keeps call sites honest and makes the expected
+    behavior visible to static type checkers.
+    """
+    if output is None:
+        return ''
+    if isinstance(output, bytes):
+        return output.decode(errors='replace')
+    return output
 
 
 def find_merged_branches(repo: Any, main_branch: str = 'main') -> Any:
     # git branch --merged main
     # main_branch = 'main'
-    merged_branches = [
+    merged_branch_names = [
         p.replace('*', '').strip()
         for p in repo.git.branch(merged=main_branch).split('\n')
         if p.strip()
     ]
-    merged_branches = ub.oset(merged_branches) - {main_branch}
+    merged_branches = ub.oset(merged_branch_names) - {main_branch}
     return merged_branches
 
 
@@ -50,7 +102,7 @@ def choice_prompt(msg: str, choices: list[str]) -> str:
         choice_prompt('which one?', choices=['a', 'b', 'c'])
     """
     try:
-        from rich.prompt import Prompt, InvalidResponse
+        from rich.prompt import InvalidResponse, Prompt
     except ImportError:
         print('Rich is required here')
         raise
@@ -134,184 +186,195 @@ def find_git_root(dpath: str | os.PathLike[str]) -> ub.Path:
     return found
 
 
+class _GitURLInfoRequired(TypedDict):
+    host: str | None
+    port: int | None
+    group: str
+    repo_name: str
+    repo_endpoint: str
+    user: str | None
+    protocol: str
+    url: str
+
+
+class GitURLInfo(_GitURLInfoRequired, total=False):
+    path: str
+
+
 class GitURL(str):
-    """
-    Represents a url to a git repo and can parse info about / modify the
-    protocol
+    """Parse and convert common network Git remote URL forms.
 
-    References:
-        https://git-scm.com/docs/git-clone#_git_urls
-
-    CommandLine:
-        xdoctest -m git_well.git_remote_protocol GitURL
+    Local paths are parsed so callers can inspect or skip them, but they cannot
+    be converted into a network URL without an explicit host.
 
     Example:
-        >>> from git_well.git_remote_protocol import *  # NOQA
-        >>> from git_well._utils import *  # NOQA
+        >>> from git_well._utils import GitURL
         >>> urls = [
-        >>>     GitURL('https://foo.bar/user/repo.git'),
-        >>>     GitURL('ssh://foo.bar/user/repo.git'),
-        >>>     GitURL('ssh://git@foo.bar/user/repo.git'),
-        >>>     GitURL('git@foo.bar:group/repo.git'),
-        >>>     GitURL('host:path/to/my/repo/.git'),
+        >>>     GitURL('https://foo.bar/group/subgroup/repo.git'),
+        >>>     GitURL('ssh://git@foo.bar:2222/group/repo.git'),
+        >>>     GitURL('alice@foo.bar:group/repo.git'),
+        >>>     GitURL('/home/me/repo.git'),
         >>> ]
-        >>> for url in urls:
-        >>>     info = url.info
-        >>>     print('---')
-        >>>     print(f'url = {url}')
-        >>>     print(ub.urepr(info))
-        >>>     print('As git   : ' + url.to_git())
-        >>>     print('As ssh   : ' + url.to_ssh())
-        >>>     print('As https : ' + url.to_https())
-        >>>     if info['protocol'] not in {'scp'}:
-        >>>         # SCP recon is broken
-        >>>         recon = url.to_protocol(info['protocol'])
-        >>>         assert recon == url
+        >>> assert urls[0].info['group'] == 'group/subgroup'
+        >>> assert urls[0].info['repo_name'] == 'repo'
+        >>> assert urls[1].to_ssh() == urls[1]
+        >>> assert urls[2].info['user'] == 'alice'
+        >>> assert urls[3].info['protocol'] == 'local'
     """
 
     def __init__(self, data: str) -> None:
-        # note: inheriting from str so data is handled in __new__
-        self._info: dict[str, Any] | None = None
+        self._info: GitURLInfo | None = None
 
-    def _parse(self) -> None:
-        import parse
-
-        parse.Parser('ssh://{user}')
-
-    def _fixup_endpoint(self, repo_endpoint: str) -> tuple[str, str]:
-        if repo_endpoint.endswith('.git'):
+    @staticmethod
+    def _fixup_endpoint(repo_endpoint: str) -> tuple[str, str]:
+        if repo_endpoint.endswith('/.git'):
+            repo_name = repo_endpoint[: -len('/.git')].rsplit('/', 1)[-1]
+        elif repo_endpoint.endswith('.git'):
             repo_name = repo_endpoint[:-4]
         else:
             repo_name = repo_endpoint
             repo_endpoint = repo_name + '.git'
         return repo_name, repo_endpoint
 
+    @classmethod
+    def _split_repo_path(cls, path: str) -> tuple[str, str, str]:
+        path = path.strip('/')
+        if not path:
+            raise ValueError('Git remote URL does not contain a repository path')
+        parts = path.split('/')
+        if parts[-1] == '.git':
+            if len(parts) < 2:
+                raise ValueError(f'Invalid explicit-directory Git URL: {path!r}')
+            repo_endpoint = parts[-2] + '/.git'
+            repo_name = parts[-2]
+            group = '/'.join(parts[:-2])
+        else:
+            repo_name, repo_endpoint = cls._fixup_endpoint(parts[-1])
+            group = '/'.join(parts[:-1])
+        return group, repo_name, repo_endpoint
+
     @property
-    def info(self) -> dict[str, Any]:
-        if self._info is None:
-            url = self
-            info = {}
-            if url.startswith('https://'):
-                parts = url.split('https://')[1].split('/', 3)
-                repo_endpoint = parts[2]
-                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
-                info['host'] = parts[0]
-                info['group'] = parts[1]
-                info['repo_name'] = repo_name
-                info['repo_endpoint'] = repo_endpoint
-                info['user'] = None
-                info['protocol'] = 'https'
-            elif url.startswith('http://'):
-                # Coerce http to https
-                parts = url.split('http://')[1].split('/', 3)
-                repo_endpoint = parts[2]
-                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
-                info['host'] = parts[0]
-                info['group'] = parts[1]
-                info['repo_name'] = repo_name
-                info['repo_endpoint'] = repo_endpoint
-                info['user'] = None
-                info['protocol'] = 'http'
-            elif url.startswith('git@'):
-                parts = url.split('git@')[1].split(':')
-                repo_endpoint = parts[1].split('/')[1]
-                repo_name, repo_endpoint = self._fixup_endpoint(repo_endpoint)
-                info['host'] = parts[0]
-                info['group'] = parts[1].split('/')[0]
-                info['repo_name'] = repo_name
-                info['repo_endpoint'] = repo_endpoint
-                info['user'] = 'git'
-                info['protocol'] = 'git'
-            elif url.startswith('ssh://'):
-                parts = url.split('ssh://')[1].split('/', 3)
-                user = None
-                if '@' in parts[0]:
-                    user, host = parts[0].split('@')
-                else:
-                    host = parts[0]
-                repo_name, repo_endpoint = self._fixup_endpoint(parts[2])
-                info['host'] = host
-                info['user'] = user
-                info['group'] = parts[1]
-                info['repo_name'] = repo_name
-                info['repo_endpoint'] = repo_endpoint
-                info['protocol'] = 'ssh'
-            elif url.endswith('/.git'):
-                # An ssh protocol to an explicit directory
-                host, rest = url.split(':', 1)
-                parts = rest.rsplit('/', 2)
-                info['host'] = host
-                info['group'] = parts[0]
-                info['repo_name'] = parts[1]
-                info['repo_endpoint'] = parts[1] + '/.git'
-                info['protocol'] = 'scp'
-            elif '//' not in url and '@' not in url:
-                parts = url.split(':')
-                repo_name, repo_endpoint = self._fixup_endpoint(
-                    parts[1].split('/')[1]
+    def info(self) -> GitURLInfo:
+        if self._info is not None:
+            return self._info
+
+        import re
+        from urllib.parse import unquote, urlsplit
+
+        url = str(self)
+        info: GitURLInfo
+        parsed = urlsplit(url) if '://' in url else None
+        if parsed is not None:
+            protocol = parsed.scheme.lower()
+            if protocol == 'file':
+                info = {
+                    'host': parsed.hostname,
+                    'port': parsed.port,
+                    'group': '',
+                    'repo_name': Path(unquote(parsed.path)).stem,
+                    'repo_endpoint': Path(unquote(parsed.path)).name,
+                    'user': parsed.username,
+                    'protocol': 'file',
+                    'path': unquote(parsed.path),
+                    'url': url,
+                }
+            elif protocol in {'http', 'https', 'ssh', 'git'}:
+                group, repo_name, repo_endpoint = self._split_repo_path(
+                    unquote(parsed.path)
                 )
-                info['host'] = parts[0]
-                info['group'] = parts[1].split('/')[0]
-                info['repo_name'] = repo_name
-                info['repo_endpoint'] = repo_endpoint
-                info['protocol'] = 'ssh'
+                info = {
+                    'host': parsed.hostname,
+                    'port': parsed.port,
+                    'group': group,
+                    'repo_name': repo_name,
+                    'repo_endpoint': repo_endpoint,
+                    'user': parsed.username,
+                    'protocol': protocol,
+                    'url': url,
+                }
             else:
-                raise ValueError(url)
-            info['url'] = url
-            self._info = info
-        return self._info
+                raise ValueError(f'Unsupported Git URL protocol: {protocol!r}')
+        else:
+            scp_match = re.match(
+                r'^(?:(?P<user>[^/@:]+)@)?'
+                r'(?P<host>[^/:\\]+):(?P<path>.+)$',
+                url,
+            )
+            is_windows_drive = bool(re.match(r'^[A-Za-z]:[\\/]', url))
+            if scp_match and not is_windows_drive:
+                group, repo_name, repo_endpoint = self._split_repo_path(
+                    scp_match.group('path')
+                )
+                user = scp_match.group('user')
+                info = {
+                    'host': scp_match.group('host'),
+                    'port': None,
+                    'group': group,
+                    'repo_name': repo_name,
+                    'repo_endpoint': repo_endpoint,
+                    'user': user,
+                    'protocol': 'git' if user == 'git' else 'scp',
+                    'url': url,
+                }
+            else:
+                local_path = Path(url)
+                endpoint = local_path.name
+                if endpoint == '.git':
+                    repo_name = local_path.parent.name
+                    endpoint = repo_name + '/.git'
+                else:
+                    repo_name, endpoint = self._fixup_endpoint(endpoint)
+                info = {
+                    'host': None,
+                    'port': None,
+                    'group': '',
+                    'repo_name': repo_name,
+                    'repo_endpoint': endpoint,
+                    'user': None,
+                    'protocol': 'local',
+                    'path': url,
+                    'url': url,
+                }
+        self._info = info
+        return info
+
+    def _network_path(self) -> str:
+        info = self.info
+        if not info.get('host'):
+            raise ValueError(f'Cannot convert local Git URL: {self!s}')
+        parts = [info['group'], info['repo_endpoint']]
+        return '/'.join(part for part in parts if part)
 
     def to_protocol(self, protocol: str) -> GitURL:
-        """
-        Convert the URL to a different protocol
-        """
         if protocol == 'git':
             return self.to_git()
-        elif protocol in {'ssh', 'scp'}:
+        if protocol in {'ssh', 'scp'}:
             return self.to_ssh()
-        elif protocol == 'https':
+        if protocol == 'https':
             return self.to_https()
-        else:
-            raise KeyError(protocol)
+        raise KeyError(protocol)
 
     def to_git(self) -> GitURL:
         info = self.info
-        new_url = (
-            'git@'
-            + info['host']
-            + ':'
-            + info['group']
-            + '/'
-            + info['repo_endpoint']
-        )
-        return self.__class__(new_url)
+        path = self._network_path()
+        host = info['host']
+        if info.get('port') is not None:
+            return self.__class__(
+                f"ssh://git@{host}:{info['port']}/{path}"
+            )
+        return self.__class__(f'git@{host}:{path}')
 
     def to_ssh(self) -> GitURL:
         info = self.info
-        user = info.get('user', None)
-        if user is None:
-            user_part = ''
-        else:
-            user_part = user + '@'
-        new_url = (
-            'ssh://'
-            + user_part
-            + info['host']
-            + '/'
-            + info['group']
-            + '/'
-            + info['repo_endpoint']
+        path = self._network_path()
+        user = info.get('user')
+        user_part = '' if user is None else user + '@'
+        port_part = '' if info.get('port') is None else f":{info['port']}"
+        return self.__class__(
+            f"ssh://{user_part}{info['host']}{port_part}/{path}"
         )
-        return self.__class__(new_url)
 
     def to_https(self) -> GitURL:
         info = self.info
-        new_url = (
-            'https://'
-            + info['host']
-            + '/'
-            + info['group']
-            + '/'
-            + info['repo_endpoint']
-        )
-        return self.__class__(new_url)
+        path = self._network_path()
+        return self.__class__(f"https://{info['host']}/{path}")

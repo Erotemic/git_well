@@ -3,25 +3,26 @@
 from __future__ import annotations
 
 from typing import Any
+
+import kwconf
 import ubelt as ub
-import scriptconfig as scfg
 
 
-class CleanDevBranchConfig(scfg.DataConfig):
+class CleanDevBranchConfig(kwconf.Config):
     """
     Cleanup branches that have been merged into main.
     """
 
     __command__: str = 'branch_cleanup'
 
-    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
-    keep_last: scfg.Value = scfg.Value(
+    repo_dpath: str = kwconf.Value('.', help='location of the repo')
+    keep_last: int = kwconf.Value(
         1, help='previous number of dev branches to keep'
     )
-    remove_merged: scfg.Value = scfg.Value(
+    remove_merged: bool = kwconf.Value(
         False, isflag=True, help='if True, remove other merged branhes as well'
     )
-    yes: scfg.Value = scfg.Value(
+    yes: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['-y'],
@@ -50,9 +51,9 @@ class CleanDevBranchConfig(scfg.DataConfig):
             >>> cls.main(argv=argv, **kwargs)
         """
         config = cls.cli(argv=argv, data=kwargs)
-        from git_well.repo import Repo
         from git_well._utils import rich_print
         from git_well.git_branch_upgrade import dev_branches
+        from git_well.repo import Repo
 
         rich_print('config = {}'.format(ub.urepr(config, nl=1)))
         keep_last = config.keep_last
@@ -68,13 +69,15 @@ class CleanDevBranchConfig(scfg.DataConfig):
         )
         remove_branches = versioned_branch_names[0:-keep_last]
 
-        try:
-            merged_branches = repo.find_merged_branches('main')
-        except Exception:
-            merged_branches = repo.find_merged_branches('origin/main')
-        remove_branches = list(
-            ub.oset(remove_branches) | ub.oset(merged_branches) - {'release'}
-        )
+        if config.remove_merged:
+            try:
+                merged_branches = repo.find_merged_branches('main')
+            except Exception:
+                merged_branches = repo.find_merged_branches('origin/main')
+            remove_branches = list(
+                ub.oset(remove_branches)
+                | (ub.oset(merged_branches) - {'release'})
+            )
 
         print('remove_branches = {}'.format(ub.urepr(remove_branches, nl=1)))
         if not remove_branches:

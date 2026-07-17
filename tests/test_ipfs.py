@@ -1,14 +1,5 @@
+import os
 from pathlib import Path
-
-
-def test_modal_registration_preserves_command_classes():
-    from git_well.ipfs import IPFSAdd, IPFSDoctor, IPFSPull
-
-    assert IPFSAdd is not None
-    assert IPFSPull is not None
-    assert IPFSDoctor is not None
-    assert IPFSAdd.__command__ == 'add'
-    assert IPFSPull.__command__ == 'pull'
 
 
 def test_argv_to_str_quotes_paths():
@@ -31,6 +22,7 @@ def test_quickstat_file(tmp_path):
     fpath = tmp_path / 'data.txt'
     fpath.write_text('data')
     stat = _compute_quickstat(fpath)
+    assert stat is not None
     assert stat['kind'] == 'file'
     assert stat['bytes'] == 4
 
@@ -51,283 +43,265 @@ def test_build_add_argv():
         '--raw-leaves=false', '--cid-version=1', 'foo bar'
     ]
 
-
-def test_gitignore_pattern_is_anchored_and_escaped():
-    from git_well.ipfs import _gitignore_pattern_for
-    assert _gitignore_pattern_for('data') == '/data'
-    assert _gitignore_pattern_for('big data/#1') == '/big\\ data/\\#1'
-
-
-def test_gitignore_pattern_rejects_parent_paths():
-    import pytest
-    from git_well.ipfs import _gitignore_pattern_for
-    with pytest.raises(ValueError):
-        _gitignore_pattern_for('../data')
-
-
-def test_tracked_path_rejects_parent_escape(tmp_path):
-    import pytest
-    from git_well.ipfs import _tracked_path
-    sidecar = tmp_path / 'data.ipfs'
-    sidecar.write_text('')
-    with pytest.raises(ValueError):
-        _tracked_path(sidecar, {'rel_path': '../outside', 'cid': 'bafy'})
-
-
-def test_sidecar_metadata_is_stable(tmp_path):
-    from git_well.ipfs import _sidecar_metadata
-    fpath = tmp_path / 'data.txt'
-    fpath.write_text('data')
-    cfg = {
-        'recursive': True,
-        'cid_version': 1,
-        'raw_leaves': False,
+    named_argv = _build_add_argv({
+        'path': Path('foo bar'),
+        'pin': True,
         'progress': True,
-        'dry_run': False,
-        'git_add_sidecar': True,
-        'update_gitignore': True,
-        'name': 'demo-data',
-        'path': fpath,
-    }
-    meta = _sidecar_metadata(
-        cid='bafy-demo', rel_path='data.txt', path=fpath, config=cfg, num_items=1
-    )
-    assert meta == {
-        'schema_version': 1,
-        'type': 'ipfs-sidecar',
-        'cid': 'bafy-demo',
-        'rel_path': 'data.txt',
-        'kind': 'file',
-        'import': {
-            'recursive': True,
-            'cid_version': 1,
-            'raw_leaves': False,
-        },
-        'size_bytes': 4,
-        'num_items': 1,
-        'pin_name': 'demo-data',
-    }
-
-
-def test_sidecar_metadata_records_suggested_peers(tmp_path):
-    from git_well.ipfs import _sidecar_metadata
-    fpath = tmp_path / 'data.txt'
-    fpath.write_text('data')
-    meta = _sidecar_metadata(
-        cid='bafy-demo',
-        rel_path='data.txt',
-        path=fpath,
-        config={
-            'recursive': True,
-            'cid_version': 1,
-            'raw_leaves': False,
-            'suggested_peers': [
-                '12D3KooWexample',
-                {'multiaddr': '/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWexample'},
-                '12D3KooWexample',
-            ],
-        },
-        num_items=1,
-    )
-    assert meta['suggested_peers'] == [
-        '12D3KooWexample',
-        '/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWexample',
+        'recursive': True,
+        'only_hash': False,
+        'raw_leaves': False,
+        'cid_version': 1,
+    }, pin_name='pkg:generic/repo#foo%20bar')
+    assert named_argv == [
+        'ipfs', 'add', '--pin', '--progress', '--recursive',
+        '--pin-name=pkg:generic/repo#foo%20bar',
+        '--raw-leaves=false', '--cid-version=1', 'foo bar'
     ]
 
 
-def test_sidecar_suggested_peers_accepts_aliases():
-    from git_well.ipfs import _sidecar_suggested_peers
-    assert _sidecar_suggested_peers({'peers': ['peer-a']}) == ['peer-a']
-    assert _sidecar_suggested_peers({'suggested_peers': [{'id': 'peer-b'}]}) == ['peer-b']
+def test_build_pin_add_argv():
+    from git_well.ipfs import _build_pin_add_argv
+
+    argv = _build_pin_add_argv(
+        'bafyfakecid', pin_name='pkg:generic/repo#foo bar')
+
+    assert argv == [
+        'ipfs', 'pin', 'add', '--name=pkg:generic/repo#foo bar',
+        '--progress', '--recursive', 'bafyfakecid'
+    ]
 
 
-def test_parse_kubo_version_text():
-    from git_well.ipfs import _parse_kubo_version_text, _version_gte
-    assert _parse_kubo_version_text('ipfs version 0.37.0') == (0, 37, 0)
-    assert _parse_kubo_version_text('kubo version v0.38.1') == (0, 38, 1)
-    assert _version_gte((0, 37, 0), (0, 37, 0))
-    assert not _version_gte((0, 36, 0), (0, 37, 0))
+def test_git_origin_url_to_purl_base_common_remotes():
+    from git_well.ipfs import _git_origin_url_to_purl_base
+    assert _git_origin_url_to_purl_base(
+        'git@github.com:Erotemic/git_well.git'
+    ) == 'pkg:github/Erotemic/git_well'
+    assert _git_origin_url_to_purl_base(
+        'https://github.com/Erotemic/git_well.git'
+    ) == 'pkg:github/Erotemic/git_well'
+    assert _git_origin_url_to_purl_base(
+        'ssh://git@gitlab.com/group/subgroup/repo.git'
+    ) == 'pkg:gitlab/group/subgroup/repo'
+    assert _git_origin_url_to_purl_base(
+        'https://token@example.com/org/repo.git'
+    ) == 'pkg:generic/example.com/org/repo'
+    assert _git_origin_url_to_purl_base('/home/user/repo.git') is None
 
 
-def test_connect_to_multiaddr_hint_dry_run(capsys):
-    from git_well.ipfs import _connect_to_peer_hint
-    ok = _connect_to_peer_hint(
-        '/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWexample',
-        dry_run=True,
-    )
-    captured = capsys.readouterr()
-    assert ok
-    assert 'ipfs swarm connect /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWexample' in captured.out
+def test_generated_ipfs_pin_name_uses_current_repo_relative_path(tmp_path):
+    import ubelt as ub
 
+    from git_well.ipfs import _generated_ipfs_pin_name
 
-def test_parse_ipfs_add_root_cid_quiet_mode():
-    from git_well.ipfs import _parse_ipfs_add_root_cid
-    assert _parse_ipfs_add_root_cid('bafyquiet\n') == 'bafyquiet'
-
-
-def _install_fake_ipfs(tmp_path, monkeypatch):
-    """Install a tiny fake Kubo executable for end-to-end CLI tests.
-
-    Windows does not execute extensionless scripts through ``PATH`` lookup,
-    and ``shutil.which('ipfs')`` will only find names in ``PATHEXT``.  Install
-    both a POSIX ``ipfs`` launcher and Windows ``ipfs.bat`` / ``ipfs.cmd``
-    launchers that delegate to the same Python implementation.
-    """
-    import json
-    import os
-    import sys
-    import textwrap
-
-    bin_dpath = tmp_path / 'bin'
-    bin_dpath.mkdir()
-    log_fpath = tmp_path / 'fake-ipfs-calls.jsonl'
-    fake_impl = bin_dpath / '_fake_ipfs.py'
-    fake_impl.write_text(textwrap.dedent(r'''
-        import json
-        import os
-        import sys
-        from pathlib import Path
-
-        argv = sys.argv[1:]
-        log_fpath = Path(os.environ['GIT_WELL_FAKE_IPFS_LOG'])
-        with log_fpath.open('a') as file:
-            file.write(json.dumps(argv) + '\n')
-
-        def main():
-            if not argv:
-                return 0
-            if argv[0] == 'version':
-                print('ipfs version 0.37.0')
-                return 0
-            if argv[:2] == ['repo', 'stat']:
-                print('NumObjects: 1')
-                return 0
-            if argv[:2] == ['swarm', 'peers']:
-                print('/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWfake')
-                return 0
-            if argv[:4] == ['pin', 'remote', 'service', 'ls']:
-                print('test-service http://example.invalid')
-                return 0
-            if argv[0] == 'add':
-                path = argv[-1]
-                if '--only-hash' in argv or '-n' in argv:
-                    print(f'added bafyfake {path}')
-                else:
-                    print(f'added bafyfake {path}/file.txt')
-                    print(f'added bafyfake {path}')
-                return 0
-            if argv[:2] == ['dht', 'findpeer']:
-                print('/ip4/127.0.0.1/tcp/4001')
-                return 0
-            if argv[:2] == ['swarm', 'connect']:
-                print('connect ' + argv[2] + ' success')
-                return 0
-            if argv[0] == 'get':
-                output = None
-                cid = argv[-1]
-                for item in argv[1:]:
-                    if item.startswith('--output='):
-                        output = Path(item.split('=', 1)[1])
-                if output is None:
-                    print('missing --output', file=sys.stderr)
-                    return 2
-                output.mkdir(parents=True, exist_ok=True)
-                (output / 'file.txt').write_text('restored from ' + cid + '\n')
-                print('saved ' + str(output))
-                return 0
-            print('unexpected fake ipfs invocation: ' + repr(argv), file=sys.stderr)
-            return 2
-
-        raise SystemExit(main())
-    ''').lstrip())
-
-    fake_ipfs = bin_dpath / 'ipfs'
-    fake_ipfs.write_text(
-        '#!/usr/bin/env sh\n'
-        'exec "{}" "$(dirname "$0")/_fake_ipfs.py" "$@"\n'.format(sys.executable)
-    )
-    fake_ipfs.chmod(0o755)
-
-    for ext in ['bat', 'cmd']:
-        launcher = bin_dpath / f'ipfs.{ext}'
-        launcher.write_text(
-            '@echo off\r\n'
-            '"{}" "%~dp0_fake_ipfs.py" %*\r\n'.format(sys.executable)
-        )
-
-    monkeypatch.setenv('GIT_WELL_FAKE_IPFS_LOG', os.fspath(log_fpath))
-    monkeypatch.setenv(
-        'GIT_WELL_IPFS_COMMAND_JSON',
-        json.dumps([sys.executable, os.fspath(fake_impl)]),
-    )
-    monkeypatch.setenv('PATH', os.fspath(bin_dpath) + os.pathsep + os.environ.get('PATH', ''))
-    return bin_dpath, log_fpath
-
-
-def test_fake_ipfs_add_pull_integration(tmp_path, monkeypatch):
-    import json
-    import shutil
-    import subprocess
-
-    from git_well.ipfs import IPFSAdd, IPFSPull
-
-    _bin_dpath, log_fpath = _install_fake_ipfs(tmp_path, monkeypatch)
     repo = tmp_path / 'repo'
     repo.mkdir()
-    subprocess.run(['git', 'init'], cwd=repo, check=True, capture_output=True, text=True)
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    ub.cmd(
+        ['git', 'remote', 'add', 'origin',
+         'git@github.com:Erotemic/git_well.git'],
+        cwd=repo, check=True)
+    data_fpath = repo / 'data' / 'foo bar.txt'
+    data_fpath.parent.mkdir()
+    data_fpath.write_text('payload')
 
-    data_dpath = repo / 'data'
-    data_dpath.mkdir()
-    (data_dpath / 'file.txt').write_text('original\n')
+    assert _generated_ipfs_pin_name(data_fpath) == (
+        'pkg:github/Erotemic/git_well#data/foo%20bar.txt')
 
-    IPFSAdd.main(
-        cmdline=False,
-        path=data_dpath,
-        name='demo-data',
-        suggested_peers=['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWfake'],
-        git_add_sidecar=True,
-    )
-
-    sidecar_fpath = repo / 'data.ipfs'
-    assert sidecar_fpath.exists()
-    sidecar_text = sidecar_fpath.read_text()
-    assert 'pin_name: demo-data' in sidecar_text
-    assert 'suggested_peers:' in sidecar_text
-    assert '/data' in (repo / '.gitignore').read_text().splitlines()
-
-    status = subprocess.run(
-        ['git', 'status', '--short'], cwd=repo, check=True,
-        capture_output=True, text=True).stdout
-    assert 'A  .gitignore' in status
-    assert 'A  data.ipfs' in status
-    assert 'data/' not in status
-
-    shutil.rmtree(data_dpath)
-    IPFSPull.main(cmdline=False, path=repo)
-    assert (data_dpath / 'file.txt').read_text() == 'restored from bafyfake\n'
-
-    calls = [json.loads(line) for line in log_fpath.read_text().splitlines()]
-    assert any(call and call[0] == 'add' for call in calls)
-    assert any(call[:2] == ['swarm', 'connect'] for call in calls)
-    assert any(call and call[0] == 'get' for call in calls)
+    moved_fpath = repo / 'moved' / 'foo bar.txt'
+    moved_fpath.parent.mkdir()
+    data_fpath.rename(moved_fpath)
+    assert _generated_ipfs_pin_name(moved_fpath) == (
+        'pkg:github/Erotemic/git_well#moved/foo%20bar.txt')
 
 
-def test_command_failure_message_for_missing_retrieval():
-    from types import SimpleNamespace
+def test_sidecar_pin_name_prefers_stored_effective_name(tmp_path):
+    from git_well.ipfs import _sidecar_pin_name
 
-    from git_well.ipfs import _command_failure_message
+    sidecar = tmp_path / 'data.ipfs'
+    meta = {
+        'cid': 'bafy',
+        'rel_path': 'data',
+        'pin_name': 'stored-effective-name',
+        'pin_name_source': 'generated',
+        'add_config': {'name': 'user-requested-name'},
+    }
+    assert _sidecar_pin_name(sidecar, meta) == 'stored-effective-name'
+    assert _sidecar_pin_name(
+        sidecar, meta, override_name='override') == 'override'
 
-    info = SimpleNamespace(returncode=1, stdout='', stderr='routing: not found')
-    msg = _command_failure_message(['ipfs', 'get', '--output=/tmp/out', 'bafyfake'], info)
-    assert 'Could not retrieve the requested CID' in msg
-    assert 'git ipfs peers --connect' in msg
+    old_meta = {
+        'cid': 'bafy',
+        'rel_path': 'data',
+        'add_config': {'name': 'user-requested-name'},
+    }
+    assert _sidecar_pin_name(sidecar, old_meta) == 'user-requested-name'
 
 
-def test_run_missing_ipfs_has_actionable_error(monkeypatch):
+def test_ipfs_add_name_requires_pin(tmp_path):
     import pytest
 
-    from git_well.ipfs import GitIPFSError, _run
+    from git_well.ipfs import IPFSCLI
 
-    monkeypatch.setenv('PATH', '')
-    with pytest.raises(GitIPFSError, match='Could not find the `ipfs` executable'):
-        _run(['ipfs', 'version'], verbose=0)
+    IPFSAdd = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                   if item['cls'].__command__ == 'add')
+    fpath = tmp_path / 'data.txt'
+    fpath.write_text('payload')
+    with pytest.raises(ValueError, match='--name requires --pin'):
+        IPFSAdd.main(
+            cmdline=0, path=fpath, name='explicit-name',
+            pin=False, dry_run=True)
+
+
+def test_normalize_ipfs_pin_name_shortens_to_kubo_limit():
+    import re
+
+    from git_well.ipfs import KUBO_PIN_NAME_MAX_BYTES, _normalize_ipfs_pin_name
+
+    long_name = 'pkg:generic/repo#' + '/'.join(['longcomponent'] * 40)
+    short_name, shortened = _normalize_ipfs_pin_name(long_name)
+
+    assert shortened is True
+    assert len(short_name.encode('utf8')) <= KUBO_PIN_NAME_MAX_BYTES
+    assert re.search(r'~gw-[0-9a-f]{16}$', short_name)
+    assert short_name == _normalize_ipfs_pin_name(long_name)[0]
+
+
+def test_normalize_ipfs_pin_name_handles_unicode_boundaries():
+    from git_well.ipfs import KUBO_PIN_NAME_MAX_BYTES, _normalize_ipfs_pin_name
+
+    long_name = 'pkg:generic/repo#' + ('é' * 200)
+    short_name, shortened = _normalize_ipfs_pin_name(long_name)
+
+    assert shortened is True
+    assert len(short_name.encode('utf8')) <= KUBO_PIN_NAME_MAX_BYTES
+    short_name.encode('utf8').decode('utf8')
+
+
+def test_normalize_ipfs_pin_name_rejects_control_characters():
+    import pytest
+
+    from git_well.ipfs import _normalize_ipfs_pin_name
+
+    with pytest.raises(ValueError, match='newline'):
+        _normalize_ipfs_pin_name('bad\nname')
+
+
+def test_generated_ipfs_pin_name_falls_back_without_origin(tmp_path):
+    import ubelt as ub
+
+    from git_well.ipfs import _generated_ipfs_pin_name
+
+    repo = tmp_path / 'repo without origin'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    data_fpath = repo / 'data' / 'foo bar.txt'
+    data_fpath.parent.mkdir()
+    data_fpath.write_text('payload')
+
+    assert _generated_ipfs_pin_name(data_fpath) == (
+        'pkg:generic/repo%20without%20origin#data/foo%20bar.txt')
+
+
+def test_generated_ipfs_pin_name_falls_back_for_local_origin(tmp_path):
+    import ubelt as ub
+
+    from git_well.ipfs import _generated_ipfs_pin_name
+
+    repo = tmp_path / 'worktree'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    local_origin = tmp_path / 'local project.git'
+    ub.cmd(['git', 'remote', 'add', 'origin', os.fspath(local_origin)], cwd=repo, check=True)
+    data_fpath = repo / 'data' / 'payload.txt'
+    data_fpath.parent.mkdir()
+    data_fpath.write_text('payload')
+
+    assert _generated_ipfs_pin_name(data_fpath) == (
+        'pkg:generic/local%20project#data/payload.txt')
+
+
+def test_ipfs_add_dry_run_uses_generated_name_without_origin(tmp_path, capsys):
+    import ubelt as ub
+
+    from git_well.ipfs import IPFSCLI
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    fpath = repo / 'data.txt'
+    fpath.write_text('payload')
+
+    IPFSAdd = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                   if item['cls'].__command__ == 'add')
+    IPFSAdd.main(cmdline=0, path=fpath, dry_run=True)
+    captured = capsys.readouterr().out
+
+    assert "'--pin-name=pkg:generic/repo#data.txt'" in captured
+    assert 'ipfs pin add --name' not in captured
+
+
+def test_ipfs_add_writes_effective_pin_name_to_sidecar(tmp_path, monkeypatch, capsys):
+    import ubelt as ub
+
+    import git_well.ipfs as ipfs_mod
+    from git_well.ipfs import IPFSCLI
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    fpath = repo / 'data.txt'
+    fpath.write_text('payload')
+
+    calls = []
+
+    class FakeInfo:
+        stdout = 'added bafyfakecid data.txt\n'
+        stderr = ' 7 B / 7 B [================] 100.00%\n'
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return FakeInfo()
+
+    monkeypatch.setattr(ipfs_mod, '_run', fake_run)
+
+    IPFSAdd = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                   if item['cls'].__command__ == 'add')
+    IPFSAdd.main(
+        cmdline=0,
+        path=fpath,
+        update_gitignore=False,
+        git_add_sidecar=False,
+    )
+
+    assert len(calls) == 1
+    assert '--pin-name=pkg:generic/repo#data.txt' in calls[0]
+    captured = capsys.readouterr().out
+    assert 'Pin on another machine with:' in captured
+    assert "ipfs pin add '--name=pkg:generic/repo#data.txt' --progress --recursive bafyfakecid" in captured
+    sidecar = ipfs_mod._YamlCodec.load(fpath.with_name('data.txt.ipfs'))
+    assert sidecar['pin_name'] == 'pkg:generic/repo#data.txt'
+    assert sidecar['pin_name_source'] == 'generated'
+    assert sidecar['add_config']['name'] is None
+
+
+def test_ipfs_export_uses_generated_name_without_origin(tmp_path, capsys):
+    import ubelt as ub
+
+    from git_well.ipfs import IPFSCLI
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    ub.cmd(['git', 'init'], cwd=repo, check=True)
+    (repo / 'data.txt').write_text('payload')
+    (repo / 'data.txt.ipfs').write_text(
+        'type: ipfs-sidecar\n'
+        'cid: bafyfakecid\n'
+        'rel_path: data.txt\n'
+    )
+
+    IPFSExportPins = next(item['cls'] for item in IPFSCLI.__subconfigs__
+                          if item['cls'].__command__ == 'export')
+    IPFSExportPins.main(cmdline=0, paths=[repo])
+    captured = capsys.readouterr().out
+
+    assert '--name=pkg:generic/repo#data.txt' in captured

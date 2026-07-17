@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """
 Requirements:
     pip install GitPython
@@ -7,11 +8,12 @@ Requirements:
 from __future__ import annotations
 
 from typing import Any
+
+import kwconf
 import ubelt as ub
-import scriptconfig as scfg
 
 
-class TrackUpstreamCLI(scfg.DataConfig):
+class TrackUpstreamCLI(kwconf.Config):
     """
     Set the branch upstream with sensible defaults if possible.
 
@@ -27,10 +29,10 @@ class TrackUpstreamCLI(scfg.DataConfig):
     """
 
     __command__: str = 'track_upstream'
-    repo_dpath: scfg.Value = scfg.Value(
+    repo_dpath: str = kwconf.Value(
         '.', position=1, help='location of the repo'
     )
-    force: scfg.Value = scfg.Value(
+    force: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['-f'],
@@ -43,6 +45,7 @@ class TrackUpstreamCLI(scfg.DataConfig):
     ) -> None:
         """
         Example:
+            >>> # xdoctest: +REQUIRES(env:NETWORK==1)
             >>> from git_well.git_track_upstream import TrackUpstreamCLI
             >>> from git_well.repo import Repo
             >>> repo = Repo.demo()

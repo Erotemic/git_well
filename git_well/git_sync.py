@@ -1,23 +1,25 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
-from typing import Any
-from os.path import normpath
-from os.path import realpath
-from os.path import expanduser
-from os.path import relpath
 import os
+import shlex
+from os.path import expanduser, normpath, realpath, relpath
+from typing import Any
+
+import kwconf
 import ubelt as ub
-import scriptconfig as scfg
+
+from git_well._utils import cmd_output_text
 
 
-class GitSyncCLI(scfg.DataConfig):
+class GitSyncCLI(kwconf.Config):
     """
     Sync a git repo with a remote server via ssh
     """
 
     __command__: str = 'sync'
-    host: scfg.Value = scfg.Value(
+    host: list[str] | None = kwconf.Value(
         None,
         position=1,
         required=True,
@@ -28,10 +30,10 @@ class GitSyncCLI(scfg.DataConfig):
         ),
         nargs=1,
     )
-    remote: scfg.Value = scfg.Value(
+    remote: str | None = kwconf.Value(
         None, position=2, help='The git remote to use (e.g. origin)', nargs='?'
     )
-    forward_ssh_agent: scfg.Value = scfg.Value(
+    forward_ssh_agent: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -41,16 +43,16 @@ class GitSyncCLI(scfg.DataConfig):
             """
         ),
     )
-    dry: scfg.Value = scfg.Value(
+    dry: bool = kwconf.Value(
         False, isflag=True, short_alias=['n'], help='Perform a dry run'
     )
-    message: scfg.Value = scfg.Value(
+    message: str = kwconf.Value(
         'wip [skip ci]',
-        type=str,
+        parser=str,
         short_alias=['m'],
         help='Specify a custom commit message',
     )
-    force: scfg.Value = scfg.Value(
+    force: bool = kwconf.Value(
         False, isflag=True, help='Force push and hard reset the remote.'
     )
 
@@ -93,17 +95,21 @@ def getcwd() -> str:
 
 
 def git_default_push_remote_name() -> str | None:
-    local_remotes = ub.cmd('git remote -v')['out'].strip()
-    lines = [line for line in local_remotes.split('\n') if line]
+    local_remotes = ub.cmd(['git', 'remote', '-v'], verbose=0)
+    if local_remotes.returncode:
+        return None
+    stdout = cmd_output_text(local_remotes.stdout)
     candidates = []
-    for line in lines:
-        parts = line.split('\t')
-        remote_name, remote_url_type = parts
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        remote_name, remote_url_type = line.split('\t', 1)
         if remote_url_type.endswith('(push)'):
             candidates.append(remote_name)
-    if len(candidates) == 1:
-        remote_name = candidates[0]
-    return remote_name
+    unique_candidates = list(ub.unique(candidates))
+    if len(unique_candidates) == 1:
+        return unique_candidates[0]
+    return None
 
 
 def _devcheck() -> None:
@@ -123,6 +129,43 @@ def _devcheck() -> None:
     """
 
 
+def _result_stderr_text(result: Any) -> str:
+    stderr = result.stderr
+    if isinstance(stderr, bytes):
+        return stderr.decode(errors='replace')
+    return stderr or ''
+
+
+def _run_checked(argv: list[str], *, verbose: int = 2) -> Any:
+    result = ub.cmd(argv, verbose=verbose)
+    if result.returncode:
+        raise RuntimeError(
+            'Command failed with retcode={}:\n{}\n{}'.format(
+                result.returncode,
+                shlex.join(argv),
+                _result_stderr_text(result).strip(),
+            )
+        )
+    return result
+
+
+def _commit_local_changes(message: str) -> bool:
+    """Stage all local changes and commit only when the index is non-empty."""
+    _run_checked(['git', 'add', '-A'])
+    diff_result = ub.cmd(['git', 'diff', '--cached', '--quiet'], verbose=0)
+    if diff_result.returncode == 0:
+        print('No local changes to commit')
+        return False
+    if diff_result.returncode != 1:
+        raise RuntimeError(
+            'Unable to inspect staged changes:\n{}'.format(
+                _result_stderr_text(diff_result).strip()
+            )
+        )
+    _run_checked(['git', 'commit', '-m', message])
+    return True
+
+
 def git_sync(
     host: str,
     remote: str | None = None,
@@ -134,7 +177,7 @@ def git_sync(
 ) -> None:
     """
     Commit any changes in the current working directory, ssh into a remote
-    machine, and then pull those changes.
+    machine, and then update the matching branch there.
 
     Args:
         host (str):
@@ -161,14 +204,19 @@ def git_sync(
 
     Example:
         >>> # xdoctest: +IGNORE_WANT
+        >>> from git_well.repo import Repo
+        >>> repo = Repo.demo()
         >>> host = 'user@remote.com'
         >>> remote = 'origin'
         >>> message = 'this is the commit message'
-        >>> home = getcwd()  # pretend the home is here for the test
-        >>> git_sync(host, remote, message, dry=True, home=home)
-        git commit -am "this is the commit message"
+        >>> with ub.ChDir(repo.dpath):
+        >>>     git_sync(
+        >>>         host, remote, message, dry=True, home=repo.dpath.parent
+        >>>     )
+        git add -A
+        git diff --cached --quiet || git commit -m 'this is the commit message'
         git push origin
-        ssh user@remote.com "cd ... && git pull origin ..."
+        ssh user@remote.com 'cd ... && ...'
     """
     cwd = getcwd()
     if home is None:
@@ -183,158 +231,114 @@ def git_sync(
             ).format(cwd, home)
         )
 
-    """
-    # How to check if a branch exists
-    git branch --list ${branch}
-
-    # Get current branch name
-
-    if [[ "$(git rev-parse --abbrev-ref HEAD)" != "{branch}" ]];
-        then git checkout {branch} ;
-    fi
-
-    # git rev-parse --abbrev-ref HEAD
-    if [[ -z $(git branch --list ${branch}) ]]; then
-    else
-    fi
-    """
-
-    # $(git branch --list ${branch})
-
-    # Assume the remote directory is the same as the local one (relative to home)
     remote_cwd = relcwd
-
-    # Build one command to execute on the remote
-    remote_parts = [
-        'cd {remote_cwd}',
-    ]
-
-    # Get branch name from the local
-    local_branch_name = ub.cmd('git rev-parse --abbrev-ref HEAD')['out'].strip()
-    # Assume the branches are the same between local / remote
+    branch_info = ub.cmd(
+        ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], check=True
+    )
+    local_branch_name = cmd_output_text(branch_info.stdout).strip()
     remote_branch_name = local_branch_name
 
-    if force:
+    if force and remote is None:
+        remote = git_default_push_remote_name()
         if remote is None:
-            # FIXME: might not work in all cases
-            remote = git_default_push_remote_name()
+            raise ValueError(
+                'Force sync requires an explicit or unambiguous push remote'
+            )
 
-        # Force the remote to the state of the remote
-        remote_checkout_branch_force = ub.paragraph(
-            """
-            git fetch {remote};
-            if [[ "$(git rev-parse --abbrev-ref HEAD)" != "{branch}" ]]; then
-                git checkout {branch};
-            fi;
-            git reset {remote}/{branch} --hard
-            """
-        ).format(remote=remote, branch=remote_branch_name)
-
-        remote_parts += [
-            'git fetch {remote}',
-            remote_checkout_branch_force.replace('"', r'\"'),
-        ]
-    else:
-        # ensure the remote is on the right branch
-        # (this assumes no conflicts and will fail if anything bad
-        #  might happen)
-        remote_checkout_branch_simple = ub.paragraph(
-            r"""
-            if [[ "$(git rev-parse --abbrev-ref HEAD)" != "{branch}" ]]; then
-                git checkout {branch};
-            fi
-            """
-        ).format(branch=local_branch_name)
-
-        if host == remote:
-            remote_parts += [
-                'git reset --hard',
-                remote_checkout_branch_simple.replace('"', r'\"'),
-            ]
-        else:
-            remote_parts += [
-                'git pull {remote}' if remote else 'git pull',
-                remote_checkout_branch_simple.replace('"', r'\"'),
-            ]
-
-    remote_part = ' && '.join(remote_parts)
-
-    # Build one comand to execute locally
-    commit_command = 'git commit -am "{}"'.format(message)
-
-    push_args = ['git push']
-    if remote:
-        push_args.append('{remote}')
-    if force:
-        push_args.append('--force')
-    push_command = ' '.join(push_args)
-
-    sync_command = 'ssh {ssh_flags} {host} "' + remote_part + '"'
-
-    local_parts = [
-        commit_command,
-        push_command,
-        sync_command,
-    ]
-
-    ssh_flags = []
-    if forward_ssh_agent:
-        ssh_flags += ['-A']
-    ssh_flags = ' '.join(ssh_flags)
-
-    kw = dict(
-        host=host, remote_cwd=remote_cwd, remote=remote, ssh_flags=ssh_flags
+    quoted_branch = shlex.quote(remote_branch_name)
+    checkout_command = (
+        'if [ "$(git rev-parse --abbrev-ref HEAD)" != '
+        f'{quoted_branch} ]; then git checkout {quoted_branch}; fi'
     )
 
-    for part in local_parts:
-        command = part.format(**kw)
-        if not dry:
-            result = ub.cmd(command, verbose=2)
-            retcode = result.returncode
-            if command.startswith('git commit') and retcode == 1:
-                pass
-            elif retcode != 0:
-                print(f'command={command}')
-                if command.startswith('git push'):
-                    stderr = result.stderr
-                    if isinstance(stderr, bytes):
-                        stderr = stderr.decode(errors='replace')
-                    elif stderr is None:
-                        stderr = ''
-                    if 'refusing to update checked out branch:' in stderr:
-                        from rich import prompt
-
-                        ans = prompt.Confirm.ask(
-                            ub.paragraph(
-                                """
-                            The remote needs to be configured to allow pushes
-                            to a checked out branch. Do you want to do this?
-                            """
-                            )
-                        )
-                        if ans:
-                            reconfig_remote_part = ' && '.join(
-                                [
-                                    f'cd {remote_cwd}',
-                                    'git config --local receive.denyCurrentBranch warn',
-                                ]
-                            )
-                            reconfig_command = (
-                                f'ssh {ssh_flags} {host} "'
-                                + reconfig_remote_part
-                                + '"'
-                            )
-                            ub.cmd(reconfig_command, verbose=2)
-                            print('Now rerun the command')
-
-                print('git-sync cannot continue. retcode={}'.format(retcode))
-                break
+    remote_parts = [f'cd {shlex.quote(remote_cwd)}']
+    if force:
+        if remote is None:
+            raise AssertionError('force sync remote should already be resolved')
+        quoted_remote = shlex.quote(remote)
+        remote_parts.extend(
+            [
+                f'git fetch {quoted_remote}',
+                checkout_command,
+                f'git reset --hard {quoted_remote}/{quoted_branch}',
+            ]
+        )
+    elif host == remote:
+        remote_parts.extend([checkout_command, 'git reset --hard'])
+    else:
+        remote_parts.append(checkout_command)
+        if remote:
+            remote_parts.append(
+                'git pull {} {}'.format(
+                    shlex.quote(remote), quoted_branch
+                )
+            )
         else:
-            print(command)
+            remote_parts.append('git pull')
+
+    remote_command = ' && '.join(remote_parts)
+    push_argv = ['git', 'push']
+    if remote:
+        push_argv.append(remote)
+    if force:
+        push_argv.append('--force')
+
+    ssh_argv = ['ssh']
+    if forward_ssh_agent:
+        ssh_argv.append('-A')
+    ssh_argv.extend([host, remote_command])
+
+    if dry:
+        print('git add -A')
+        print(
+            'git diff --cached --quiet || git commit -m {}'.format(
+                shlex.quote(message)
+            )
+        )
+        print(shlex.join(push_argv))
+        print(shlex.join(ssh_argv))
+        return
+
+    _commit_local_changes(message)
+
+    push_result = ub.cmd(push_argv, verbose=2)
+    if push_result.returncode:
+        stderr = _result_stderr_text(push_result)
+        if 'refusing to update checked out branch:' in stderr:
+            from rich import prompt
+
+            ans = prompt.Confirm.ask(
+                ub.paragraph(
+                    """
+                    The remote needs to be configured to allow pushes
+                    to a checked out branch. Do you want to do this?
+                    """
+                )
+            )
+            if ans:
+                reconfig_remote_part = ' && '.join(
+                    [
+                        f'cd {shlex.quote(remote_cwd)}',
+                        'git config --local receive.denyCurrentBranch warn',
+                    ]
+                )
+                reconfig_argv = ['ssh']
+                if forward_ssh_agent:
+                    reconfig_argv.append('-A')
+                reconfig_argv.extend([host, reconfig_remote_part])
+                _run_checked(reconfig_argv)
+                print('Now rerun the command')
+        raise RuntimeError(
+            'git-sync cannot continue after failed push:\n{}'.format(
+                stderr.strip()
+            )
+        )
+
+    _run_checked(ssh_argv)
 
 
 __cli__ = GitSyncCLI
-__cli__.main = main
+setattr(__cli__, 'main', main)
 
 
 if __name__ == '__main__':

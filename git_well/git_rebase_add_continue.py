@@ -2,13 +2,14 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
-from typing import Any
 import os
+from typing import Any
+
+import kwconf
 import ubelt as ub
-import scriptconfig as scfg
 
 
-class GitRebaseAddContinue(scfg.DataConfig):
+class GitRebaseAddContinue(kwconf.Config):
     """
     A single step to make rebasing easier.
 
@@ -19,9 +20,9 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
     __command__: str = 'rebase_add_continue'
 
-    repo_dpath: scfg.Value = scfg.Value('.', help='location of the repo')
+    repo_dpath: str = kwconf.Value('.', help='location of the repo')
 
-    skip_editor: scfg.Value = scfg.Value(
+    skip_editor: bool = kwconf.Value(
         True,
         help='if True skip the editor to change the commit message on git rebase --continue',
     )
@@ -54,7 +55,9 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
         fpaths = parsed_rebase_git_status(repo_dpath)
 
-        num_paths = ub.udict(fpaths).map_values(len)
+        num_paths: dict[str, int] = {
+            key: len(paths) for key, paths in fpaths.items()
+        }
         print('num_paths = {}'.format(ub.urepr(num_paths, nl=1)))
 
         if 0:
@@ -66,23 +69,19 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
         # Check if conflicts are resolved
         conflict_patterns = [
-            re.compile('^' + ('<' * 7) + ' HEAD$', flags=re.MULTILINE),
-            re.compile('^' + ('>' * 7) + ' HEAD$', flags=re.MULTILINE),
-            # re.compile('^' + ('=' * 7) + '$', flags=re.MULTILINE),
-            re.compile(
-                '^' + ('>' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE
-            ),
-            re.compile(
-                '^' + ('<' * 7) + r' [0-9a-f]{7} \(.*\)$', flags=re.MULTILINE
-            ),
+            re.compile(r'^<<<<<<< .+$', flags=re.MULTILINE),
+            re.compile(r'^>>>>>>> .+$', flags=re.MULTILINE),
         ]
+
 
         conflicts = []
         for fpath in ub.flatten(fpaths.values()):
             try:
                 text = fpath.read_text()
             except IsADirectoryError:
-                # probably in a submodule
+                continue
+            except UnicodeDecodeError:
+                conflicts.append(fpath)
                 continue
             except FileNotFoundError:
                 text = ''
@@ -99,7 +98,11 @@ class GitRebaseAddContinue(scfg.DataConfig):
 
         # If everything looks ok run git add && git rebase --continue
         print('Running git add')
-        repo.git.add(*fpaths['both_modified'], *fpaths['unstaged'])
+        add_paths = list(
+            ub.unique(fpaths['both_modified'] + fpaths['unstaged'])
+        )
+        if add_paths:
+            repo.git.add(*map(os.fspath, add_paths))
 
         print('Running git rebase --continue')
         if config.skip_editor:
@@ -123,117 +126,69 @@ class GitRebaseAddContinue(scfg.DataConfig):
             print('rebase is still active')
 
 
+def _git_output_text(info: Any) -> str:
+    stdout = info.stdout
+    if isinstance(stdout, bytes):
+        return stdout.decode(errors='surrogateescape')
+    return stdout or ''
+
+
+def _git_nul_paths(
+    repo_dpath: str | os.PathLike[str], argv: list[str]
+) -> list[ub.Path]:
+    info = ub.cmd(argv, cwd=repo_dpath, verbose=0)
+    if info.returncode:
+        raise RuntimeError(
+            'Git command failed while inspecting rebase state: '
+            + ' '.join(argv)
+        )
+    return [
+        ub.Path(repo_dpath) / rel_path
+        for rel_path in _git_output_text(info).split('\0')
+        if rel_path
+    ]
+
+
+def _rebase_is_active(repo_dpath: str | os.PathLike[str]) -> bool:
+    for name in ['rebase-merge', 'rebase-apply']:
+        info = ub.cmd(
+            ['git', 'rev-parse', '--git-path', name],
+            cwd=repo_dpath,
+            verbose=0,
+        )
+        if info.returncode == 0:
+            git_path = ub.Path(_git_output_text(info).strip())
+            if not git_path.is_absolute():
+                git_path = ub.Path(repo_dpath) / git_path
+            if git_path.exists():
+                return True
+    return False
+
+
 def parsed_rebase_git_status(
     repo_dpath: str | os.PathLike[str],
 ) -> dict[str, list[ub.Path]]:
-    """
-    a git status output has several possible sections it can output,
-    check for those, and set the state based on them.
-    Information within each state will be indented
-    """
-    info = ub.cmd('git status', verbose=3, cwd=repo_dpath)
-    status = info['out']
-    # print(status)
-
-    # Parse git status to determine paths that have conflicts and need a
-    # git add.
-    fpaths = {
-        'modified': [],
-        'both_modified': [],
-        'unstaged': [],
-    }
-    print('parse git status')
-    lines = status.split('\n')
-    if 'interactive rebase in progress' not in lines[0]:
+    """Inspect rebase paths using stable, NUL-delimited Git plumbing."""
+    if not _rebase_is_active(repo_dpath):
         raise RuntimeError('Not currently rebasing')
 
-    line_iter = iter(lines)
-    state = None
-    for line_idx, line in enumerate(line_iter):
-        line_ = line.strip()
-        if line_ == '':
-            state = None
-        # Check for a state change.
-        elif line.startswith('Last commands done'):
-            state = 'LAST_COMMANDS'
-        elif line.startswith('Changes not staged for commit:'):
-            state = 'UNSTAGED'
-            assert 'git add' in next(line_iter)
-            assert 'git restore' in next(line_iter)
-        elif line.startswith('Changes to be committed:'):
-            state = 'MODIFIED'
-            assert 'git restore --staged' in next(line_iter)
-        elif line.startswith('Unmerged paths:'):
-            state = 'UNMERGED'
-            assert 'git restore' in next(line_iter)
-            assert 'git add <file>' in next(line_iter)
-        else:
-            # Parse information with in a state
-            if state is None:
-                ...
-            elif state == 'LAST_COMMANDS':
-                ...
-            elif state == 'MODIFIED':
-                if line_.startswith(('modified:', 'new file:')):
-                    rel_fpath = line.split(':', 1)[1].strip()
-                    fpath = repo_dpath / rel_fpath
-                    fpaths['modified'].append(fpath)
-                else:
-                    raise Exception(
-                        ub.paragraph(
-                            f"""
-                        rebase status parser hit unhandled case in state {state}:
-                        line_idx={line_idx}, line={line}
-                        """
-                        )
-                    )
-            elif state == 'UNMERGED':
-                if line_.startswith(('both modified:',)):
-                    rel_fpath = line.split(':', 1)[1].strip()
-                    fpath = repo_dpath / rel_fpath
-                    fpaths['both_modified'].append(fpath)
-                else:
-                    raise Exception(
-                        ub.paragraph(
-                            f"""
-                        rebase status parser hit unhandled case in state {state}:
-                        line_idx={line_idx}, line={line}
-                        """
-                        )
-                    )
-            elif state == 'UNSTAGED':
-                if line_.startswith('('):
-                    continue
-                elif line_.startswith(('modified:', 'new file:')):
-                    rel_fpath = line.split(':', 1)[1]
-                    # Hacks for submodules
-                    rel_fpath = rel_fpath.replace(
-                        '(modified content, untracked content)', ''
-                    )
-                    rel_fpath = rel_fpath.strip()
+    unmerged = _git_nul_paths(
+        repo_dpath,
+        ['git', 'diff', '--name-only', '--diff-filter=U', '-z'],
+    )
+    unstaged = _git_nul_paths(
+        repo_dpath, ['git', 'diff', '--name-only', '-z']
+    )
+    staged = _git_nul_paths(
+        repo_dpath, ['git', 'diff', '--cached', '--name-only', '-z']
+    )
 
-                    fpath = repo_dpath / rel_fpath
-                    fpaths['unstaged'].append(fpath)
-                else:
-                    raise Exception(
-                        ub.paragraph(
-                            f"""
-                        rebase status parser hit unhandled case in state {state}:
-                        line_idx={line_idx}, line={line}
-                        """
-                        )
-                    )
-            else:
-                raise Exception(
-                    ub.paragraph(
-                        f"""
-                    rebase status parser hit unhandled case in state {state}:
-                    line_idx={line_idx}, line={line}
-                    """
-                    )
-                )
-    print('finished parse git status')
-    return fpaths
+    unmerged_set = set(unmerged)
+    return {
+        'modified': staged,
+        'both_modified': unmerged,
+        'unstaged': [p for p in unstaged if p not in unmerged_set],
+    }
 
 
 __cli__ = GitRebaseAddContinue

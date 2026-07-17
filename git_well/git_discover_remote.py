@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 from typing import Any
-import scriptconfig as scfg
-import ubelt as ub
 
+import kwconf
+import ubelt as ub
 
 # NOTE: SeeAlso
 # ~/code/simple_dvc/simple_dvc/discover_ssh_remote.py
 
 
-class GitDiscoverRemoteCLI(scfg.DataConfig):
+class GitDiscoverRemoteCLI(kwconf.Config):
     """
     Attempt to discover a ssh remote based on an ssh host.
 
@@ -20,7 +20,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
 
     __command__: str = 'discover_remote'
 
-    repo_dpath: scfg.Value = scfg.Value(
+    repo_dpath: str = kwconf.Value(
         '.',
         help=ub.paragraph(
             """
@@ -32,7 +32,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    host: scfg.Value = scfg.Value(
+    host: str | None = kwconf.Value(
         None,
         position=1,
         required=True,
@@ -43,7 +43,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    remote: scfg.Value = scfg.Value(
+    remote: str | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -53,12 +53,12 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    home: scfg.Value = scfg.Value(
+    home: str | None = kwconf.Value(
         None,
         help='Explicitly specify where your home drive is. Usually this can be inferred',
     )
 
-    forward_ssh_agent: scfg.Value = scfg.Value(
+    forward_ssh_agent: bool = kwconf.Value(
         False,
         isflag=True,
         short_alias=['A'],
@@ -69,7 +69,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    test_remote: scfg.Value = scfg.Value(
+    test_remote: bool = kwconf.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -80,7 +80,7 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         ),
     )
 
-    remote_cwd: scfg.Value = scfg.Value(
+    remote_cwd: str | None = kwconf.Value(
         None, help='path on the remote. inferred if not given'
     )
 
@@ -107,9 +107,10 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
         config = cls.cli(argv=argv, data=kwargs, strict=True)
         rich_print('config = ' + ub.urepr(config, nl=1))
 
-        from git_well.repo import Repo
-        from os.path import expanduser, relpath, join
         import shlex
+        from os.path import expanduser, relpath
+
+        from git_well.repo import Repo
 
         repo = Repo.coerce(config.repo_dpath)
         info = ub.cmd(
@@ -133,16 +134,18 @@ class GitDiscoverRemoteCLI(scfg.DataConfig):
             raise ValueError(
                 (
                     'We assume that you are running relative '
-                    'to your home directory. rel_dpath={}, home={}'
-                ).format(rel_dpath, home)
+                    'to your home directory. root_dpath={}, home={}'
+                ).format(root_dpath, home)
             )
 
         remote_cwd = config.remote_cwd
         if remote_cwd is None:
             remote_cwd = rel_dpath
-            print(f'home={home}')
-            print(f'root_dpath={root_dpath}')
-            print(f'remote_cwd={remote_cwd}')
+            from git_well._utils import rich_print_path
+
+            rich_print_path('home=', home)
+            rich_print_path('root_dpath=', root_dpath)
+            rich_print_path('remote_cwd=', remote_cwd)
         # remote_gitdir = join(remote_cwd, '.git')
 
         if config.test_remote:
@@ -188,8 +191,9 @@ def fsspec_shh_connect(host: str) -> Any:
     # Paramiko does not respect the ssh config by default, but it does
     # give us tools to parse it. However, it is still not straightforward
     # Might look into "fabric"?
-    import paramiko
     import os
+
+    import paramiko
 
     ssh_config = paramiko.SSHConfig()
     user_config_file = os.path.expanduser('~/.ssh/config')

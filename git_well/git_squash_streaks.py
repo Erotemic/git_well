@@ -6,19 +6,19 @@ This git-squash-streaks command
 Requirements:
     pip install ubelt
     pip install GitPython
-    pip install scriptconfig
+    pip install kwconf
 """
 
 from __future__ import annotations
 
-from typing import Any
-import sys
-import os
-import warnings
 import itertools as it
-import ubelt as ub
-import scriptconfig as scfg
+import os
+import sys
+import warnings
+from typing import Any
 
+import kwconf
+import ubelt as ub
 
 EXPERIMENTAL_PSEUDO_CHAIN: int = 0
 EXPERIMENTAL_REBASE: int = 0
@@ -28,16 +28,16 @@ from git.objects.commit import Commit
 """
 
 
-class SquashStreakCLI(scfg.DataConfig):
+class SquashStreakCLI(kwconf.Config):
     """
     Squashes consecutive commits that meet a specified criteiron.
     """
 
     __command__: str = 'squash_streaks'
 
-    timedelta: scfg.Value = scfg.Value(
+    timedelta: str | float = kwconf.Value(
         'sameday',
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             strategy mode or max number of seconds to determine how far
@@ -47,7 +47,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    custom_streak: scfg.Value = scfg.Value(
+    custom_streak: list[str] | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -56,9 +56,9 @@ class SquashStreakCLI(scfg.DataConfig):
         ),
         nargs=2,
     )
-    pattern: scfg.Value = scfg.Value(
+    pattern: str | None = kwconf.Value(
         None,
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             instead of squashing messages with the same name, squash
@@ -68,9 +68,9 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    tags: scfg.Value = scfg.Value(False, isflag=True, help='experimental')
+    tags: bool = kwconf.Value(False, isflag=True, help='experimental')
 
-    preserve_tags: scfg.Value = scfg.Value(
+    preserve_tags: bool | set[str] | list[str] | tuple[str, ...] = kwconf.Value(
         True,
         isflag=True,
         help=ub.paragraph(
@@ -81,7 +81,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    oldest_commit: scfg.Value = scfg.Value(
+    oldest_commit: str | None = kwconf.Value(
         None,
         help=ub.paragraph(
             """
@@ -90,7 +90,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    inplace: scfg.Value = scfg.Value(
+    inplace: bool = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -102,7 +102,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    auto_rollback: scfg.Value = scfg.Value(
+    auto_rollback: bool = kwconf.Value(
         False,
         isflag=True,
         help=ub.paragraph(
@@ -112,9 +112,9 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    authors: scfg.Value = scfg.Value(
+    authors: str | None = kwconf.Value(
         None,
-        type=str,
+        parser=str,
         help=ub.paragraph(
             """
             "level-set" of authors who's commits can be squashed
@@ -123,7 +123,7 @@ class SquashStreakCLI(scfg.DataConfig):
             """
         ),
     )
-    dry: scfg.Value = scfg.Value(
+    dry: bool = kwconf.Value(
         True,
         isflag=True,
         mutex_group='dryrun',
@@ -136,7 +136,7 @@ class SquashStreakCLI(scfg.DataConfig):
         ),
     )
 
-    force: scfg.Value = scfg.Value(
+    force: bool | None = kwconf.Value(
         None,
         isflag=True,
         mutex_group='dryrun',
@@ -144,18 +144,18 @@ class SquashStreakCLI(scfg.DataConfig):
         help='turn dry mode off',
     )
 
-    verbose: scfg.Value = scfg.Value(
+    verbose: bool = kwconf.Value(
         True,
         mutex_group='verbose',
         short_alias=['v'],
         help='verbosity flag flag',
     )
 
-    # TODO: scriptconfig needs to be extended to handle these argparse
+    # TODO: kwconf needs to be extended to handle these argparse
     # use-cases
-    # dry = scfg.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
+    # dry = kwconf.Value(True, alias=['force'], mutex_group='dryrun', short_alias=['f'], help='opposite of --dry', isflag=True)
     # nargs=0)
-    # quiet = scfg.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
+    # quiet = kwconf.Value(None, alias=['quiet'], mutex_group='verbose', short_alias=['q'], help='suppress output', nargs=0)
 
     def __post_init__(self) -> None:
         force = self['force']
@@ -823,6 +823,7 @@ def commits_between(
         >>> assert len(commits2) == 4
     """
     import binascii
+
     import git
 
     if start_inclusive:
@@ -851,11 +852,16 @@ def _squash_between(
     inplace squash between, use external function that sets up temp branches to
     use this directly from the commandline.
     """
-    import git
     import email.utils
 
-    if len(start.parents) != 1:
-        raise AssertionError('cant handle case with multiple parents')
+    import git
+
+    if len(start.parents) > 1:
+        raise AssertionError('cannot squash from a merge commit')
+    if start_inclusive and not start.parents:
+        raise NotImplementedError(
+            'inclusive squashing from a root commit is not supported'
+        )
         # TODO: Is it possible to do the reset --hard trick here?
         # The idea is that you reset --hard onto the branch with the
         # state you want to end up at, you make a list of all the files
@@ -1301,8 +1307,8 @@ def git_squash_streaks(
             print('Finished the dry run. Use -f to force')
 
 
-SquashStreakCLI.main = git_squash_streaks
-main = SquashStreakCLI.main
+setattr(SquashStreakCLI, 'main', git_squash_streaks)
+main = git_squash_streaks
 __cli__ = SquashStreakCLI
 
 
