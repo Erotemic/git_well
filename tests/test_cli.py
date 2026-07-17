@@ -451,7 +451,7 @@ def _tar_names(archive):
         return set(tar.getnames())
 
 
-def _tar_manifest_text(archive):
+def _tar_manifest_bytes(archive):
     import tarfile
 
     with tarfile.open(archive, 'r:gz') as tar:
@@ -460,7 +460,11 @@ def _tar_manifest_text(archive):
         )
         file = tar.extractfile(manifest_member)
         assert file is not None
-        return file.read().decode('utf8')
+        return file.read()
+
+
+def _tar_manifest_text(archive):
+    return _tar_manifest_bytes(archive).decode('utf8')
 
 
 def _extract_tar_root(archive, dst):
@@ -562,7 +566,10 @@ def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
     names = _tar_names(archive)
     assert not any('/external/staged-only/' in name for name in names)
     assert not any(name.endswith('/.gitmodules') for name in names)
-    manifest_text = _tar_manifest_text(archive)
+    manifest_bytes = _tar_manifest_bytes(archive)
+    assert b'\r\n' not in manifest_bytes
+    assert manifest_bytes.endswith(b'\n')
+    manifest_text = manifest_bytes.decode('utf8')
     assert 'Submodules:\n(none)' in manifest_text
 
 

@@ -1489,7 +1489,8 @@ def _write_manifest(
             )
     else:
         lines.append('(none)')
-    manifest.write_text('\n'.join(lines).rstrip() + '\n')
+    manifest_text = '\n'.join(lines).rstrip() + '\n'
+    manifest.write_bytes(manifest_text.encode('utf8'))
 
 
 def _write_archive(
