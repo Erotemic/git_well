@@ -6,6 +6,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Version 0.3.3 - Unreleased
 
+### Added
+
+* Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
+
 
 ## Version 0.3.2 - Released 2026-07-17
 
