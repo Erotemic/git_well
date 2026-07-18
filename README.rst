@@ -95,6 +95,32 @@ The tools in this module are derived from:
 
 
 
+Archiving pull-request review state
+-----------------------------------
+
+``git archive-source`` normally archives the committed checkout and the
+history reachable from the current ``HEAD``. When reviewing a pull request
+from a contributor fork, use ``--all-branches`` to also preserve every local
+branch and every remote-tracking branch that has already been fetched into the
+superproject repository:
+
+.. code:: bash
+
+   git remote add contributor git@github.com:contributor/project.git
+   git fetch contributor
+   git archive-source --all-branches
+
+The archive operation itself does not contact ``origin``, ``contributor``, or
+any other configured remote. It copies the locally cached ``refs/heads/*`` and
+``refs/remotes/*`` state, so the unpacked archive can run commands such as
+``git branch --all``, ``git log contributor/topic``, and
+``git diff main...contributor/topic`` even if the original fork is no longer
+reachable. The archived working tree remains detached at the exact original
+``HEAD`` commit. ``--all-branches`` is opt-in, applies to the superproject,
+honors positive ``--depth`` values from each included branch tip, and cannot
+be combined with source-only ``--depth 0`` archives.
+
+
 Tracking large files with IPFS
 ------------------------------
 

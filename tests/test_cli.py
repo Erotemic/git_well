@@ -178,6 +178,7 @@ def test_archive_source_cli_options():
             '--exclude-submodule',
             'external/big-data',
             '--no-submodules',
+            '--all-branches',
             '--redact-local-paths',
         ],
         strict=True,
@@ -185,6 +186,7 @@ def test_archive_source_cli_options():
     assert str(config.submodule_depth) == '{"*": 0, special/submod: 100}'
     assert config.exclude_submodule == ['external/big-data']
     assert config.submodules is False
+    assert config.all_branches is True
     assert config.redact_local_paths is True
 
 
@@ -295,6 +297,219 @@ def test_archive_source_with_history(tmp_path):
     info_text = _tar_manifest_text(archive)
     assert 'Superproject history: full' in info_text
     assert 'Content pruning: none' in info_text
+
+
+def test_archive_source_all_branches_preserves_cached_refs(tmp_path):
+    """Archive locally fetched contributor refs without contacting remotes."""
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+    default_branch = _stdout_text(
+        ub.cmd(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+        )
+    ).strip()
+    head_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=repo, check=True)
+    ).strip()
+
+    ub.cmd(['git', 'checkout', '-b', 'local-review'], cwd=repo, check=True)
+    (repo / 'local-review.txt').write_text('local branch\n')
+    ub.cmd(['git', 'add', 'local-review.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'local review'], cwd=repo, check=True)
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+
+    contributor = tmp_path / 'contributor.git'
+    ub.cmd(['git', 'init', '--bare', str(contributor)], check=True)
+    ub.cmd(
+        ['git', 'remote', 'add', 'contributor', str(contributor)],
+        cwd=repo,
+        check=True,
+    )
+    ub.cmd(['git', 'checkout', '-b', 'temporary-pr'], cwd=repo, check=True)
+    (repo / 'contributor.txt').write_text('pull request branch\n')
+    ub.cmd(['git', 'add', 'contributor.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'contributor change'], cwd=repo, check=True)
+    ub.cmd(
+        ['git', 'push', 'contributor', 'HEAD:refs/heads/pr/topic'],
+        cwd=repo,
+        check=True,
+    )
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+    ub.cmd(['git', 'branch', '-D', 'temporary-pr'], cwd=repo, check=True)
+    ub.cmd(['git', 'fetch', 'contributor'], cwd=repo, check=True)
+    ub.cmd(
+        [
+            'git',
+            'update-ref',
+            'refs/remotes/origin/review-copy',
+            'refs/remotes/contributor/pr/topic',
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    # A broken configured URL proves archive_source only copies locally cached
+    # refs and does not contact the contributor remote.
+    ub.cmd(
+        ['git', 'remote', 'set-url', 'contributor', str(tmp_path / 'missing')],
+        cwd=repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches.tar.gz',
+        all_branches=True,
+        verbose=0,
+    )
+    unpacked = _extract_tar_root(archive, tmp_path / 'all-branches-extract')
+
+    refs_info = ub.cmd(
+        [
+            'git',
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/heads',
+            'refs/remotes',
+        ],
+        cwd=unpacked,
+        check=True,
+    )
+    refs = set(_stdout_text(refs_info).splitlines())
+    assert f'refs/heads/{default_branch}' in refs
+    assert 'refs/heads/local-review' in refs
+    assert 'refs/heads/temporary-pr' not in refs
+    assert 'refs/remotes/contributor/pr/topic' in refs
+    assert 'refs/remotes/origin/review-copy' in refs
+
+    archived_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=unpacked, check=True)
+    ).strip()
+    assert archived_head == head_sha
+    symbolic_head = ub.cmd(
+        ['git', 'symbolic-ref', '-q', 'HEAD'], cwd=unpacked, check=False
+    )
+    assert symbolic_head.returncode != 0
+    contributor_text = _stdout_text(
+        ub.cmd(
+            ['git', 'show', 'contributor/pr/topic:contributor.txt'],
+            cwd=unpacked,
+            check=True,
+        )
+    )
+    assert contributor_text == 'pull request branch\n'
+
+    info_text = _tar_manifest_text(archive)
+    assert 'Superproject branches: all locally cached' in info_text
+    assert 'Remote network access during archive: none' in info_text
+    assert '- local-review' in info_text
+    assert '- contributor/pr/topic' in info_text
+
+    redacted_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches-redacted.tar.gz',
+        all_branches=True,
+        redact_local_paths=True,
+        verbose=0,
+    )
+    redacted = _extract_tar_root(
+        redacted_archive, tmp_path / 'all-branches-redacted-extract'
+    )
+    redacted_refs_info = ub.cmd(
+        [
+            'git',
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/remotes',
+        ],
+        cwd=redacted,
+        check=True,
+    )
+    redacted_refs = set(_stdout_text(redacted_refs_info).splitlines())
+    assert 'refs/remotes/contributor/pr/topic' in redacted_refs
+    assert 'refs/remotes/origin/review-copy' in redacted_refs
+    remotes = _stdout_text(
+        ub.cmd(['git', 'remote'], cwd=redacted, check=True)
+    ).strip()
+    assert remotes == ''
+    assert str(repo.resolve()) not in (redacted / '.git' / 'config').read_text()
+    assert not (redacted / '.git' / 'FETCH_HEAD').exists()
+
+
+def test_archive_source_all_branches_shallow_depth(tmp_path):
+    """Apply --depth independently from every included branch tip."""
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches_shallow'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+    default_branch = _stdout_text(
+        ub.cmd(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+        )
+    ).strip()
+    ub.cmd(['git', 'checkout', '-b', 'topic'], cwd=repo, check=True)
+    for index in range(3):
+        (repo / 'topic.txt').write_text(f'{index}\n')
+        ub.cmd(['git', 'add', 'topic.txt'], cwd=repo, check=True)
+        ub.cmd(['git', 'commit', '-m', f'topic {index}'], cwd=repo, check=True)
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches-shallow.tar.gz',
+        depth=1,
+        all_branches=True,
+        verbose=0,
+    )
+    unpacked = _extract_tar_root(
+        archive, tmp_path / 'all-branches-shallow-extract'
+    )
+    count = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-list', '--count', 'topic'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert count == '1'
+
+
+def test_archive_source_all_branches_rejects_source_only(tmp_path):
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches_source_only'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+
+    with pytest.raises(ValueError, match='--all-branches requires Git history'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'invalid.tar.gz',
+            depth=0,
+            all_branches=True,
+            verbose=0,
+        )
 
 
 def test_archive_source_info_paths_status_and_redaction(tmp_path):

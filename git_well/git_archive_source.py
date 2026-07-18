@@ -92,6 +92,16 @@ class SubmoduleArchiveDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class BranchRefInventory:
+    """
+    Local and remote-tracking branch refs cached in one repository.
+    """
+
+    local_branches: tuple[str, ...]
+    remote_tracking_branches: tuple[str, ...]
+
+
 _UNSET = object()
 
 
@@ -241,6 +251,17 @@ class ArchiveSourceCLI(kwconf.Config):
             integer for shallow history, or 0 for source-only git archive mode.
             """).strip(),
     )
+    all_branches = kwconf.Value(
+        False,
+        isflag=True,
+        alias=['all-branches'],
+        help=textwrap.dedent("""
+            Include every local branch and every remote-tracking branch already
+            cached in the superproject repository. This never contacts configured
+            remotes; fetch contributor forks before archiving. Requires Git
+            history, so it cannot be combined with --depth 0.
+            """).strip(),
+    )
     submodule_depth = kwconf.Value(
         None,
         parser=str,
@@ -321,6 +342,7 @@ class ArchiveSourceCLI(kwconf.Config):
             repo_dpath=config.repo_dpath,
             output=config.output,
             depth=config.depth,
+            all_branches=bool(config.all_branches),
             submodule_depth=config.submodule_depth,
             exclude_submodule=config.exclude_submodule,
             no_submodules=not bool(config.submodules),
@@ -348,6 +370,7 @@ def archive_source(
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
     verbose: int = 1,
+    all_branches: bool = False,
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -397,6 +420,11 @@ def archive_source(
         verbose:
             Verbosity level.
 
+        all_branches:
+            If true, include every local branch and every remote-tracking
+            branch already cached in the superproject repository. No configured
+            remote is contacted. This cannot be combined with ``depth=0``.
+
     Returns:
         The generated archive path.
 
@@ -422,7 +450,12 @@ def archive_source(
 
     normalized_depth = _normalize_depth(depth)
     include_git_history = normalized_depth != 0
+    if all_branches and not include_git_history:
+        raise ValueError(
+            '--all-branches requires Git history; use --depth 1 or greater'
+        )
     clone_depth = None if normalized_depth in {0, None} else normalized_depth
+    branch_refs = _branch_ref_inventory(repo) if all_branches else None
     submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
     exclude_submodule_paths = _normalize_submodule_path_list(
         exclude_submodule
@@ -454,6 +487,15 @@ def archive_source(
     if include_git_history:
         depth_label = 'full' if clone_depth is None else str(clone_depth)
         log(f'[source-archive] history depth: {depth_label}')
+        if all_branches:
+            assert branch_refs is not None
+            log(
+                '[source-archive] branches: all locally cached '
+                f'({len(branch_refs.local_branches)} local, '
+                f'{len(branch_refs.remote_tracking_branches)} remote-tracking)'
+            )
+        else:
+            log('[source-archive] branches: current HEAD history only')
     else:
         log('[source-archive] depth: 0 (source-only git archive mode)')
     for line in submodule_depth_policy.summary_lines():
@@ -489,6 +531,7 @@ def archive_source(
                 commit=head_sha,
                 label='superproject',
                 clone_depth=clone_depth,
+                branch_refs=branch_refs,
                 redact_local_paths=redact_local_paths,
                 log=log,
             )
@@ -539,6 +582,7 @@ def archive_source(
                     commit=submodule_sha,
                     label=f'submodule {path}',
                     clone_depth=sub_clone_depth,
+                    branch_refs=None,
                     redact_local_paths=redact_local_paths,
                     log=log,
                 )
@@ -564,6 +608,7 @@ def archive_source(
             short_sha=short_sha,
             include_git_history=include_git_history,
             clone_depth=clone_depth,
+            branch_refs=branch_refs,
             submodule_decisions=submodule_decisions,
             redact_local_paths=redact_local_paths,
         )
@@ -1245,6 +1290,19 @@ def _repo_has_commit(repo: 'git.Repo', commit: str) -> bool:
     return True
 
 
+def _branch_ref_inventory(repo: 'git.Repo') -> BranchRefInventory:
+    """Return branch-like refs already present in ``repo`` without fetching."""
+
+    def _names(namespace: str) -> tuple[str, ...]:
+        stdout = repo.git.for_each_ref('--format=%(refname:strip=2)', namespace)
+        return tuple(sorted(line for line in stdout.splitlines() if line))
+
+    return BranchRefInventory(
+        local_branches=_names('refs/heads'),
+        remote_tracking_branches=_names('refs/remotes'),
+    )
+
+
 def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
     options = ['--quiet', '--no-local', '--single-branch', '--no-checkout']
     if clone_depth is not None:
@@ -1258,6 +1316,7 @@ def _clone_committed_checkout(
     commit: str,
     label: str,
     clone_depth: int | None,
+    branch_refs: BranchRefInventory | None,
     redact_local_paths: bool,
     log: '_Logger',
 ) -> None:
@@ -1282,9 +1341,17 @@ def _clone_committed_checkout(
     cloned = git.Repo(dst)
     _checkout_commit(cloned, commit, label, clone_depth, log)
 
+    if branch_refs is not None:
+        _copy_cached_branch_refs(
+            src=src,
+            cloned=cloned,
+            clone_depth=clone_depth,
+            branch_refs=branch_refs,
+            log=log,
+        )
+
     if redact_local_paths:
-        for remote in list(cloned.remotes):
-            cloned.git.remote('remove', remote.name)
+        _remove_remote_configs_preserving_refs(cloned)
 
     # The archive is for inspection, not local recovery. Expire the clone's
     # fresh reflogs so they do not keep extra objects alive, then repack to make
@@ -1299,6 +1366,55 @@ def _clone_committed_checkout(
         cloned.git.gc('--prune=now', '--quiet')
     except git.GitCommandError:
         pass
+
+
+def _copy_cached_branch_refs(
+    src: 'git.Repo',
+    cloned: 'git.Repo',
+    clone_depth: int | None,
+    branch_refs: BranchRefInventory,
+    log: '_Logger',
+) -> None:
+    """Copy local and remote-tracking refs from ``src`` without networking."""
+    src_root = Path(cast(str, src.working_tree_dir)).resolve()
+
+    # The initial clone creates synthetic ``origin/*`` refs for the local
+    # source repository. Remove that generated remote before copying the
+    # source repository's actual cached remote-tracking refs into place.
+    if 'origin' in [remote.name for remote in cloned.remotes]:
+        cloned.git.remote('remove', 'origin')
+
+    refspecs = []
+    if branch_refs.local_branches:
+        refspecs.append('+refs/heads/*:refs/heads/*')
+    if branch_refs.remote_tracking_branches:
+        refspecs.append('+refs/remotes/*:refs/remotes/*')
+
+    if refspecs:
+        fetch_args = ['--quiet']
+        if clone_depth is not None:
+            fetch_args += ['--depth', str(clone_depth)]
+        cloned.git.fetch(*fetch_args, str(src_root), *refspecs)
+
+    cloned.git.remote('add', 'origin', str(src_root))
+    log(
+        '[source-archive] copied locally cached branch refs: '
+        f'{len(branch_refs.local_branches)} local, '
+        f'{len(branch_refs.remote_tracking_branches)} remote-tracking'
+    )
+
+
+def _remove_remote_configs_preserving_refs(repo: 'git.Repo') -> None:
+    """Remove local fetch paths without deleting remote-tracking refs."""
+    import git
+
+    for remote in list(repo.remotes):
+        try:
+            repo.git.config('--remove-section', f'remote.{remote.name}')
+        except git.GitCommandError:
+            pass
+    git_dir = Path(repo.git_dir)
+    (git_dir / 'FETCH_HEAD').unlink(missing_ok=True)
 
 
 def _checkout_commit(
@@ -1405,6 +1521,7 @@ def _write_manifest(
     short_sha: str,
     include_git_history: bool,
     clone_depth: int | None,
+    branch_refs: BranchRefInventory | None,
     submodule_decisions: list[SubmoduleArchiveDecision],
     redact_local_paths: bool,
 ) -> None:
@@ -1461,12 +1578,36 @@ def _write_manifest(
         f'Superproject commit: {head_sha}',
         f'Superproject short commit: {short_sha}',
         f'Superproject history: {superproject_history}',
+        'Superproject branches: '
+        + (
+            'all locally cached local and remote-tracking branches'
+            if branch_refs is not None
+            else 'current HEAD history only'
+        ),
         '',
         f'Content pruning: {"yes" if pruning_details else "none"}',
     ]
     if pruning_details:
         lines.append('Pruning details:')
         lines.extend(f'- {detail}' for detail in pruning_details)
+    if branch_refs is not None:
+        lines += [
+            '',
+            'Remote network access during archive: none',
+            '',
+            'Local branches:',
+        ]
+        if branch_refs.local_branches:
+            lines.extend(f'- {name}' for name in branch_refs.local_branches)
+        else:
+            lines.append('(none)')
+        lines += ['', 'Remote-tracking branches:']
+        if branch_refs.remote_tracking_branches:
+            lines.extend(
+                f'- {name}' for name in branch_refs.remote_tracking_branches
+            )
+        else:
+            lines.append('(none)')
 
     lines += ['', 'Submodules:']
     if submodule_decisions:
