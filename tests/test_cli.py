@@ -776,6 +776,49 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
     assert 'Content pruning: yes' in manifest_text
 
 
+def test_archive_source_warns_and_omits_uninitialized_submodule(
+    tmp_path, capsys
+):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'uninitialized_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/uninitialized': sub_repo}
+    )
+    ub.cmd(
+        ['git', 'submodule', 'deinit', '-f', 'external/uninitialized'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'uninitialized-submodule.tar.gz',
+        depth=1,
+        verbose=0,
+    )
+
+    captured = capsys.readouterr()
+    assert '[source-archive] WARNING: omitting submodule' in captured.err
+    assert 'external/uninitialized: not initialized locally' in captured.err
+    assert 'git submodule update --init --recursive' in captured.err
+
+    names = _tar_names(archive)
+    assert not any(
+        name.endswith('/external/uninitialized/tracked.txt')
+        for name in names
+    )
+
+    manifest_text = _tar_manifest_text(archive)
+    assert 'Content pruning: yes' in manifest_text
+    assert 'path: external/uninitialized' in manifest_text
+    assert 'status: omitted' in manifest_text
+    assert 'history: omitted' in manifest_text
+    assert 'reason: not initialized locally' in manifest_text
+
+
 def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
     import ubelt as ub
 

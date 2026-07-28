@@ -59,6 +59,7 @@ _FORMAT_ALIASES = {
 }
 
 _ARCHIVE_INFO_FNAME = 'GIT_WELL_ARCHIVE_INFO.txt'
+_UNINITIALIZED_SUBMODULE_REASON = 'not initialized locally'
 
 # TODO: Re-enable repo-local archive_source defaults after kwconf /
 # legacy modal dispatch preserved omitted values distinctly from
@@ -223,7 +224,8 @@ class ArchiveSourceCLI(kwconf.Config):
     and omits ``.git`` metadata.
 
     Local edits, untracked files, ignored files, and build outputs are excluded
-    in all modes. Submodules must already be initialized locally.
+    in all modes. Initialized submodules are included; uninitialized submodules
+    are omitted with a warning and recorded as pruned in the archive manifest.
     """
 
     __command__ = 'archive_source'
@@ -292,7 +294,8 @@ class ArchiveSourceCLI(kwconf.Config):
         True,
         isflag=True,
         help=textwrap.dedent("""
-            Materialize initialized recursive submodule working trees. Pass
+            Materialize initialized recursive submodule working trees.
+            Uninitialized submodules are omitted with a warning. Pass
             --no-submodules to omit every submodule working tree from the
             archive while keeping superproject gitlinks and .gitmodules.
             """).strip(),
@@ -407,6 +410,10 @@ def archive_source(
         no_submodules:
             If true, omit all recursive submodule working trees from the
             archive.
+
+            When false, initialized submodules are included and uninitialized
+            submodules are omitted with a warning. Every omission is recorded
+            in the generated archive manifest.
 
         format:
             Archive format. ``'auto'`` infers from the output extension when
@@ -544,16 +551,19 @@ def archive_source(
             path = info.path
             submodule_sha = info.sha
             if decision.omitted:
-                log(
-                    f'[source-archive] omitting submodule {path}: '
-                    f'{decision.reason}'
-                )
+                if decision.reason == _UNINITIALIZED_SUBMODULE_REASON:
+                    log.warning(
+                        f'[source-archive] WARNING: omitting submodule '
+                        f'{path}: {decision.reason}'
+                        + '; run: git submodule update --init --recursive '
+                        'to include it'
+                    )
+                else:
+                    log(
+                        f'[source-archive] omitting submodule {path}: '
+                        f'{decision.reason}'
+                    )
                 continue
-            if info.status == '-':
-                raise RuntimeError(
-                    f"submodule '{path}' is not initialized; run: "
-                    'git submodule update --init --recursive'
-                )
             src_dpath = repo_root / path
             if not src_dpath.exists():
                 raise RuntimeError(
@@ -1047,6 +1057,17 @@ def _resolve_submodule_archive_decisions(
                     depth=inherited_depth,
                     mode='omitted',
                     reason='excluded by --exclude-submodule',
+                )
+            )
+            continue
+        if info.status == '-':
+            decisions.append(
+                SubmoduleArchiveDecision(
+                    info=info,
+                    omitted=True,
+                    depth=inherited_depth,
+                    mode='omitted',
+                    reason=_UNINITIALIZED_SUBMODULE_REASON,
                 )
             )
             continue
@@ -1692,6 +1713,11 @@ class _Logger:
     def __call__(self, msg: str) -> None:
         if self.verbose:
             print(msg)
+
+    def warning(self, msg: str) -> None:
+        import sys
+
+        print(msg, file=sys.stderr)
 
     def path(self, prefix: str, path: PathLike, suffix: str = '') -> None:
         if self.verbose:

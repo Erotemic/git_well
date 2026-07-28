@@ -10,6 +10,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
 
+### Fixed
+
+* Let `archive_source` omit uninitialized submodules with a warning instead of aborting the entire archive; record each omission in `GIT_WELL_ARCHIVE_INFO.txt`.
+
 
 ## Version 0.3.2 - Released 2026-07-17
 
