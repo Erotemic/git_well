@@ -299,6 +299,223 @@ def test_archive_source_with_history(tmp_path):
     assert 'Content pruning: none' in info_text
 
 
+def test_archive_source_programmatic_hooks(tmp_path):
+    """Prepare hooks enrich the tree before validation and serialization."""
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_hooks'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    events = []
+    observed = {}
+
+    def prepare_first(context):
+        events.append('prepare-first')
+        observed['stage'] = context.stage_dpath
+        assert context.depth == 0
+        assert context.include_git_history is False
+        (context.archive_root / 'generated.txt').write_text('generated\n')
+
+    def prepare_second(context):
+        events.append('prepare-second')
+        assert (context.archive_root / 'generated.txt').exists()
+
+    def validate(context):
+        events.append('validate')
+        assert context.manifest_path.exists()
+        assert (context.archive_root / 'generated.txt').exists()
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'hooked-source.tar.gz',
+        depth=0,
+        prepare=[prepare_first, prepare_second],
+        validate=validate,
+        archive_root_name='custom-source-root',
+        verbose=0,
+    )
+
+    assert events == ['prepare-first', 'prepare-second', 'validate']
+    assert not observed['stage'].exists()
+    with tarfile.open(archive, 'r:gz') as tar:
+        names = set(tar.getnames())
+    assert 'custom-source-root/generated.txt' in names
+    assert 'custom-source-root/GIT_WELL_ARCHIVE_INFO.txt' in names
+
+
+def test_archive_source_hook_generated_excludes(tmp_path):
+    """Generated hook payloads can keep staged Git checkouts clean."""
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_hook_excludes'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    def prepare(context):
+        generated = context.archive_root / '.agent' / 'index.json'
+        generated.parent.mkdir()
+        generated.write_text('{}\n')
+        context.add_generated_excludes('.agent/')
+
+    def validate(context):
+        status = ub.cmd(
+            ['git', 'status', '--short'],
+            cwd=context.archive_root,
+            check=True,
+        )
+        assert _stdout_text(status).strip() == ''
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'hook-excludes.tar.gz',
+        prepare=prepare,
+        validate=validate,
+        verbose=0,
+    )
+
+    extract = tmp_path / 'hook-excludes-extract'
+    with tarfile.open(archive, 'r:gz') as tar:
+        try:
+            tar.extractall(extract, filter='fully_trusted')
+        except TypeError:
+            tar.extractall(extract)
+    unpacked = next(extract.iterdir())
+    exclude_text = (unpacked / '.git' / 'info' / 'exclude').read_text()
+    assert exclude_text.count('/GIT_WELL_ARCHIVE_INFO.txt') == 1
+    assert exclude_text.count('/.agent/') == 1
+    assert (unpacked / '.agent' / 'index.json').exists()
+
+
+def test_archive_source_hook_failure_aborts_and_cleans(tmp_path):
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import (
+        ArchiveSourceHookError,
+        archive_source,
+    )
+
+    repo = tmp_path / 'demo_hook_failure'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    output = tmp_path / 'should-not-exist.tar.gz'
+    observed = {}
+
+    def broken_prepare(context):
+        observed['stage'] = context.stage_dpath
+        raise ValueError('deliberate failure')
+
+    with pytest.raises(ArchiveSourceHookError) as exc_info:
+        archive_source(
+            repo_dpath=repo,
+            output=output,
+            depth=0,
+            prepare=broken_prepare,
+            verbose=0,
+        )
+
+    error = exc_info.value
+    assert error.phase == 'prepare'
+    assert error.hook is broken_prepare
+    assert error.hook_name.endswith('broken_prepare')
+    assert isinstance(error.__cause__, ValueError)
+    assert error.stage_dpath == observed['stage']
+    assert error.stage_retained is False
+    assert not output.exists()
+    assert not observed['stage'].exists()
+
+
+def test_archive_source_hook_failure_can_retain_stage(tmp_path):
+    import shutil
+
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import (
+        ArchiveSourceHookError,
+        archive_source,
+    )
+
+    repo = tmp_path / 'demo_hook_retained_failure'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    def broken_validate(context):
+        raise ValueError('inspect retained stage')
+
+    try:
+        with pytest.raises(ArchiveSourceHookError) as exc_info:
+            archive_source(
+                repo_dpath=repo,
+                output=tmp_path / 'retained-failure.tar.gz',
+                depth=0,
+                validate=broken_validate,
+                keep_stage=True,
+                verbose=0,
+            )
+        error = exc_info.value
+        assert error.phase == 'validate'
+        assert error.stage_retained is True
+        assert error.stage_dpath.exists()
+        assert error.archive_root.exists()
+        assert error.archive_root.joinpath(
+            'GIT_WELL_ARCHIVE_INFO.txt'
+        ).exists()
+    finally:
+        if 'error' in locals():
+            shutil.rmtree(error.stage_dpath.parent, ignore_errors=True)
+
+
+def test_stage_source_archive_direct_api(tmp_path):
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import stage_source_archive
+
+    repo = tmp_path / 'demo_direct_stage'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    output = tmp_path / 'direct-stage.tar.gz'
+    with stage_source_archive(
+        repo_dpath=repo,
+        output=output,
+        depth=0,
+        archive_root_name='direct-root',
+        verbose=0,
+    ) as context:
+        stage = context.stage_dpath
+        assert context.archive_root == stage / 'direct-root'
+        (context.archive_root / 'direct.txt').write_text('direct\n')
+        assert context.write_archive() == output
+
+    assert not stage.exists()
+    with tarfile.open(output, 'r:gz') as tar:
+        names = set(tar.getnames())
+    assert 'direct-root/direct.txt' in names
+
+
 def test_archive_source_all_branches_preserves_cached_refs(tmp_path):
     """Archive locally fetched contributor refs without contacting remotes."""
     import ubelt as ub

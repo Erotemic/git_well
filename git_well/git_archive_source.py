@@ -9,6 +9,8 @@ from __future__ import annotations
 import fnmatch
 import os
 import textwrap
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -101,6 +103,169 @@ class BranchRefInventory:
 
     local_branches: tuple[str, ...]
     remote_tracking_branches: tuple[str, ...]
+
+
+ArchiveSourceHook = Callable[['ArchiveSourceContext'], None]
+ArchiveSourceHookArg = ArchiveSourceHook | Iterable[ArchiveSourceHook] | None
+
+
+class ArchiveSourceHookError(RuntimeError):
+    """
+    Wrap an exception raised by a programmatic archive-source hook.
+    """
+
+    def __init__(
+        self,
+        phase: Literal['prepare', 'validate'],
+        hook: ArchiveSourceHook,
+        cause: Exception,
+        context: 'ArchiveSourceContext',
+    ) -> None:
+        self.phase = phase
+        self.hook = hook
+        self.hook_name = _hook_name(hook)
+        self.cause = cause
+        self.stage_dpath = context.stage_dpath
+        self.archive_root = context.archive_root
+        self.stage_retained = context.keep_stage
+        retained_suffix = (
+            f'; retained stage: {context.stage_dpath}'
+            if context.keep_stage
+            else ''
+        )
+        super().__init__(
+            f'archive_source {phase} hook {self.hook_name!r} failed: '
+            f'{cause}{retained_suffix}'
+        )
+
+
+@dataclass
+class ArchiveSourceContext:
+    """
+    Mutable staging context exposed to programmatic archive extensions.
+
+    Prepare hooks may add files below :attr:`archive_root` and register those
+    generated paths with :meth:`add_generated_excludes`. Validation hooks run
+    after git-well has written its own metadata and should inspect without
+    mutating the staged tree.
+    """
+
+    repo_root: Path
+    archive_path: Path
+    archive_format: ResolvedArchiveFormat
+    stage_dpath: Path
+    archive_root: Path
+    archive_root_name: str
+    repo_name: str
+    timestamp: str
+    head_sha: str
+    short_sha: str
+    normalized_depth: int | None
+    include_git_history: bool
+    clone_depth: int | None
+    branch_refs: BranchRefInventory | None
+    submodule_decisions: tuple[SubmoduleArchiveDecision, ...]
+    redact_local_paths: bool
+    all_branches: bool
+    keep_stage: bool
+    _log: '_Logger' = field(repr=False)
+    _generated_excludes: list[str] = field(
+        default_factory=lambda: [f'/{_ARCHIVE_INFO_FNAME}'], repr=False
+    )
+    _metadata_finalized: bool = field(default=False, init=False, repr=False)
+    _archive_written: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def depth(self) -> int | None:
+        """Normalized superproject depth; ``None`` means full history."""
+        return self.normalized_depth
+
+    @property
+    def manifest_path(self) -> Path:
+        """Path where git-well's archive information file is generated."""
+        return self.archive_root / _ARCHIVE_INFO_FNAME
+
+    def source_display_path(self) -> str:
+        """Return the source path using the configured redaction policy."""
+        if self.redact_local_paths:
+            return '(redacted by --redact-local-paths)'
+        return os.fspath(self.repo_root)
+
+    def output_display_path(self) -> str:
+        """Return the output path using the configured redaction policy."""
+        if self.redact_local_paths:
+            return '(redacted by --redact-local-paths)'
+        return os.fspath(self.archive_path)
+
+    def add_generated_excludes(self, paths: str | Iterable[str]) -> None:
+        """
+        Ignore generated archive-relative paths in history-bearing checkouts.
+
+        These rules only affect ``.git/info/exclude`` in the staged clone.
+        They do not hide modifications to tracked files.
+        """
+        if self._metadata_finalized:
+            raise RuntimeError(
+                'generated excludes cannot be added after metadata finalization'
+            )
+        if isinstance(paths, str):
+            paths = [paths]
+        for path in paths:
+            rule = _normalize_generated_exclude(path)
+            if rule not in self._generated_excludes:
+                self._generated_excludes.append(rule)
+
+    def finalize_metadata(self) -> Path:
+        """Write git-well metadata after all prepare hooks have run."""
+        if self._metadata_finalized:
+            return self.manifest_path
+        manifest = self.manifest_path
+        _assert_archive_info_path_available(manifest)
+        if self.include_git_history:
+            _append_generated_excludes(
+                self.archive_root, self._generated_excludes
+            )
+        _write_manifest(
+            manifest=manifest,
+            repo_root=self.repo_root,
+            archive_path=self.archive_path,
+            repo_name=self.repo_name,
+            prefix=self.archive_root_name,
+            timestamp=self.timestamp,
+            head_sha=self.head_sha,
+            short_sha=self.short_sha,
+            include_git_history=self.include_git_history,
+            clone_depth=self.clone_depth,
+            branch_refs=self.branch_refs,
+            submodule_decisions=self.submodule_decisions,
+            redact_local_paths=self.redact_local_paths,
+        )
+        self._metadata_finalized = True
+        return manifest
+
+    def write_archive(self) -> Path:
+        """Finalize metadata and serialize the staged archive exactly once."""
+        if self._archive_written:
+            raise RuntimeError('archive has already been written')
+        self.finalize_metadata()
+        _write_archive(
+            self.stage_dpath,
+            self.archive_root_name,
+            self.archive_path,
+            self.archive_format,
+        )
+        self._archive_written = True
+        self._log(f'[source-archive] wrote: {self.archive_path}')
+        if self.archive_format == 'zip':
+            self._log(
+                f'[source-archive] list contents: unzip -l {self.archive_path}'
+            )
+        else:
+            self._log(
+                f'[source-archive] list contents: tar -tf '
+                f'{self.archive_path} | less'
+            )
+        return self.archive_path
 
 
 _UNSET = object()
@@ -374,6 +539,10 @@ def archive_source(
     redact_local_paths: bool = False,
     verbose: int = 1,
     all_branches: bool = False,
+    prepare: ArchiveSourceHookArg = None,
+    validate: ArchiveSourceHookArg = None,
+    archive_root_name: str | None = None,
+    keep_stage: bool = False,
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -409,11 +578,8 @@ def archive_source(
 
         no_submodules:
             If true, omit all recursive submodule working trees from the
-            archive.
-
-            When false, initialized submodules are included and uninitialized
-            submodules are omitted with a warning. Every omission is recorded
-            in the generated archive manifest.
+            archive. When false, initialized submodules are included and
+            uninitialized submodules are omitted with a warning.
 
         format:
             Archive format. ``'auto'`` infers from the output extension when
@@ -432,16 +598,76 @@ def archive_source(
             branch already cached in the superproject repository. No configured
             remote is contacted. This cannot be combined with ``depth=0``.
 
+        prepare:
+            One callable, or an iterable of callables, invoked after committed
+            source and submodules are staged but before git-well metadata is
+            written. Prepare hooks may modify ``context.archive_root``.
+
+        validate:
+            One callable, or an iterable of callables, invoked after git-well
+            metadata is written and immediately before serialization.
+            Validation hooks should not mutate the staged tree.
+
+        archive_root_name:
+            Optional programmatic override for the top-level directory inside
+            the archive. This is intentionally not exposed by the CLI.
+
+        keep_stage:
+            If true, retain the temporary staging directory after success or
+            failure. Hook errors expose the retained path as ``stage_dpath``.
+
     Returns:
         The generated archive path.
 
     Notes:
         This function only archives committed/tracked source. Local edits,
         untracked files, ignored files, and build outputs are deliberately
-        excluded. Every archive contains ``GIT_WELL_ARCHIVE_INFO.txt`` with
-        the source/output paths, commits, history depths, and any intentional
-        pruning. Use ``redact_local_paths=True`` when those local paths should
-        not be included in the artifact.
+        excluded. Hook failures abort serialization and are wrapped in
+        :class:`ArchiveSourceHookError` with the hook phase and name.
+    """
+    prepare_hooks = _coerce_archive_hooks(prepare, phase='prepare')
+    validate_hooks = _coerce_archive_hooks(validate, phase='validate')
+    with stage_source_archive(
+        repo_dpath=repo_dpath,
+        output=output,
+        depth=depth,
+        submodule_depth=submodule_depth,
+        exclude_submodule=exclude_submodule,
+        no_submodules=no_submodules,
+        format=format,
+        redact_local_paths=redact_local_paths,
+        verbose=verbose,
+        all_branches=all_branches,
+        archive_root_name=archive_root_name,
+        keep_stage=keep_stage,
+    ) as context:
+        _run_archive_hooks('prepare', prepare_hooks, context)
+        context.finalize_metadata()
+        _run_archive_hooks('validate', validate_hooks, context)
+        return context.write_archive()
+
+
+@contextmanager
+def stage_source_archive(
+    repo_dpath: PathLike = '.',
+    output: PathLike | None = None,
+    depth: DepthArg = 'full',
+    submodule_depth: SubmoduleDepthSpecArg = None,
+    exclude_submodule: str | list[str] | None = None,
+    no_submodules: bool = False,
+    format: ArchiveFormatArg = 'auto',
+    redact_local_paths: bool = False,
+    verbose: int = 1,
+    all_branches: bool = False,
+    archive_root_name: str | None = None,
+    keep_stage: bool = False,
+) -> Iterator[ArchiveSourceContext]:
+    """
+    Stage committed source and yield a context before metadata/serialization.
+
+    The temporary staging tree is removed when the context exits unless
+    ``keep_stage=True``. Call :meth:`ArchiveSourceContext.write_archive` to
+    serialize when using this lower-level API directly.
     """
     repo = _coerce_repo(repo_dpath)
     _assert_has_head(repo)
@@ -453,7 +679,11 @@ def archive_source(
     import ubelt as ub
 
     timestamp = ub.timestamp()
-    prefix = f'{repo_name}-source-{timestamp}-{short_sha}'
+    default_root_name = f'{repo_name}-source-{timestamp}-{short_sha}'
+    if archive_root_name is None:
+        resolved_root_name = default_root_name
+    else:
+        resolved_root_name = _normalize_archive_root_name(archive_root_name)
 
     normalized_depth = _normalize_depth(depth)
     include_git_history = normalized_depth != 0
@@ -469,22 +699,26 @@ def archive_source(
     )
 
     archive_format = _resolve_archive_format(output, format)
-    archive_path = _resolve_output(repo_root, output, prefix, archive_format)
+    archive_path = _resolve_output(
+        repo_root, output, resolved_root_name, archive_format
+    )
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     submodule_status = _submodule_status(repo)
-    submodule_decisions = _resolve_submodule_archive_decisions(
-        submodule_status,
-        policy=submodule_depth_policy,
-        inherited_depth=normalized_depth,
-        exclude_submodule=exclude_submodule_paths,
-        no_submodules=bool(no_submodules),
+    submodule_decisions = tuple(
+        _resolve_submodule_archive_decisions(
+            submodule_status,
+            policy=submodule_depth_policy,
+            inherited_depth=normalized_depth,
+            exclude_submodule=exclude_submodule_paths,
+            no_submodules=bool(no_submodules),
+        )
     )
 
     log = _Logger(verbose)
     log.path('[source-archive] repo: ', repo_root)
     log.path('[source-archive] output directory: ', archive_path.parent)
-    log(f'[source-archive] prefix: {prefix}')
+    log(f'[source-archive] prefix: {resolved_root_name}')
     log(f'[source-archive] archive format: {archive_format}')
     log(
         '[source-archive] git history: {}'.format(
@@ -528,7 +762,7 @@ def archive_source(
     try:
         stage = tmpdir / 'stage'
         stage.mkdir(parents=True, exist_ok=True)
-        archive_root = stage / prefix
+        archive_root = stage / resolved_root_name
 
         if include_git_history:
             log('[source-archive] cloning superproject')
@@ -544,7 +778,9 @@ def archive_source(
             )
         else:
             log('[source-archive] exporting superproject with git archive')
-            _extract_git_archive(repo, 'HEAD', stage, prefix)
+            _extract_git_archive(
+                repo, 'HEAD', stage, resolved_root_name
+            )
 
         for decision in submodule_decisions:
             info = decision.info
@@ -599,42 +835,39 @@ def archive_source(
             else:
                 (archive_root / path).mkdir(parents=True, exist_ok=True)
                 _extract_git_archive(
-                    sub_repo, submodule_sha, stage, f'{prefix}/{path}'
+                    sub_repo,
+                    submodule_sha,
+                    stage,
+                    f'{resolved_root_name}/{path}',
                 )
 
-        manifest = archive_root / _ARCHIVE_INFO_FNAME
-        _assert_archive_info_path_available(manifest)
-        if include_git_history:
-            _append_manifest_exclude(archive_root)
-
-        _write_manifest(
-            manifest=manifest,
+        context = ArchiveSourceContext(
             repo_root=repo_root,
             archive_path=archive_path,
+            archive_format=archive_format,
+            stage_dpath=stage,
+            archive_root=archive_root,
+            archive_root_name=resolved_root_name,
             repo_name=repo_name,
-            prefix=prefix,
             timestamp=timestamp,
             head_sha=head_sha,
             short_sha=short_sha,
+            normalized_depth=normalized_depth,
             include_git_history=include_git_history,
             clone_depth=clone_depth,
             branch_refs=branch_refs,
             submodule_decisions=submodule_decisions,
             redact_local_paths=redact_local_paths,
+            all_branches=all_branches,
+            keep_stage=keep_stage,
+            _log=log,
         )
-
-        _write_archive(stage, prefix, archive_path, archive_format)
+        yield context
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    log(f'[source-archive] wrote: {archive_path}')
-    if archive_format == 'zip':
-        log(f'[source-archive] list contents: unzip -l {archive_path}')
-    elif archive_format == 'tar':
-        log(f'[source-archive] list contents: tar -tf {archive_path} | less')
-    else:
-        log(f'[source-archive] list contents: tar -tf {archive_path} | less')
-    return archive_path
+        if keep_stage:
+            log.path('[source-archive] retained stage: ', tmpdir)
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def build_source_archive(*args: Any, **kwargs: Any) -> Path:
@@ -734,6 +967,63 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
 #         _normalize_depth(values['depth'])
 #     if 'format' in values:
 #         _resolve_archive_format(None, cast(ArchiveFormatArg, values['format']))
+
+
+def _hook_name(hook: ArchiveSourceHook) -> str:
+    name = getattr(hook, '__qualname__', None)
+    if name is None:
+        name = getattr(hook, '__name__', None)
+    if name is None:
+        name = hook.__class__.__qualname__
+    return str(name)
+
+
+def _coerce_archive_hooks(
+    hooks: ArchiveSourceHookArg,
+    phase: Literal['prepare', 'validate'],
+) -> tuple[ArchiveSourceHook, ...]:
+    if hooks is None:
+        return ()
+    if callable(hooks):
+        # Callable objects may also satisfy Iterable, so make this branch's
+        # intended interpretation explicit to static type checkers.
+        return (cast(ArchiveSourceHook, hooks),)
+    iterable_hooks = cast(Iterable[ArchiveSourceHook], hooks)
+    try:
+        coerced = tuple(iterable_hooks)
+    except TypeError as ex:
+        raise TypeError(
+            f'{phase} hooks must be a callable or iterable of callables'
+        ) from ex
+    for hook in coerced:
+        if not callable(hook):
+            raise TypeError(
+                f'{phase} hooks must contain only callables; got {hook!r}'
+            )
+    return coerced
+
+
+def _run_archive_hooks(
+    phase: Literal['prepare', 'validate'],
+    hooks: Sequence[ArchiveSourceHook],
+    context: ArchiveSourceContext,
+) -> None:
+    for hook in hooks:
+        try:
+            hook(context)
+        except Exception as ex:
+            raise ArchiveSourceHookError(phase, hook, ex, context) from ex
+
+
+def _normalize_archive_root_name(name: str) -> str:
+    text = os.fspath(name)
+    if not text or text in {'.', '..'}:
+        raise ValueError('archive_root_name must be a non-empty basename')
+    if '\x00' in text or '/' in text or '\\' in text:
+        raise ValueError(
+            'archive_root_name must be a basename without path separators'
+        )
+    return text
 
 
 def _coerce_repo(repo_dpath: PathLike) -> 'git.Repo':
@@ -1496,16 +1786,37 @@ def _safe_extractall(tar: 'tarfile.TarFile', dst: Path) -> None:
         tar.extractall(path=str(dst))
 
 
-def _append_manifest_exclude(repo_dpath: PathLike) -> None:
+def _normalize_generated_exclude(path: str) -> str:
+    text = os.fspath(path).replace('\\', '/')
+    if not text or '\x00' in text or '\n' in text or '\r' in text:
+        raise ValueError(f'invalid generated exclude path: {path!r}')
+    directory_rule = text.endswith('/')
+    text = text.strip('/')
+    pure = PurePosixPath(text)
+    if not text or any(part in {'.', '..'} for part in pure.parts):
+        raise ValueError(
+            'generated excludes must be archive-root-relative paths without '
+            f'traversal: {path!r}'
+        )
+    normalized = '/' + pure.as_posix()
+    if directory_rule:
+        normalized += '/'
+    return normalized
+
+
+def _append_generated_excludes(
+    repo_dpath: PathLike, rules: Iterable[str]
+) -> None:
     info = Path(repo_dpath) / '.git' / 'info'
     if info.exists():
         exclude = info / 'exclude'
-        rule = f'/{_ARCHIVE_INFO_FNAME}'
         existing = exclude.read_text() if exclude.exists() else ''
-        if rule not in existing.splitlines():
+        existing_rules = set(existing.splitlines())
+        missing = [rule for rule in rules if rule not in existing_rules]
+        if missing:
             block = (
                 '\n# Added by git-well archive_source for generated metadata.\n'
-                f'{rule}\n'
+                + ''.join(f'{rule}\n' for rule in missing)
             )
             with exclude.open('a') as file:
                 file.write(block)
@@ -1543,7 +1854,7 @@ def _write_manifest(
     include_git_history: bool,
     clone_depth: int | None,
     branch_refs: BranchRefInventory | None,
-    submodule_decisions: list[SubmoduleArchiveDecision],
+    submodule_decisions: Sequence[SubmoduleArchiveDecision],
     redact_local_paths: bool,
 ) -> None:
     from git_well import __version__

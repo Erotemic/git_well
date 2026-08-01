@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
+* Add programmatic `prepare` and `validate` hooks for repository-specific archive enrichment and policy checks.
+* Add `stage_source_archive()` and `ArchiveSourceContext` for direct control of staged archive contents, generated-path exclusions, metadata finalization, serialization, and retained-stage debugging.
 
 ### Fixed
 

@@ -120,6 +120,35 @@ reachable. The archived working tree remains detached at the exact original
 honors positive ``--depth`` values from each included branch tip, and cannot
 be combined with source-only ``--depth 0`` archives.
 
+Repository-specific archivers can extend the same staging machinery through
+the Python API. Prepare hooks may add generated payloads to the committed
+checkout, while validation hooks run after git-well writes its metadata and
+immediately before serialization:
+
+.. code:: python
+
+   from git_well.git_archive_source import archive_source
+
+   def prepare(context):
+       report = context.archive_root / 'PROJECT_ARCHIVE_REPORT.txt'
+       report.write_text('project-specific report\n')
+       context.add_generated_excludes('PROJECT_ARCHIVE_REPORT.txt')
+
+   def validate(context):
+       assert context.manifest_path.exists()
+
+   archive_source(
+       repo_dpath='.',
+       depth=100,
+       prepare=prepare,
+       validate=validate,
+   )
+
+For workflows that need direct control, ``stage_source_archive()`` exposes the
+same context manager before metadata finalization and archive writing. These
+extension points are programmatic only; the command-line interface does not
+execute arbitrary hooks.
+
 
 Tracking large files with IPFS
 ------------------------------
