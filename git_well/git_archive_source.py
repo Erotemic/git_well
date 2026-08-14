@@ -497,7 +497,12 @@ class ArchiveSourceCLI(kwconf.Config):
     #         When specified, the config is updated and no archive is created.
     #         """).strip(),
     # )
-    verbose = kwconf.Value(1, help='verbosity level')
+    verbose: int = kwconf.Value(
+        1,
+        isflag='counter',
+        short_alias=['v'],
+        help='Increase verbosity; repeat for more detail',
+    )
 
     @classmethod
     def main(

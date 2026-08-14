@@ -1290,3 +1290,32 @@ def test_archive_source_no_submodules(tmp_path):
     assert 'Content pruning: yes' in manifest_text
     assert 'path: external/lib' in manifest_text
     assert 'reason: omitted by --no-submodules' in manifest_text
+
+
+def test_standard_short_aliases_and_verbose_counters(capsys):
+    from git_well import __version__
+    from git_well.git_archive_source import ArchiveSourceCLI
+    from git_well.git_branch_cleanup import CleanDevBranchConfig
+    from git_well.git_squash import GitSquashCLI
+    from git_well.git_squash_streaks import SquashStreakCLI
+    from git_well.git_sync import GitSyncCLI
+    from git_well.git_track_upstream import TrackUpstreamCLI
+    from git_well.git_url_components import GitUrlComponentsCLI
+    from git_well.main import GitWellModalCLI
+    from git_well.patchdir.git_patchdir_apply import GitApplyPatchCLI
+
+    assert GitSyncCLI.cli(argv=['example.com', '-f']).force is True
+    assert GitSyncCLI.cli(argv=['example.com', '-n']).dry is True
+    assert TrackUpstreamCLI.cli(argv=['-f']).force is True
+    assert CleanDevBranchConfig.cli(argv=['-y']).yes is True
+    assert GitApplyPatchCLI.cli(argv=['-n']).dry is True
+
+    assert GitUrlComponentsCLI.cli(argv=['-vv']).verbose == 2
+    assert ArchiveSourceCLI.cli(argv=['-vv']).verbose == 3
+    assert GitSquashCLI.cli(argv=['-vv']).verbose == 3
+    assert SquashStreakCLI.cli(argv=['-vv']).verbose == 3
+
+    modal = GitWellModalCLI(version=__version__)
+    assert modal.main(argv=['-V']) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == __version__

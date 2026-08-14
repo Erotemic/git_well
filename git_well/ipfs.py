@@ -715,16 +715,24 @@ class IPFSAdd(kwconf.Config):
 
     path = kwconf.Value(None, help='file or directory to add to IPFS', position=1)
     name = kwconf.Value(None, help='optional human-readable pin name')
-    recursive = kwconf.Flag(True, help='add directory paths recursively')
+    recursive = kwconf.Flag(
+        True, short_alias=['r'], help='add directory paths recursively'
+    )
     progress = kwconf.Flag(True, short_alias=['p'], help='stream progress data')
     cid_version = kwconf.Value(1, help='CID version')
     raw_leaves = kwconf.Flag(False, help='use raw blocks for leaf nodes')
-    only_hash = kwconf.Flag(False, short_alias=['n'], help='chunk/hash only; do not write IPFS blocks')
+    only_hash = kwconf.Flag(
+        False, help='chunk/hash only; do not write IPFS blocks'
+    )
     pin = kwconf.Flag(True, help='pin locally to protect added files from garbage collection')
     sidecar = kwconf.Value(True, help='true, false, or explicit sidecar path')
     update_gitignore = kwconf.Flag(True, help='add the tracked path to a nearby .gitignore')
     git_add_sidecar = kwconf.Flag(True, help='git-add the sidecar when inside a git worktree')
-    dry_run = kwconf.Flag(False, help='print the generated ipfs command without running it')
+    dry_run = kwconf.Flag(
+        False,
+        short_alias=['n'],
+        help='print the generated ipfs command without running it',
+    )
 
     _build_add_command = _build_add_argv
 
@@ -825,7 +833,9 @@ class IPFSPull(kwconf.Config):
 
     path = kwconf.Value(None, help='path/glob/directory containing .ipfs sidecars', position=1)
     dry_run = kwconf.Flag(False, short_alias=['n'], help='inspect without downloading or modifying files')
-    recursive = kwconf.Flag(True, help='recurse into directories when scanning')
+    recursive = kwconf.Flag(
+        True, short_alias=['r'], help='recurse into directories when scanning'
+    )
     allow_external = kwconf.Flag(
         False,
         help='allow rel_path to resolve outside the enclosing git worktree',
@@ -872,7 +882,9 @@ class IPFSStatus(kwconf.Config):
     __command__ = 'status'
 
     path = kwconf.Value('.', help='path/glob/directory containing .ipfs sidecars', position=1)
-    recursive = kwconf.Flag(True, help='recurse into directories when scanning')
+    recursive = kwconf.Flag(
+        True, short_alias=['r'], help='recurse into directories when scanning'
+    )
     strict = kwconf.Flag(False, help='error on missing tracked paths')
     full = kwconf.Flag(False, help='recompute CID using ipfs add --only-hash')
     write_baseline = kwconf.Flag(False, help='update quickstat baseline in each sidecar')
@@ -950,7 +962,9 @@ class IPFSExportPins(kwconf.Config):
         help='generate PURL-shaped names from git origin and repo-relative '
              'path when no explicit name is available')
     progress = kwconf.Flag(False, short_alias=['p'], help='include --progress')
-    recursive = kwconf.Flag(True, help='include --recursive')
+    recursive = kwconf.Flag(
+        True, short_alias=['r'], help='include --recursive'
+    )
     emit_bash = kwconf.Flag(False, help='emit a bash header')
 
     @classmethod
@@ -1004,7 +1018,9 @@ class IPFSPinAdd(kwconf.Config):
     __command__ = 'add'
 
     path = kwconf.Value(None, help='path to a .ipfs sidecar or raw CID', position=1)
-    recursive = kwconf.Flag(True, help='pin recursively')
+    recursive = kwconf.Flag(
+        True, short_alias=['r'], help='pin recursively'
+    )
     progress = kwconf.Flag(True, short_alias=['p'], help='stream progress data')
     name = kwconf.Value(
         None,
@@ -1052,7 +1068,9 @@ class IPFSCheckCID(kwconf.Config):
     __command__ = 'check-cid'
 
     path = kwconf.Value(None, help='file or directory to hash', position=1)
-    recursive = kwconf.Flag(False, help='pass --recursive')
+    recursive = kwconf.Flag(
+        False, short_alias=['r'], help='pass --recursive'
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):

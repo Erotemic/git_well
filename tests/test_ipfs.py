@@ -305,3 +305,33 @@ def test_ipfs_export_uses_generated_name_without_origin(tmp_path, capsys):
     captured = capsys.readouterr().out
 
     assert '--name=pkg:generic/repo#data.txt' in captured
+
+
+def test_ipfs_standard_short_aliases():
+    from git_well.ipfs import (
+        IPFSAdd,
+        IPFSCheckCID,
+        IPFSExportPins,
+        IPFSPinAdd,
+        IPFSPull,
+        IPFSStatus,
+    )
+
+    add = IPFSAdd.cli(argv=['payload', '-r', '-n'], strict=True)
+    assert add.recursive is True
+    assert add.dry_run is True
+    assert add.only_hash is False
+    assert IPFSAdd.cli(argv=['payload', '--only-hash'], strict=True).only_hash is True
+
+    pull = IPFSPull.cli(argv=['payload.ipfs', '-r', '-n'], strict=True)
+    assert pull.recursive is True
+    assert pull.dry_run is True
+
+    assert IPFSStatus.cli(argv=['-r'], strict=True).recursive is True
+    assert IPFSExportPins.cli(argv=['-r'], strict=True).recursive is True
+
+    pin = IPFSPinAdd.cli(argv=['bafyfakecid', '-r', '-n'], strict=True)
+    assert pin.recursive is True
+    assert pin.dry_run is True
+
+    assert IPFSCheckCID.cli(argv=['payload', '-r'], strict=True).recursive is True

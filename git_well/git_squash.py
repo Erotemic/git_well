@@ -38,8 +38,11 @@ class GitSquashCLI(kwconf.Config):
         short_alias=['f'],
         help='Force squash (opposite of dry)',
     )
-    verbose = kwconf.Value(
-        True, isflag=True, short_alias=['v'], help='Print progress'
+    verbose: int = kwconf.Value(
+        1,
+        isflag='counter',
+        short_alias=['v'],
+        help='Increase verbosity; repeat for more detail',
     )
     dpath = kwconf.Value('.', help='Path to repo to squash in')
 
