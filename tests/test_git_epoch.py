@@ -16,6 +16,7 @@ from git_well.epoch import (
     configure_submodule,
     create_sandbox,
     gc_history_store,
+    history_store_stats,
     initialize_config,
     inspect_manifest,
     load_config,
@@ -24,6 +25,7 @@ from git_well.epoch import (
     publish_sandbox,
     reconstruct,
     run_sandbox,
+    sandbox_stats,
     status,
     verify_sandbox,
 )
@@ -175,6 +177,20 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     assert result['published']['status'] == 'published'
     verification = result['verification']
     assert len(verification['repositories']) == 3
+    recursive = verification['recursive_fresh_clone']
+    assert recursive['repositories_initialized'] == 3
+    assert recursive['clean'] is True
+    recursive_root = pathlib.Path(recursive['path'])
+    assert _git(recursive_root / 'middle', 'rev-parse', 'HEAD').returncode == 0
+    assert _git(
+        recursive_root / 'middle' / 'leaf', 'rev-parse', 'HEAD'
+    ).returncode == 0
+
+    rerun = run_sandbox(sandbox_dpath, bundle=False)
+    assert rerun['planned']['status'] == 'skipped'
+    assert rerun['prepared']['status'] == 'skipped'
+    assert rerun['published']['status'] == 'skipped'
+    assert rerun['verification']['status'] == 'verified'
 
 
 def test_sandbox_reports_gitlink_mismatch_before_generic_dirty_error(tmp_path):
@@ -308,6 +324,10 @@ def test_sandbox_defaults_unconfigured_submodules_to_external(tmp_path):
     ]
     result = run_sandbox(sandbox_dpath, bundle=False)
     assert list(result['verification']['repositories']) == ['root-source']
+    recursive = result['verification']['recursive_fresh_clone']
+    assert recursive['repositories_initialized'] == 2
+    recursive_child = pathlib.Path(recursive['path']) / 'child'
+    assert _git(recursive_child, 'rev-parse', 'HEAD').stdout.strip() == child_tip
     sandbox_root = pathlib.Path(created['root_repo'])
     successor = _git(sandbox_root, 'rev-parse', 'HEAD').stdout.strip()
     successor_gitlink = _git(
@@ -358,6 +378,59 @@ def test_sandbox_rejects_tampered_manifest_root(tmp_path):
     manifest.write_text(text)
     with pytest.raises(EpochSafetyError, match='manifest root does not match'):
         run_sandbox(sandbox_dpath, bundle=False)
+
+
+def test_epoch_stats_report_store_epoch_bundle_and_sandbox_sizes(
+    tmp_path, monkeypatch
+):
+    source_remote = tmp_path / 'source-remote.git'
+    source = _init_repo(tmp_path / 'source', source_remote)
+    for index in range(12):
+        _commit(source, f'commit-{index}', ('payload-' + str(index)) * 100 + '\n')
+    _push(source)
+
+    sandbox_dpath = tmp_path / 'sandbox'
+    created = create_sandbox(source, output=sandbox_dpath)
+    plan_sandbox(sandbox_dpath, bundle=True)
+    apply_sandbox(sandbox_dpath)
+    publish_sandbox(sandbox_dpath)
+    verified = verify_sandbox(sandbox_dpath)
+    assert verified['recursive_fresh_clone']['repositories_initialized'] == 1
+
+    sandbox_repo = pathlib.Path(created['root_repo'])
+    stats = history_store_stats(sandbox_repo)
+    assert stats['history_store']['directory_bytes'] > 0
+    assert stats['totals']['archived_epochs'] == 1
+    epoch = stats['repositories']['source'][0]
+    assert epoch['number'] == 0
+    assert epoch['objects'] > 0
+    assert epoch['reachable_object_disk_bytes'] > 0
+    assert epoch['exclusive_object_disk_bytes'] > 0
+    assert epoch['standalone_bundle']['bytes'] > 0
+
+    sandbox_report = sandbox_stats(sandbox_dpath)
+    assert sandbox_report['history']['totals']['archived_epochs'] == 1
+    assert sandbox_report['bundles']['bytes'] > 0
+    assert sandbox_report['recursive_fresh_clone']['clean'] is True
+
+    from git_well import git_archive_source
+
+    def fake_archive_source(*, output, **kwargs):
+        output = pathlib.Path(output)
+        output.write_bytes(b'x' * 4096)
+        return output
+
+    monkeypatch.setattr(git_archive_source, 'archive_source', fake_archive_source)
+    package_report = sandbox_stats(sandbox_dpath, source_archive=True)
+    assert package_report['source_archive']['bytes'] == 4096
+    assert pathlib.Path(package_report['source_archive']['path']).exists()
+
+    gc_result = gc_history_store(sandbox_repo)
+    assert gc_result['before'] > 0
+    assert gc_result['after'] > 0
+    assert 'disk_reduction_percent' in gc_result
+    after_gc = history_store_stats(sandbox_repo)
+    assert after_gc['totals']['archived_epochs'] == 1
 
 
 def test_status_before_first_archive_and_direct_cli_exit_code(

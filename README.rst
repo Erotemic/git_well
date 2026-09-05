@@ -190,7 +190,25 @@ before rewriting refs:
 
 The staged ``sandbox plan``, ``sandbox apply``, ``sandbox publish``, and
 ``sandbox verify`` commands expose the same phases when the rehearsal should be
-inspected between steps.
+inspected between steps. Verification also performs a true recursive fresh clone
+using only sandbox remotes, so the combined parent/submodule checkout is tested
+rather than only six independent repository clones.
+
+Use ``git epoch stats`` to inspect the physical local history store and each
+archived epoch. The report separates shared-store bytes from standalone bundle
+bytes because epochs can share Git objects. In a sandbox, ``sandbox stats`` also
+reports active bare-remote sizes and the recursive fresh-clone size; add
+``--source-archive`` to build and measure the same full-history ``tar.gz`` shape
+used by ``archive_source``:
+
+.. code:: bash
+
+   git epoch sandbox stats "$SANDBOX_DPATH"
+   git epoch sandbox stats "$SANDBOX_DPATH" --source-archive
+
+Run ``git epoch gc`` from a managed sandbox worktree when you also want to
+measure repacking savings. It reports before/after file bytes and allocated
+filesystem bytes, then deep-verifies the archive after packing.
 
 A checkpoint can be split into an inspectable, resumable preparation and a
 separate publication step:

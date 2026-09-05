@@ -17,6 +17,7 @@ from git_well.epoch import (
     configure_submodule,
     create_sandbox,
     gc_history_store,
+    history_store_stats,
     initialize_config,
     inspect_sandbox,
     inspect_manifest,
@@ -28,6 +29,7 @@ from git_well.epoch import (
     publish_plan,
     reconstruct,
     run_sandbox,
+    sandbox_stats,
     save_plan,
     status,
     verify,
@@ -372,6 +374,21 @@ class EpochInspectCLI(kwconf.Config):
         return result
 
 
+class EpochStatsCLI(kwconf.Config):
+    """Report physical active-history and archived-epoch sizes."""
+
+    __command__ = 'stats'
+
+    repo_dpath = kwconf.Value('.', help='managed repository')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = history_store_stats(config.repo_dpath)
+        _print_yaml(result)
+        return result
+
+
 class EpochGcCLI(kwconf.Config):
     """Garbage-collect a local history store without dropping epoch refs."""
 
@@ -539,6 +556,31 @@ class EpochSandboxVerifyCLI(kwconf.Config):
 
 
 @EpochSandboxCLI.register
+class EpochSandboxStatsCLI(kwconf.Config):
+    """Report sandbox archive, epoch, active-remote, and package sizes."""
+
+    __command__ = 'stats'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+    source_archive = kwconf.Value(
+        False,
+        isflag=True,
+        alias=['source-archive'],
+        help='build and measure a full-history active source tar.gz',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = sandbox_stats(
+            config.sandbox,
+            source_archive=bool(config.source_archive),
+        )
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
 class EpochSandboxInspectCLI(kwconf.Config):
     """Show sandbox topology and verify publication containment."""
 
@@ -570,6 +612,7 @@ class GitEpochModalCLI(kwconf.ModalCLI):
     verify = EpochVerifyCLI
     reconstruct = EpochReconstructCLI
     inspect = EpochInspectCLI
+    stats = EpochStatsCLI
     gc = EpochGcCLI
 
 

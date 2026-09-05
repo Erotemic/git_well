@@ -224,11 +224,20 @@ For every epoch-managed repository this independently checks that:
   retired tip;
 - `git epoch verify --deep` succeeds.
 
-The verifier writes its results back into `sandbox.yaml` and leaves the fresh
-active-history clones under:
+It then performs one additional **combined recursive fresh clone** of the root
+repository. Each committed `.gitmodules` URL is overridden only in that clone's
+local Git config with the corresponding sandbox `file://` active remote. This
+proves that every submodule can actually initialize at the translated gitlink
+without contacting GitHub and without local-clone hardlink/copy behavior leaking
+unreachable retired objects into the result.
+
+The verifier writes its results back into `sandbox.yaml`. It leaves the
+independent active-history clones under `verification/fresh` and the combined
+recursive checkout under `verification/fresh-recursive`:
 
 ```bash
 find "$SANDBOX_DPATH/verification/fresh" -maxdepth 2 -type d -print
+find "$SANDBOX_DPATH/verification/fresh-recursive" -maxdepth 3 -type d -print
 ```
 
 Inspect Ambition's new active state:
@@ -243,7 +252,61 @@ the retired Ambition tree because epoch-managed gitlinks have been translated
 to the corresponding child successor roots. Those child roots represent the
 same child source snapshots.
 
-## 7. One-command rehearsal
+## 7. Measure the archive and active handoff size
+
+The shared history store and the generated per-epoch bundles answer different
+size questions. Measure the current state first:
+
+```bash
+git epoch sandbox stats "$SANDBOX_DPATH"
+```
+
+The report includes:
+
+- `history.history_store.directory_bytes`: sum of file contents in the shared
+  bare history store;
+- `history.history_store.directory_disk_bytes`: allocated filesystem space,
+  which can be much larger before loose objects are packed;
+- each archived epoch's `reachable_object_disk_bytes`: compressed object
+  representations reachable from that epoch's immutable refs;
+- `exclusive_object_disk_bytes`: the subset used by only that one archived
+  epoch record;
+- `standalone_bundle.bytes`: exact size of the independently-restorable bundle
+  for that epoch when `--bundle` was used;
+- `bundles.bytes`: total size of all standalone bundle backups;
+- `recursive_fresh_clone.git_directory_bytes`: Git metadata for the complete
+  newly-cloned active repository graph.
+
+Per-epoch reachable sizes can overlap, so do not add them together to estimate
+the shared store. The standalone bundle is the cleanest answer to "how large is
+this epoch by itself?" The history-store directory size is the answer to "how
+large is the deduplicated shared archive?"
+
+The history store may still contain many loose objects after archival. Pack it
+and deep-verify it:
+
+```bash
+git -C "$SANDBOX_REPO" epoch gc
+```
+
+`gc` reports before/after file bytes, allocated disk bytes, and the allocated-disk
+reduction percentage. It retains every archived epoch ref and runs deep verification after
+packing.
+
+Finally, build the same kind of full-history compressed source handoff that
+`archive_source` normally produces, but from the verified recursive active
+checkout:
+
+```bash
+git epoch sandbox stats "$SANDBOX_DPATH" --source-archive
+```
+
+The `source_archive.bytes` field is the direct post-checkpoint `tar.gz` package
+measurement. Use that value when the operational goal is a handoff archive under
+a specific threshold such as 20 MiB. The generated package is retained beneath
+`SANDBOX_DPATH/verification/source-archives` for inspection.
+
+## 8. One-command rehearsal
 
 The staged commands above are useful when learning or inspecting the protocol.
 For an arbitrary initialized repository graph, the same sequence can be run in
@@ -256,10 +319,11 @@ git epoch sandbox run "$SANDBOX_DPATH" --bundle
 `run` composes the same sandbox `plan`, `apply`, `publish`, and `verify` paths.
 It does not use a separate checkpoint implementation.
 
-Do not run this after completing the staged rehearsal above; that sandbox is
-already published and verified. Use it on a newly created sandbox.
+Running this on an already-published or already-verified sandbox is safe. The
+completed plan/apply/publish phases are reported as explicit `skipped` actions
+and verification is run again.
 
-## 8. Reconstruct the recursive history
+## 9. Reconstruct the recursive history
 
 Build an archaeology checkout from the published sandbox:
 
@@ -304,7 +368,7 @@ enabled and follow the active branch:
 git log --graph --decorate --oneline main
 ```
 
-## 9. What this demonstrated
+## 10. What this demonstrated
 
 If the sandbox verifier passed, the rehearsal exercised the recursive epoch
 mechanism against the real checked-out Ambition repository graph while keeping

@@ -305,6 +305,19 @@ def _directory_size(path: pathlib.Path) -> int:
     return total
 
 
+def _directory_disk_usage(path: pathlib.Path) -> int:
+    """Return allocated filesystem bytes, with a portable size fallback."""
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            fpath = pathlib.Path(root) / name
+            with contextlib.suppress(OSError):
+                stat = fpath.stat()
+                blocks = getattr(stat, 'st_blocks', None)
+                total += stat.st_size if blocks is None else int(blocks) * 512
+    return total
+
+
 def _format_bytes(num: int) -> str:
     value = float(num)
     for suffix in ['B', 'KiB', 'MiB', 'GiB', 'TiB']:
@@ -1682,6 +1695,7 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         return {
             'path': str(bundle_path),
             'sha256': hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+            'bytes': bundle_path.stat().st_size,
             'status': 'already-present',
             'refs': actual_heads,
         }
@@ -1697,6 +1711,7 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     return {
         'path': str(bundle_path),
         'sha256': hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        'bytes': bundle_path.stat().st_size,
         'status': 'created',
         'refs': actual_heads,
     }
@@ -1887,6 +1902,7 @@ def _manifest_add_entry(
             verification_record['bundle'] = {
                 'sha256': bundle.get('sha256'),
                 'filename': pathlib.Path(bundle['path']).name,
+                'bytes': bundle.get('bytes'),
             }
         epoch_record['verification'] = verification_record
     if same_number:
@@ -2987,20 +3003,39 @@ def inspect_manifest(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
 
 
 def gc_history_store(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
+    from .stats import history_store_stats
+
     repo_path = _repo_root(repo)
     config = load_config(repo_path)
     store = HistoryStore(config['history_store'], repo_path)
     if not store.is_local:
         raise EpochError('git epoch gc currently requires a local history store')
-    before = _directory_size(store.local_path)
+    before_stats = history_store_stats(repo_path)
+    before = int(before_stats['history_store']['directory_bytes'])
+    before_disk = int(before_stats['history_store']['directory_disk_bytes'])
     _run(['git', '--git-dir', store.local_path, 'gc', '--prune=now'])
     verify_result = verify(repo_path, deep=True)
-    after = _directory_size(store.local_path)
+    after_stats = history_store_stats(repo_path)
+    after = int(after_stats['history_store']['directory_bytes'])
+    after_disk = int(after_stats['history_store']['directory_disk_bytes'])
+    file_delta = after - before
+    disk_delta = after_disk - before_disk
+    reclaimed_disk = max(before_disk - after_disk, 0)
+    reduction_fraction = (before_disk - after_disk) / before_disk if before_disk else 0.0
     return {
         'before': before,
         'after': after,
         'before_human': _format_bytes(before),
         'after_human': _format_bytes(after),
+        'file_bytes_delta': file_delta,
+        'before_disk_bytes': before_disk,
+        'after_disk_bytes': after_disk,
+        'before_disk_bytes_human': _format_bytes(before_disk),
+        'after_disk_bytes_human': _format_bytes(after_disk),
+        'disk_bytes_delta': disk_delta,
+        'disk_bytes_reclaimed': reclaimed_disk,
+        'disk_bytes_reclaimed_human': _format_bytes(reclaimed_disk),
+        'disk_reduction_percent': round(reduction_fraction * 100, 1),
         'verification': verify_result,
     }
 

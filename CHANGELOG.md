@@ -10,12 +10,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 * Add `git epoch` / `git-epoch` for verifiable bounded-history checkpoints, exact archival epochs, recursive submodule rollover, reconstruction, and resumable prepare/publish transactions.
 * Add `git epoch sandbox` to rehearse epoch rollover against contained local worktrees, bare publication remotes, and a local history store before touching production remotes.
+* Add `git epoch stats` and `git epoch sandbox stats` to report shared history-store size, per-epoch reachable/exclusive object sizes, standalone bundle sizes, active-history size, recursive fresh-clone size, and optional `archive_source` package size.
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
 * Add programmatic `prepare` and `validate` hooks for repository-specific archive enrichment and policy checks.
 * Add `stage_source_archive()` and `ArchiveSourceContext` for direct control of staged archive contents, generated-path exclusions, metadata finalization, serialization, and retained-stage debugging.
 
 ### Fixed
 
+* Make sandbox verification perform a real recursive fresh clone through contained `file://` remotes, prove every submodule initializes at the translated gitlink without retired commits leaking through local-clone optimization, and report idempotent `sandbox run` phases as explicit skips.
 * Let `archive_source` omit uninitialized submodules with a warning instead of aborting the entire archive; record each omission in `GIT_WELL_ARCHIVE_INFO.txt`.
 
 

@@ -26,6 +26,7 @@ from .core import (
     verify,
     verify_boundary,
 )
+from .stats import history_store_stats
 from .sandbox import (
     apply_sandbox,
     assert_sandbox_contained,
@@ -35,6 +36,7 @@ from .sandbox import (
     plan_sandbox,
     publish_sandbox,
     run_sandbox,
+    sandbox_stats,
     verify_sandbox,
 )
 
@@ -50,6 +52,7 @@ __all__ = [
     'configure_submodule',
     'find_transactions',
     'gc_history_store',
+    'history_store_stats',
     'initialize_config',
     'inspect_manifest',
     'load_config',
@@ -71,5 +74,6 @@ __all__ = [
     'plan_sandbox',
     'publish_sandbox',
     'run_sandbox',
+    'sandbox_stats',
     'verify_sandbox',
 ]

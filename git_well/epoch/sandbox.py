@@ -14,6 +14,9 @@ from .core import (
     _config_path,
     _current_branch,
     _default_repository_id,
+    _directory_disk_usage,
+    _directory_size,
+    _format_bytes,
     _git,
     _git_stdout,
     _gitlink_oid,
@@ -33,6 +36,7 @@ from .core import (
     save_plan,
     verify,
 )
+from .stats import history_store_stats
 
 SANDBOX_FORMAT_VERSION = 1
 SANDBOX_MANIFEST = 'sandbox.yaml'
@@ -555,6 +559,223 @@ def create_sandbox(
     }
 
 
+def _fresh_recursive_clone_validate(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Clone the sandbox root and initialize the complete submodule graph."""
+    nodes = list(data['nodes'])
+    by_id = {node['repository']: node for node in nodes}
+    root_node = by_id[data['root_repository']]
+    sandbox_root = pathlib.Path(data['sandbox_root'])
+    fresh_parent = sandbox_root / 'verification' / 'fresh-recursive'
+    fresh = fresh_parent / root_node['repository']
+    if fresh_parent.exists():
+        shutil.rmtree(fresh_parent)
+    fresh_parent.mkdir(parents=True)
+
+    _run(
+        [
+            'git',
+            '-c',
+            'protocol.file.allow=always',
+            'clone',
+            '--no-local',
+            '--branch',
+            root_node['branch'],
+            root_node['active_remote'],
+            fresh,
+        ]
+    )
+
+    # Initialize one level at a time. Before each checkout, replace the
+    # committed .gitmodules URL in local config with the corresponding sandbox
+    # bare remote. This handles absolute, SSH, and relative source URLs without
+    # modifying the committed successor tree or contacting the network.
+    ordered_nodes = sorted(
+        nodes,
+        key=lambda node: (
+            (
+                0
+                if node['relpath'] == '.'
+                else len(pathlib.PurePosixPath(node['relpath']).parts)
+            ),
+            node['relpath'],
+        ),
+    )
+    initialized: dict[str, Any] = {}
+    for node in ordered_nodes:
+        relpath = node['relpath']
+        checkout = (
+            fresh
+            if relpath == '.'
+            else fresh.joinpath(*pathlib.PurePosixPath(relpath).parts)
+        )
+        probe = _run(
+            ['git', '-C', checkout, 'rev-parse', '--show-toplevel'],
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise EpochSafetyError(
+                f'Recursive fresh clone did not initialize {node["repository"]}: '
+                f'{checkout}'
+            )
+        expected = _resolve_ref(
+            pathlib.Path(node['repo']), f"refs/heads/{node['branch']}"
+        )
+        actual = _resolve_ref(checkout, 'HEAD')
+        if actual != expected:
+            raise EpochSafetyError(
+                f'Recursive fresh clone HEAD mismatch for {node["repository"]}: '
+                f'{actual} != {expected}'
+            )
+        retired_present = False
+        if node.get('managed'):
+            retired = _git(
+                checkout,
+                'cat-file',
+                '-e',
+                f"{node['old_tip']}^{{commit}}",
+                check=False,
+            )
+            retired_present = retired.returncode == 0
+            if retired_present:
+                raise EpochSafetyError(
+                    f'Retired tip leaked into recursive fresh clone for '
+                    f'{node["repository"]}: {node["old_tip"]}'
+                )
+        initialized[node['repository']] = {
+            'relpath': relpath,
+            'head': actual,
+            'retired_tip_present': retired_present,
+        }
+
+        if not node['children']:
+            continue
+        occurrences = {
+            item['path']: item for item in _parse_gitmodules(checkout, 'HEAD')
+        }
+        child_paths = [child['path'] for child in node['children']]
+        _git(checkout, 'submodule', 'init', '--', *child_paths)
+        for child in node['children']:
+            occurrence = occurrences.get(child['path'])
+            if occurrence is None:
+                raise EpochSafetyError(
+                    f'Recursive fresh clone lost .gitmodules entry at '
+                    f'{node["repository"]}:{child["path"]}'
+                )
+            child_node = by_id[child['repository']]
+            _git(
+                checkout,
+                'config',
+                f"submodule.{occurrence['name']}.url",
+                pathlib.Path(child_node['active_remote']).resolve().as_uri(),
+            )
+        _git(
+            checkout,
+            '-c',
+            'protocol.file.allow=always',
+            'submodule',
+            'update',
+            '--init',
+            '--',
+            *child_paths,
+        )
+
+    status = _git_stdout(fresh, 'status', '--porcelain')
+    if status.strip():
+        raise EpochSafetyError(
+            f'Recursive fresh clone is not clean after initialization:\n{status}'
+        )
+    git_dir = pathlib.Path(
+        _git_stdout(fresh, 'rev-parse', '--absolute-git-dir').strip()
+    )
+    git_bytes = _directory_size(git_dir)
+    return {
+        'path': str(fresh),
+        'repositories': initialized,
+        'repositories_initialized': len(initialized),
+        'git_directory_bytes': git_bytes,
+        'git_directory_bytes_human': _format_bytes(git_bytes),
+        'clean': True,
+    }
+
+
+def sandbox_stats(
+    path: str | os.PathLike[str],
+    *,
+    source_archive: bool = False,
+) -> dict[str, Any]:
+    """Report physical archive, epoch, active-remote, and package sizes."""
+    data = load_sandbox(path)
+    assert_sandbox_contained(data)
+    root_repo = pathlib.Path(data['root_repo'])
+    archive_stats = history_store_stats(root_repo)
+    sandbox_root = pathlib.Path(data['sandbox_root'])
+
+    active_remotes: dict[str, Any] = {}
+    for node in data['nodes']:
+        remote = pathlib.Path(node['active_remote'])
+        size = _directory_size(remote)
+        disk_size = _directory_disk_usage(remote)
+        active_remotes[node['repository']] = {
+            'bytes': size,
+            'bytes_human': _format_bytes(size),
+            'disk_bytes': disk_size,
+            'disk_bytes_human': _format_bytes(disk_size),
+        }
+
+    bundles_root = sandbox_root / 'bundles'
+    bundle_bytes = _directory_size(bundles_root) if bundles_root.exists() else 0
+    recursive_info = data.get('recursive_fresh_clone')
+    result: dict[str, Any] = {
+        'sandbox': str(sandbox_root),
+        'state': data.get('state'),
+        'history': archive_stats,
+        'active_remotes': active_remotes,
+        'bundles': {
+            'path': str(bundles_root),
+            'bytes': bundle_bytes,
+            'bytes_human': _format_bytes(bundle_bytes),
+        },
+        'recursive_fresh_clone': recursive_info,
+    }
+
+    if source_archive:
+        if not recursive_info:
+            raise EpochSafetyError(
+                'Source-archive measurement requires a verified recursive fresh '
+                'clone. Run `git epoch sandbox verify <sandbox>` first.'
+            )
+        recursive_path = pathlib.Path(recursive_info['path'])
+        if not recursive_path.exists():
+            raise EpochSafetyError(
+                'Recorded recursive fresh clone no longer exists. Run '
+                '`git epoch sandbox verify <sandbox>` again.'
+            )
+        from git_well.git_archive_source import archive_source
+
+        package_root = sandbox_root / 'verification' / 'source-archives'
+        package_root.mkdir(parents=True, exist_ok=True)
+        package = package_root / f"{data['root_repository']}-active-source.tar.gz"
+        if package.exists():
+            package.unlink()
+        archive_source(
+            repo_dpath=recursive_path,
+            output=package,
+            depth='full',
+            format='tar.gz',
+            redact_local_paths=True,
+            verbose=0,
+        )
+        package_bytes = package.stat().st_size
+        result['source_archive'] = {
+            'path': str(package),
+            'bytes': package_bytes,
+            'bytes_human': _format_bytes(package_bytes),
+            'history_depth': 'full-active-epoch',
+            'submodules': 'initialized-recursive-sandbox-graph',
+        }
+    return result
+
+
 def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
     data = load_sandbox(path)
     assert_sandbox_contained(data)
@@ -656,13 +877,16 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
         node['new_tip'] = new
         node['new_tree'] = _tree_oid(repo, new)
 
+    recursive_fresh = _fresh_recursive_clone_validate(data)
     data['state'] = 'verified'
     data['verification'] = results
+    data['recursive_fresh_clone'] = recursive_fresh
     _save_sandbox(data)
     return {
         'sandbox': data['sandbox_root'],
         'status': 'verified',
         'repositories': results,
+        'recursive_fresh_clone': recursive_fresh,
         'publication_contained': True,
     }
 
@@ -772,20 +996,30 @@ def run_sandbox(
     sandbox_root = pathlib.Path(data['sandbox_root'])
 
     state = data.get('state')
-    planned = None
-    prepared = None
+    planned: dict[str, Any]
+    prepared: dict[str, Any]
+    published: dict[str, Any]
+
     if state == 'created':
         planned = plan_sandbox(sandbox_root, bundle=bundle)
         state = 'planned'
+    else:
+        planned = {'status': 'skipped', 'reason': f'already-{state}'}
+
     if state == 'planned':
         prepared = apply_sandbox(sandbox_root)
         state = 'prepared'
+    else:
+        prepared = {'status': 'skipped', 'reason': f'already-{state}'}
+
     if state == 'prepared':
         published = publish_sandbox(sandbox_root, fresh_clone=True)
+        state = 'published'
     elif state in {'published', 'verified'}:
-        published = {'status': state}
+        published = {'status': 'skipped', 'reason': f'already-{state}'}
     else:
         raise EpochSafetyError(f'Cannot run sandbox from state {state!r}')
+
     verification = verify_sandbox(sandbox_root)
     return {
         'sandbox': str(sandbox_root),

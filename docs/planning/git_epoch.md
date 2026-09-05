@@ -1565,6 +1565,7 @@ git epoch sandbox plan
 git epoch sandbox apply
 git epoch sandbox publish
 git epoch sandbox verify
+git epoch sandbox stats
 git epoch sandbox run
 ```
 
@@ -1921,7 +1922,7 @@ result: PASS
 
 ---
 
-# 46. Measuring active history
+# 46. Measuring active history and archived epochs
 
 The tool should distinguish:
 
@@ -1930,9 +1931,28 @@ working-tree size
 reachable Git-object size
 fresh clone size
 compressed source-package size
+shared history-store file bytes
+shared history-store allocated disk bytes
+standalone per-epoch bundle size
+per-epoch reachable object bytes
+per-epoch exclusive object bytes
 ```
 
-These answer different questions.
+These answer different questions. Archived epochs may share objects in one
+history store, so per-epoch reachable sizes are not additive. A standalone
+bundle is the cleanest independently restorable size for one epoch. Exclusive
+object bytes identify the part of the shared store reachable from only that
+epoch record. The history-store directory size remains the physical whole-store
+measurement, and allocated filesystem bytes are important before `git gc`
+because many loose objects can consume much more block space than their file
+contents.
+
+`git epoch stats` should report those measures without mutating the archive.
+`git epoch gc` should report the before/after measurements and deep-verify the
+archive after repacking. Sandbox statistics may additionally build a temporary
+full-history `archive_source` package from the verified recursive fresh clone so
+the user can compare the post-checkpoint handoff artifact directly against a
+size target.
 
 A configurable acceptance policy might be:
 
