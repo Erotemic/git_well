@@ -40,20 +40,40 @@ SANDBOX_REPO="$SANDBOX_DPATH/work/ambition"
 
 echo "workspace: $TMP_DPATH"
 
-git clone \
+if git clone \
     --single-branch \
     --recurse-submodules \
     https://github.com/Erotemic/ambition.git \
     "$SOURCE_DPATH"
+then
+    printf 'PASS: recursive source clone completed\n'
+    cd "$SOURCE_DPATH"
+    git submodule status --recursive
 
-cd "$SOURCE_DPATH"
-git status --short
-git submodule status --recursive
+    SOURCE_STATUS=$(git status --porcelain)
+    if [ -z "$SOURCE_STATUS" ]; then
+        printf 'PASS: recursive source checkout is clean\n'
+    else
+        printf 'FAIL: recursive source checkout is not clean\n' >&2
+        printf '%s\n' "$SOURCE_STATUS" >&2
+        printf 'Do not continue to sandbox creation until this is resolved.\n' >&2
+    fi
+else
+    printf 'FAIL: recursive source clone did not reproduce the committed graph\n' >&2
+    printf 'Do not continue to sandbox creation until the clone succeeds.\n' >&2
+fi
 ```
 
-The recursive clone must be clean, and every submodule that will participate in
-the rehearsal must be initialized at the commit selected by its parent gitlink.
-The sandbox command checks both conditions.
+A recursive clone can fail even when the superproject itself cloned correctly.
+For example, a parent can contain a gitlink to a submodule commit that is no
+longer available from the configured submodule repository. Git reports this as
+`not our ref`, leaves a partial submodule checkout behind, and the superproject
+then appears modified. That source graph is not a valid rehearsal input.
+
+The recursive clone must be clean, and every initialized submodule must be at
+the exact commit selected by its parent gitlink. Do not substitute a nearby
+branch tip for an unavailable gitlink commit. The sandbox command independently
+checks these conditions before it creates any disposable remotes.
 
 ## 2. Build a fully local publication sandbox
 
@@ -67,6 +87,13 @@ git epoch sandbox create \
     --all-submodules=epoch \
     --output "$SANDBOX_DPATH"
 ```
+
+If the source graph is inconsistent, this command stops before creating the
+sandbox and reports the offending submodule directly. A gitlink mismatch is
+reported with the parent repository, submodule path, expected gitlink commit,
+checked-out child `HEAD`, and whether the expected commit is available in the
+local child repository. This is more specific than treating the parent as a
+generically dirty worktree.
 
 The command performs the fixture setup that would otherwise require a large
 custom script. It:

@@ -177,6 +177,111 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     assert len(verification['repositories']) == 3
 
 
+def test_sandbox_reports_gitlink_mismatch_before_generic_dirty_error(tmp_path):
+    child_remote = tmp_path / 'child-source.git'
+    child_seed = _init_repo(tmp_path / 'child-seed', child_remote)
+    child_tip = _commit(child_seed, 'child-A')
+    _push(child_seed)
+
+    root = _init_repo(tmp_path / 'root-source')
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', child_remote, 'child',
+        ],
+        cwd=root,
+    )
+    _git(root, 'commit', '-am', 'root-A')
+
+    unavailable = '1' * 40
+    assert unavailable != child_tip
+    _git(root, 'update-index', '--cacheinfo', f'160000,{unavailable},child')
+    _git(root, 'commit', '-m', 'point at unavailable child')
+
+    with pytest.raises(EpochSafetyError) as exc_info:
+        create_sandbox(
+            root,
+            output=tmp_path / 'sandbox',
+            recursive=True,
+            all_submodules='epoch',
+        )
+
+    message = str(exc_info.value)
+    assert 'Cannot create recursive epoch sandbox.' in message
+    assert 'Submodule checkout does not match parent gitlink:' in message
+    assert f'expected gitlink:           {unavailable}' in message
+    assert f'checked-out HEAD:           {child_tip}' in message
+    assert 'expected commit available:  no' in message
+    assert 'Repository must be clean before epoch planning/apply' not in message
+
+
+def test_sandbox_reports_dirty_child_at_child_repository(tmp_path):
+    child_remote = tmp_path / 'child-source.git'
+    child_seed = _init_repo(tmp_path / 'child-seed', child_remote)
+    _commit(child_seed, 'child-A')
+    _push(child_seed)
+
+    root = _init_repo(tmp_path / 'root-source')
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', child_remote, 'child',
+        ],
+        cwd=root,
+    )
+    _git(root, 'commit', '-am', 'root-A')
+
+    child_repo = root / 'child'
+    (child_repo / 'tracked.txt').write_text('dirty child\n')
+
+    with pytest.raises(EpochSafetyError) as exc_info:
+        create_sandbox(
+            root,
+            output=tmp_path / 'sandbox',
+            recursive=True,
+            all_submodules='epoch',
+        )
+
+    message = str(exc_info.value)
+    assert (
+        f'Repository must be clean before epoch planning/apply: {child_repo}'
+        in message
+    )
+    assert ' M tracked.txt' in message
+    assert ' m child' not in message
+
+
+def test_sandbox_reports_uninitialized_submodule_worktree(tmp_path):
+    child_remote = tmp_path / 'child-source.git'
+    child_seed = _init_repo(tmp_path / 'child-seed', child_remote)
+    _commit(child_seed, 'child-A')
+    _push(child_seed)
+
+    root = _init_repo(tmp_path / 'root-source')
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', child_remote, 'child',
+        ],
+        cwd=root,
+    )
+    _git(root, 'commit', '-am', 'root-A')
+    _git(root, 'submodule', 'deinit', '-f', 'child')
+
+    with pytest.raises(EpochSafetyError) as exc_info:
+        create_sandbox(
+            root,
+            output=tmp_path / 'sandbox',
+            recursive=True,
+            all_submodules='epoch',
+        )
+
+    message = str(exc_info.value)
+    assert 'Cannot create recursive epoch sandbox.' in message
+    assert 'Submodule worktree is not initialized:' in message
+    assert 'path:     child' in message
+
+
 def test_sandbox_defaults_unconfigured_submodules_to_external(tmp_path):
     child_remote = tmp_path / 'child-source.git'
     child_seed = _init_repo(tmp_path / 'child-seed', child_remote)

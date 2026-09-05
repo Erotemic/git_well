@@ -89,6 +89,85 @@ def _discover_source_graph(
     nodes: list[dict[str, Any]] = []
     root_id = _default_repository_id(root)
 
+    def inspect_direct_submodules(
+        repo: pathlib.Path,
+    ) -> list[dict[str, Any]]:
+        parent_commit = _resolve_ref(repo, 'HEAD')
+        records: list[dict[str, Any]] = []
+        problems: list[str] = []
+        for occurrence in _parse_gitmodules(repo):
+            path = occurrence['path']
+            source_child_path = repo / path
+            probe = _run(
+                ['git', '-C', source_child_path, 'rev-parse', '--show-toplevel'],
+                check=False,
+            )
+            child_repo = (
+                pathlib.Path(probe.stdout.strip()).resolve()
+                if probe.returncode == 0 and probe.stdout.strip()
+                else None
+            )
+            if child_repo != source_child_path.resolve():
+                problems.append(
+                    '\n'.join(
+                        [
+                            'Submodule worktree is not initialized:',
+                            f'  parent:   {repo}',
+                            f'  path:     {path}',
+                            f'  worktree: {source_child_path}',
+                        ]
+                    )
+                )
+                continue
+
+            gitlink = _gitlink_oid(repo, parent_commit, path)
+            child_head = _resolve_ref(child_repo, 'HEAD')
+            if gitlink != child_head:
+                available = (
+                    _git(
+                        child_repo,
+                        'cat-file',
+                        '-e',
+                        f'{gitlink}^{{commit}}',
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+                problems.append(
+                    '\n'.join(
+                        [
+                            'Submodule checkout does not match parent gitlink:',
+                            f'  parent:                     {repo}',
+                            f'  path:                       {path}',
+                            f'  expected gitlink:           {gitlink}',
+                            f'  checked-out HEAD:           {child_head}',
+                            '  expected commit available:  '
+                            + ('yes' if available else 'no'),
+                        ]
+                    )
+                )
+                continue
+
+            records.append(
+                {
+                    'occurrence': occurrence,
+                    'path': path,
+                    'child_repo': child_repo,
+                    'gitlink': gitlink,
+                }
+            )
+
+        if problems:
+            detail = '\n\n'.join(problems)
+            raise EpochSafetyError(
+                'Cannot create recursive epoch sandbox.\n\n'
+                + detail
+                + '\n\nThe source repository cannot currently be reproduced '
+                'recursively from its checked-out submodule graph. Refusing '
+                'to construct an epoch rehearsal from a different tree.'
+            )
+        return records
+
     def visit(
         repo: pathlib.Path,
         relpath: pathlib.PurePosixPath,
@@ -97,7 +176,6 @@ def _discover_source_graph(
         relation_policy: str,
     ) -> dict[str, Any]:
         repo = _repo_root(repo)
-        _assert_clean(repo)
         source_config = _source_epoch_config(repo)
         if source_config is not None:
             repository_id = source_config['repository']
@@ -125,33 +203,18 @@ def _discover_source_graph(
         nodes.append(node)
 
         if not recursive:
+            _assert_clean(repo)
             return node
 
+        direct_submodules = inspect_direct_submodules(repo)
         configured_submodules = (
             source_config.get('submodules', {}) if source_config is not None else {}
         )
-        for occurrence in _parse_gitmodules(repo):
-            path = occurrence['path']
-            source_child_path = repo / path
-            probe = _run(
-                ['git', '-C', source_child_path, 'rev-parse', '--show-toplevel'],
-                check=False,
-            )
-            if probe.returncode:
-                raise EpochSafetyError(
-                    f'Recursive sandbox requires initialized submodules. '
-                    f'Missing worktree: {source_child_path}. Run '
-                    '`git submodule update --init --recursive` first.'
-                )
-            child_repo = pathlib.Path(probe.stdout.strip()).resolve()
-            parent_commit = _resolve_ref(repo, 'HEAD')
-            gitlink = _gitlink_oid(repo, parent_commit, path)
-            child_head = _resolve_ref(child_repo, 'HEAD')
-            if gitlink != child_head:
-                raise EpochSafetyError(
-                    f'Submodule worktree does not match its parent gitlink: '
-                    f'{repo}:{path} has {gitlink}, child HEAD is {child_head}'
-                )
+        for record in direct_submodules:
+            occurrence = record['occurrence']
+            path = record['path']
+            child_repo = record['child_repo']
+            gitlink = record['gitlink']
 
             if all_submodules is not None:
                 policy = all_submodules
@@ -176,6 +239,11 @@ def _discover_source_graph(
                     'old_commit': gitlink,
                 }
             )
+
+        # Check cleanliness after descending so a dirty or inconsistent child is
+        # diagnosed at the repository that owns the problem instead of being
+        # flattened into a generic modified-submodule entry at an ancestor.
+        _assert_clean(repo)
         return node
 
     visit(root, pathlib.PurePosixPath(), None, None, 'epoch')
