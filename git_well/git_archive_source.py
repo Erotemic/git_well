@@ -413,6 +413,7 @@ class ArchiveSourceCLI(kwconf.Config):
     )
     depth = kwconf.Value(
         'full',
+        short_alias=['d'],
         help=textwrap.dedent("""
             Git history depth: "full" for all current-HEAD history, a positive
             integer for shallow history, or 0 for source-only git archive mode.
