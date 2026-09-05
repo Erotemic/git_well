@@ -2,7 +2,16 @@
 
 ## Status
 
-Design proposal.
+Implemented as the version-one `git epoch` / `git-epoch` workflow in
+`git_well.git_epoch` and `git_well.epoch`. This document remains the design
+contract for the implementation. The deliberately deferred items in section 66
+remain out of scope.
+
+The implementation uses a prepare/publish transaction boundary: archival refs,
+boundary verification, optional bundle backup, and successor roots are prepared
+before active refs are rewritten. Prepared manifest records become committed
+only after publication succeeds. A prepared transaction may be resumed or
+aborted before any successor ref is adopted.
 
 ## 1. Purpose
 

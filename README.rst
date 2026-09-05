@@ -150,6 +150,76 @@ extension points are programmatic only; the command-line interface does not
 execute arbitrary hooks.
 
 
+Bounded active history with Git epochs
+--------------------------------------
+
+``git epoch`` periodically moves an exact retired Git epoch into a separate
+history-store repository and replaces the active branch with a new root commit
+that represents the same checkout. Ordinary clones then receive only the
+current epoch, while the archived commits keep their original object IDs,
+merge topology, tags, trees, and blobs.
+
+Initialize a repository without changing its active refs:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store ../ambition-history.git \
+       --config-only
+
+For managed submodules, initialize the child repositories as well and classify
+each superproject occurrence before a recursive checkpoint:
+
+.. code:: bash
+
+   git epoch configure-submodule renderer epoch --repository renderer
+   git epoch configure-submodule third_party/upstream external
+
+A checkpoint can be split into an inspectable, resumable preparation and a
+separate publication step:
+
+.. code:: bash
+
+   git epoch plan --recursive --bundle -o checkpoint.yaml
+   git epoch apply checkpoint.yaml
+   git epoch inspect
+   git epoch publish --plan checkpoint.yaml
+
+``apply`` archives and verifies the retiring epoch before any active branch is
+rewritten. Until ``publish`` succeeds, manifest entries are marked
+``prepared``. Use ``git epoch abort --plan checkpoint.yaml`` to discard a
+prepared transaction before any successor branch has been adopted.
+
+After publication, verify the archive and reconstruct archaeology checkouts as
+needed:
+
+.. code:: bash
+
+   git epoch verify --deep
+   git epoch reconstruct --recursive -o ../ambition-history-view
+
+Reconstruction fetches the exact archived commits and creates local
+``refs/replace`` objects that connect each successor root to its recorded
+predecessor. The archived commit objects themselves are not rewritten.
+
+A successor root records the logical history-store ID, not a machine-local
+archive path. After cloning an already-epochized repository onto a new machine,
+attach the archive explicitly before running epoch-management commands:
+
+.. code:: bash
+
+   git epoch init --history-store ../ambition-history.git --config-only
+
+The repository ID, active epoch number, and managed-submodule policy are then
+validated against the successor root and archive manifest.
+
+Version one intentionally requires SHA-1 repositories, a clean single
+worktree, and one active local branch at checkpoint time. An active publication
+remote may not expose extra branches that would keep the retired epoch
+reachable to ordinary clones. See ``docs/planning/git_epoch.md`` for the data
+model, safety invariants, recursive submodule semantics, and deferred scope.
+
+
 Tracking large files with IPFS
 ------------------------------
 
