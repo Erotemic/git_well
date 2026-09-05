@@ -10,16 +10,22 @@ from git_well.epoch import (
     EpochPlanStaleError,
     EpochSafetyError,
     abort_plan,
+    apply_sandbox,
     apply_plan,
     build_plan,
     configure_submodule,
+    create_sandbox,
     gc_history_store,
     initialize_config,
     inspect_manifest,
     load_config,
+    plan_sandbox,
     publish_plan,
+    publish_sandbox,
     reconstruct,
+    run_sandbox,
     status,
+    verify_sandbox,
 )
 
 
@@ -75,6 +81,199 @@ def _tree(repo: pathlib.Path, commit: str):
 
 def _manifest(repo: pathlib.Path):
     return inspect_manifest(repo)['manifest']
+
+
+def test_sandbox_single_repo_rehearsal_is_contained(tmp_path):
+    source_remote = tmp_path / 'source-remote.git'
+    source = _init_repo(tmp_path / 'source', source_remote)
+    _commit(source, 'A')
+    source_head_before = _commit(source, 'B')
+    _push(source)
+    source_remote_before = _run(
+        [
+            'git', '--git-dir', source_remote,
+            'rev-parse', 'refs/heads/main',
+        ]
+    ).stdout.strip()
+
+    sandbox_dpath = tmp_path / 'sandbox'
+    created = create_sandbox(source, output=sandbox_dpath)
+    sandbox_repo = pathlib.Path(created['root_repo'])
+    sandbox_origin = pathlib.Path(
+        _git(sandbox_repo, 'remote', 'get-url', 'origin').stdout.strip()
+    ).resolve()
+    sandbox_origin.relative_to(sandbox_dpath.resolve())
+    assert _git(source, 'remote', 'get-url', 'origin').stdout.strip() == str(
+        source_remote
+    )
+
+    planned = plan_sandbox(sandbox_dpath, bundle=False)
+    assert planned['status'] == 'planned'
+    prepared = apply_sandbox(sandbox_dpath)
+    assert prepared['status'] == 'prepared'
+    published = publish_sandbox(sandbox_dpath)
+    assert published['status'] == 'published'
+    verified = verify_sandbox(sandbox_dpath)
+    assert verified['status'] == 'verified'
+    assert all(
+        item['retired_tip_present'] is False
+        for item in verified['repositories'].values()
+    )
+    assert _run(
+        [
+            'git', '--git-dir', source_remote,
+            'rev-parse', 'refs/heads/main',
+        ]
+    ).stdout.strip() == source_remote_before
+    assert _git(source, 'rev-parse', 'HEAD').stdout.strip() == source_head_before
+
+
+def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
+    leaf_remote = tmp_path / 'leaf-source.git'
+    leaf_seed = _init_repo(tmp_path / 'leaf-seed', leaf_remote)
+    _commit(leaf_seed, 'leaf-A')
+    _push(leaf_seed)
+
+    middle_remote = tmp_path / 'middle-source.git'
+    middle_seed = _init_repo(tmp_path / 'middle-seed', middle_remote)
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', leaf_remote, 'leaf',
+        ],
+        cwd=middle_seed,
+    )
+    _git(middle_seed, 'commit', '-am', 'middle-A')
+    _push(middle_seed)
+
+    root_remote = tmp_path / 'root-source.git'
+    root = _init_repo(tmp_path / 'root-source', root_remote)
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', middle_remote, 'middle',
+        ],
+        cwd=root,
+    )
+    _git(root, 'commit', '-am', 'root-A')
+    _push(root)
+    _git(
+        root,
+        '-c', 'protocol.file.allow=always',
+        'submodule', 'update', '--init', '--recursive',
+    )
+
+    sandbox_dpath = tmp_path / 'recursive-sandbox'
+    created = create_sandbox(
+        root,
+        output=sandbox_dpath,
+        recursive=True,
+        all_submodules='epoch',
+    )
+    assert len(created['repositories']) == 3
+    result = run_sandbox(sandbox_dpath, bundle=False)
+    assert result['published']['status'] == 'published'
+    verification = result['verification']
+    assert len(verification['repositories']) == 3
+
+
+def test_sandbox_defaults_unconfigured_submodules_to_external(tmp_path):
+    child_remote = tmp_path / 'child-source.git'
+    child_seed = _init_repo(tmp_path / 'child-seed', child_remote)
+    child_tip = _commit(child_seed, 'child-A')
+    _push(child_seed)
+
+    root_remote = tmp_path / 'root-source.git'
+    root = _init_repo(tmp_path / 'root-source', root_remote)
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', child_remote, 'child',
+        ],
+        cwd=root,
+    )
+    _git(root, 'commit', '-am', 'root-A')
+    _push(root)
+
+    sandbox_dpath = tmp_path / 'sandbox'
+    created = create_sandbox(root, output=sandbox_dpath, recursive=True)
+    assert [item['policy'] for item in created['repositories']] == [
+        'epoch',
+        'external',
+    ]
+    result = run_sandbox(sandbox_dpath, bundle=False)
+    assert list(result['verification']['repositories']) == ['root-source']
+    sandbox_root = pathlib.Path(created['root_repo'])
+    successor = _git(sandbox_root, 'rev-parse', 'HEAD').stdout.strip()
+    successor_gitlink = _git(
+        sandbox_root, 'ls-tree', successor, 'child'
+    ).stdout.split()[2]
+    assert successor_gitlink == child_tip
+
+
+def test_sandbox_refuses_publication_if_origin_escapes(tmp_path):
+    source_remote = tmp_path / 'source-remote.git'
+    source = _init_repo(tmp_path / 'source', source_remote)
+    _commit(source, 'A')
+    _push(source)
+    source_remote_before = _run(
+        [
+            'git', '--git-dir', source_remote,
+            'rev-parse', 'refs/heads/main',
+        ]
+    ).stdout.strip()
+
+    sandbox_dpath = tmp_path / 'sandbox'
+    created = create_sandbox(source, output=sandbox_dpath)
+    sandbox_repo = pathlib.Path(created['root_repo'])
+    _git(sandbox_repo, 'remote', 'set-url', 'origin', source_remote)
+
+    with pytest.raises(EpochSafetyError, match='containment check failed'):
+        run_sandbox(sandbox_dpath, bundle=False)
+    assert _run(
+        [
+            'git', '--git-dir', source_remote,
+            'rev-parse', 'refs/heads/main',
+        ]
+    ).stdout.strip() == source_remote_before
+
+
+def test_sandbox_rejects_tampered_manifest_root(tmp_path):
+    source = _init_repo(tmp_path / 'source')
+    _commit(source, 'A')
+    sandbox_dpath = tmp_path / 'sandbox'
+    create_sandbox(source, output=sandbox_dpath)
+    manifest = sandbox_dpath / 'sandbox.yaml'
+    text = manifest.read_text()
+    text = text.replace(
+        f'sandbox_root: {sandbox_dpath}',
+        f'sandbox_root: {tmp_path}',
+        1,
+    )
+    manifest.write_text(text)
+    with pytest.raises(EpochSafetyError, match='manifest root does not match'):
+        run_sandbox(sandbox_dpath, bundle=False)
+
+
+def test_status_before_first_archive_and_direct_cli_exit_code(
+    tmp_path, monkeypatch, capsys
+):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    history = tmp_path / 'history.git'
+    initialize_config(repo, repository_id='status-demo', history_store=history)
+
+    info = status(repo)
+    assert info['archive_verification'] == 'not-initialized'
+    assert not history.exists()
+
+    from git_well import git_epoch
+
+    monkeypatch.chdir(repo)
+    assert git_epoch.main(['status']) == 0
+    captured = capsys.readouterr()
+    assert 'archive_verification: not-initialized' in captured.out
+    assert "{'repository':" not in captured.out
 
 
 def test_basic_checkpoint_publish_reconstruct_and_repeat(tmp_path):

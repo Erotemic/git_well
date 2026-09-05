@@ -10,21 +10,28 @@ import yaml
 from git_well.epoch import (
     abort_latest,
     abort_plan,
+    apply_sandbox,
     apply_plan,
     build_plan,
     checkpoint,
     configure_submodule,
+    create_sandbox,
     gc_history_store,
     initialize_config,
+    inspect_sandbox,
     inspect_manifest,
     load_plan,
+    plan_sandbox,
     plan_summary,
     publish_latest,
+    publish_sandbox,
     publish_plan,
     reconstruct,
+    run_sandbox,
     save_plan,
     status,
     verify,
+    verify_sandbox,
 )
 
 
@@ -380,6 +387,173 @@ class EpochGcCLI(kwconf.Config):
         return result
 
 
+class EpochSandboxCLI(kwconf.ModalCLI):
+    """Rehearse Git epoch operations against contained local remotes."""
+
+    __command__ = 'sandbox'
+
+
+@EpochSandboxCLI.register
+class EpochSandboxCreateCLI(kwconf.Config):
+    """Create a disposable local publication sandbox from a repository."""
+
+    __command__ = 'create'
+
+    repo_dpath = kwconf.Value('.', help='source repository to rehearse')
+    output = kwconf.Value(
+        None,
+        short_alias=['o'],
+        help='sandbox directory; defaults to a new temporary directory',
+    )
+    recursive = kwconf.Value(
+        False,
+        isflag=True,
+        short_alias=['r'],
+        help='clone and configure initialized submodules recursively',
+    )
+    all_submodules = kwconf.Value(
+        None,
+        alias=['all-submodules'],
+        choices=['epoch', 'continuous', 'external'],
+        help='override every discovered submodule policy in the sandbox',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = create_sandbox(
+            config.repo_dpath,
+            output=config.output,
+            recursive=config.recursive,
+            all_submodules=config.all_submodules,
+        )
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxRunCLI(kwconf.Config):
+    """Run plan, prepare, publish, and deep verification in a sandbox."""
+
+    __command__ = 'run'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+    bundle = kwconf.Value(
+        False,
+        isflag=True,
+        help='create and verify immutable bundle backups during the rehearsal',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = run_sandbox(config.sandbox, bundle=config.bundle)
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxPlanCLI(kwconf.Config):
+    """Build and save the real recursive epoch plan inside a sandbox."""
+
+    __command__ = 'plan'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+    bundle = kwconf.Value(
+        False,
+        isflag=True,
+        help='create immutable bundle backups during preparation',
+    )
+    summary = kwconf.Value(
+        False,
+        isflag=True,
+        help='print the human-readable checkpoint summary',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = plan_sandbox(config.sandbox, bundle=config.bundle)
+        if config.summary:
+            print(plan_summary(result['plan']))
+            print(f"\nSaved sandbox plan: {result['plan_path']}")
+        else:
+            _print_yaml({k: v for k, v in result.items() if k != 'plan'})
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxApplyCLI(kwconf.Config):
+    """Archive and verify the saved sandbox plan without publishing."""
+
+    __command__ = 'apply'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = apply_sandbox(config.sandbox)
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxPublishCLI(kwconf.Config):
+    """Publish the prepared plan only after rechecking sandbox containment."""
+
+    __command__ = 'publish'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+    no_fresh_clone = kwconf.Value(
+        False,
+        isflag=True,
+        help='skip ordinary-clone acceptance validation',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = publish_sandbox(
+            config.sandbox,
+            fresh_clone=not config.no_fresh_clone,
+        )
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxVerifyCLI(kwconf.Config):
+    """Verify a sandbox after manual or automatic publication."""
+
+    __command__ = 'verify'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = verify_sandbox(config.sandbox)
+        _print_yaml(result)
+        return result
+
+
+@EpochSandboxCLI.register
+class EpochSandboxInspectCLI(kwconf.Config):
+    """Show sandbox topology and verify publication containment."""
+
+    __command__ = 'inspect'
+
+    sandbox = kwconf.Value(None, position=1, help='sandbox directory')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = inspect_sandbox(config.sandbox)
+        _print_yaml(result)
+        return result
+
+
 class GitEpochModalCLI(kwconf.ModalCLI):
     """Bound active Git history while preserving exact archived epochs."""
 
@@ -399,9 +573,19 @@ class GitEpochModalCLI(kwconf.ModalCLI):
     gc = EpochGcCLI
 
 
+GitEpochModalCLI.register(EpochSandboxCLI)
+
+
 __cli__ = GitEpochModalCLI
-main = __cli__.main
+
+
+def main(argv=None):
+    """Console-script entry point with a process-style exit code."""
+    result = __cli__.main(argv=argv)
+    if isinstance(result, int):
+        return result
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

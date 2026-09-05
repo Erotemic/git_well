@@ -26,6 +26,17 @@ from .core import (
     verify,
     verify_boundary,
 )
+from .sandbox import (
+    apply_sandbox,
+    assert_sandbox_contained,
+    create_sandbox,
+    inspect_sandbox,
+    load_sandbox,
+    plan_sandbox,
+    publish_sandbox,
+    run_sandbox,
+    verify_sandbox,
+)
 
 __all__ = [
     'EpochError',
@@ -52,4 +63,13 @@ __all__ = [
     'status',
     'verify',
     'verify_boundary',
+    'assert_sandbox_contained',
+    'apply_sandbox',
+    'create_sandbox',
+    'inspect_sandbox',
+    'load_sandbox',
+    'plan_sandbox',
+    'publish_sandbox',
+    'run_sandbox',
+    'verify_sandbox',
 ]

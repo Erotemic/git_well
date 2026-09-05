@@ -22,18 +22,66 @@ Nothing in this tutorial pushes to GitHub.
 
 ## Prerequisites
 
-Install `git_well` so that Git can find the `git-epoch` executable, then check
-that the command is available:
+Define the `git_well` checkout once. The default matches the usual checkout
+location; change this one assignment if your checkout lives elsewhere. Then
+install it so Git can find the `git-epoch` executable:
 
 ```bash
-python -m pip install -e /path/to/git_well
+GIT_WELL_DPATH="${GIT_WELL_DPATH:-$HOME/code/git_well}"
+uv pip install -e "$GIT_WELL_DPATH"
 git epoch --help
-```
 
-If you normally use `uv`, the editable install can instead be:
+check_eq() {
+    label=$1
+    actual=$2
+    expected=$3
+    if [ "$actual" = "$expected" ]; then
+        printf 'PASS: %s\n' "$label"
+    else
+        printf 'FAIL: %s\n' "$label" >&2
+        printf '  expected: %s\n' "$expected" >&2
+        printf '  actual:   %s\n' "$actual" >&2
+        return 1
+    fi
+}
 
-```bash
-uv pip install -e /path/to/git_well
+check_ne() {
+    label=$1
+    actual=$2
+    unexpected=$3
+    if [ "$actual" != "$unexpected" ]; then
+        printf 'PASS: %s\n' "$label"
+    else
+        printf 'FAIL: %s\n' "$label" >&2
+        printf '  value must differ from: %s\n' "$unexpected" >&2
+        printf '  actual:                 %s\n' "$actual" >&2
+        return 1
+    fi
+}
+
+check_empty() {
+    label=$1
+    actual=$2
+    if [ -z "$actual" ]; then
+        printf 'PASS: %s\n' "$label"
+    else
+        printf 'FAIL: %s\n' "$label" >&2
+        printf '  expected empty output, got: %s\n' "$actual" >&2
+        return 1
+    fi
+}
+
+check_fails() {
+    label=$1
+    shift
+    if "$@" >/dev/null 2>&1; then
+        printf 'FAIL: %s\n' "$label" >&2
+        printf '  command unexpectedly succeeded: %s\n' "$*" >&2
+        return 1
+    else
+        printf 'PASS: %s\n' "$label"
+    fi
+}
 ```
 
 ## 1. Create a disposable workspace and clone Ubelt
@@ -53,11 +101,11 @@ cd "$TMP_DPATH/ubelt"
 BRANCH=$(git branch --show-current)
 
 # Keep the demonstration independent of global Git identity configuration.
-git config user.name "Git Epoch Tutorial"
-git config user.email "git-epoch-tutorial@example.com"
+git config --local user.name "Git Epoch Tutorial"
+git config --local user.email "git-epoch-tutorial@example.com"
 
-test -n "$BRANCH"
-test -z "$(git status --porcelain)"
+check_ne "clone selected an active branch" "$BRANCH" ""
+check_empty "initial worktree is clean" "$(git status --porcelain)"
 
 echo "branch: $BRANCH"
 echo "initial tip: $(git rev-parse HEAD)"
@@ -87,10 +135,18 @@ git push origin --tags
 Verify the safety boundary before continuing:
 
 ```bash
-test "$UPSTREAM_URL" = "https://github.com/Erotemic/ubelt.git"
-test "$(git remote get-url upstream)" = "$UPSTREAM_URL"
-test "$(git remote get-url origin)" = "$TMP_DPATH/active.git"
-test "$(git ls-remote --heads origin | wc -l)" -eq 1
+check_eq "captured the expected Ubelt upstream" \
+    "$UPSTREAM_URL" \
+    "https://github.com/Erotemic/ubelt.git"
+check_eq "upstream still points at GitHub" \
+    "$(git remote get-url upstream)" \
+    "$UPSTREAM_URL"
+check_eq "origin points at the disposable bare repository" \
+    "$(git remote get-url origin)" \
+    "$TMP_DPATH/active.git"
+check_eq "disposable origin has one active branch" \
+    "$(git ls-remote --heads origin | awk 'END {print NR}')" \
+    "1"
 
 git remote -v
 ```
@@ -113,7 +169,7 @@ REMOTE_OLD=$(
         rev-parse "refs/heads/$BRANCH"
 )
 
-test "$REMOTE_OLD" = "$OLD"
+check_eq "disposable origin starts at the cloned tip" "$REMOTE_OLD" "$OLD"
 
 printf 'old tip:    %s\n' "$OLD"
 printf 'old tree:   %s\n' "$OLD_TREE"
@@ -139,9 +195,9 @@ The configuration lives under the checkout's Git metadata. The Ubelt working
 tree remains unchanged.
 
 ```bash
-test "$(git rev-parse HEAD)" = "$OLD"
-test "$(git rev-parse 'HEAD^{tree}')" = "$OLD_TREE"
-test -z "$(git status --porcelain)"
+check_eq "initialization did not move HEAD" "$(git rev-parse HEAD)" "$OLD"
+check_eq "initialization preserved the tree" "$(git rev-parse 'HEAD^{tree}')" "$OLD_TREE"
+check_empty "initialization left the worktree clean" "$(git status --porcelain)"
 ```
 
 ## 5. Build a read-only rollover plan
@@ -160,15 +216,12 @@ git epoch plan \
 Planning must not move either the local branch or the disposable active remote:
 
 ```bash
-test "$(git rev-parse HEAD)" = "$OLD"
-test "$(git rev-parse 'HEAD^{tree}')" = "$OLD_TREE"
-
-test "$(
+check_eq "planning did not move HEAD" "$(git rev-parse HEAD)" "$OLD"
+check_eq "planning preserved the tree" "$(git rev-parse 'HEAD^{tree}')" "$OLD_TREE"
+check_eq "planning did not move the disposable remote" "$(
     git --git-dir="$TMP_DPATH/active.git" \
         rev-parse "refs/heads/$BRANCH"
-)" = "$OLD"
-
-echo 'PASS: planning changed no active refs'
+)" "$OLD"
 ```
 
 ## 6. Prepare the checkpoint without publishing it
@@ -196,13 +249,11 @@ git --git-dir="$TMP_DPATH/history.git" fsck --full
 The active refs must still be untouched:
 
 ```bash
-test "$(git rev-parse HEAD)" = "$OLD"
-test "$(
+check_eq "preparation did not move HEAD" "$(git rev-parse HEAD)" "$OLD"
+check_eq "preparation did not move the disposable remote" "$(
     git --git-dir="$TMP_DPATH/active.git" \
         rev-parse "refs/heads/$BRANCH"
-)" = "$OLD"
-
-echo 'PASS: preparation archived the epoch without publishing it'
+)" "$OLD"
 ```
 
 At this point `git epoch abort --plan "$TMP_DPATH/checkpoint.yaml"` would discard
@@ -227,18 +278,16 @@ NEW_TREE=$(git rev-parse 'HEAD^{tree}')
 printf 'old tip: %s\n' "$OLD"
 printf 'new tip: %s\n' "$NEW"
 
-test "$NEW" != "$OLD"
-test "$NEW_TREE" = "$OLD_TREE"
-test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 1
-
-test "$(
+check_ne "publication created a new commit" "$NEW" "$OLD"
+check_eq "successor preserves the retired source tree" "$NEW_TREE" "$OLD_TREE"
+check_eq "successor has no parent" \
+    "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" \
+    "1"
+check_eq "disposable origin points at the successor" "$(
     git --git-dir="$TMP_DPATH/active.git" \
         rev-parse "refs/heads/$BRANCH"
-)" = "$NEW"
-
-test -z "$(git status --porcelain)"
-
-echo 'PASS: successor is a root commit with the same source tree'
+)" "$NEW"
+check_empty "publication left the worktree clean" "$(git status --porcelain)"
 ```
 
 The active log is now bounded at the epoch boundary:
@@ -251,8 +300,7 @@ Immediately after this first rollover the active branch consists of the new
 epoch root only.
 
 ```bash
-test "$(git rev-list --count HEAD)" -eq 1
-echo 'PASS: active history contains one commit'
+check_eq "active history contains one commit" "$(git rev-list --count HEAD)" "1"
 ```
 
 ## 8. Prove an ordinary clone cannot see epoch zero
@@ -270,15 +318,15 @@ git clone --no-local \
     "$TMP_DPATH/active.git" \
     "$TMP_DPATH/fresh"
 
-test "$(git -C "$TMP_DPATH/fresh" rev-parse HEAD)" = "$NEW"
-test "$(git -C "$TMP_DPATH/fresh" rev-list --all --count)" -eq 1
+check_eq "fresh clone points at the successor" \
+    "$(git -C "$TMP_DPATH/fresh" rev-parse HEAD)" \
+    "$NEW"
+check_eq "fresh clone contains one active commit" \
+    "$(git -C "$TMP_DPATH/fresh" rev-list --all --count)" \
+    "1"
 
-if git -C "$TMP_DPATH/fresh" cat-file -e "$OLD^{commit}" 2>/dev/null; then
-    echo "FAIL: retired epoch tip leaked into an ordinary clone: $OLD" >&2
-    exit 1
-else
-    echo 'PASS: retired epoch tip is absent from an ordinary clone'
-fi
+check_fails "retired epoch tip is absent from an ordinary clone" \
+    git -C "$TMP_DPATH/fresh" cat-file -e "$OLD^{commit}"
 ```
 
 This is the property that bounds ordinary clone history.
@@ -307,20 +355,37 @@ git epoch reconstruct \
     -o "$TMP_DPATH/reconstructed"
 ```
 
-The reconstructed log should cross the epoch boundary into Ubelt's original
-history:
+The reconstruction supports two useful views. The first is the physical Git
+topology: the active epoch and archived epoch are real disconnected commit
+trees. Disable replacement semantics and omit the synthetic replacement refs
+from the revision set:
 
 ```bash
-git -C "$TMP_DPATH/reconstructed" \
-    log --graph --decorate --oneline --all -30
+cd "$TMP_DPATH/reconstructed"
 
-git -C "$TMP_DPATH/reconstructed" replace -l
+GIT_NO_REPLACE_OBJECTS=1 git log \
+    --graph \
+    --decorate \
+    --oneline \
+    --exclude='refs/replace/*' \
+    --all
 
-test "$(
-    git -C "$TMP_DPATH/reconstructed" cat-file -t "$OLD"
-)" = commit
+GIT_NO_REPLACE_OBJECTS=1 gitk \
+    --exclude='refs/replace/*' \
+    --all
+```
 
-echo 'PASS: retired tip is available in the reconstruction'
+The second view uses the derived replacement ref to traverse the logical
+history across the epoch boundary:
+
+```bash
+git log --graph --decorate --oneline main -30
+
+git replace -l
+
+check_eq "retired tip is available in the reconstruction" "$(
+    git cat-file -t "$OLD"
+)" "commit"
 ```
 
 Run the deep verifier once more from the managed checkout:

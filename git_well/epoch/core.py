@@ -2604,20 +2604,27 @@ def status(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
     roots = _root_commits(repo_path, tip)
     store = HistoryStore(config['history_store'], repo_path)
     manifest_info: dict[str, Any]
-    try:
-        manifest, meta_oid = store.load_manifest()
-        archived_epochs = manifest.get('epochs', {}).get(config['repository'], [])
-        manifest_info = {
-            'meta_oid': meta_oid,
-            'archived_epochs': [int(e['number']) for e in archived_epochs],
-            'archive_verification': 'available',
-        }
-    except EpochError as ex:
+    if store.is_local and not store.local_path.exists():
         manifest_info = {
             'meta_oid': None,
             'archived_epochs': [],
-            'archive_verification': f'unavailable: {ex}',
+            'archive_verification': 'not-initialized',
         }
+    else:
+        try:
+            manifest, meta_oid = store.load_manifest()
+            archived_epochs = manifest.get('epochs', {}).get(config['repository'], [])
+            manifest_info = {
+                'meta_oid': meta_oid,
+                'archived_epochs': [int(e['number']) for e in archived_epochs],
+                'archive_verification': 'available',
+            }
+        except EpochError as ex:
+            manifest_info = {
+                'meta_oid': None,
+                'archived_epochs': [],
+                'archive_verification': f'unavailable: {ex}',
+            }
     reachable_size = _reachable_size(repo_path, tip)
     return {
         'repository': config['repository'],

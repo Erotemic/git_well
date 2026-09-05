@@ -1545,6 +1545,35 @@ git foo
 
 so implementation can use a standalone executable.
 
+## 34.1 Sandbox rehearsal
+
+The command family should provide a first-class rehearsal environment for a
+repository graph before production publication. A sandbox is not a dry plan:
+it performs the real epoch operations against cloned worktrees, disposable
+local bare active remotes, and a local history store.
+
+The sandbox layer owns only containment and fixture construction. It must call
+the same plan, archive, publication, reconstruction, and verification
+authorities used by production operations rather than reimplementing them.
+
+Useful staged commands are:
+
+```text
+git epoch sandbox create
+git epoch sandbox inspect
+git epoch sandbox plan
+git epoch sandbox apply
+git epoch sandbox publish
+git epoch sandbox verify
+git epoch sandbox run
+```
+
+Before sandbox publication, every configured active publication remote and
+history-store location must resolve beneath the sandbox root. Publication must
+refuse to continue if any target escapes that root. Original source remote URLs
+may be retained as metadata for inspection, but sandbox clones should not keep
+them as writable Git remotes.
+
 ---
 
 # 35. `git epoch init`

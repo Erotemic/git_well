@@ -175,6 +175,23 @@ each superproject occurrence before a recursive checkpoint:
    git epoch configure-submodule renderer epoch --repository renderer
    git epoch configure-submodule third_party/upstream external
 
+Before touching production remotes, the same workflow can be rehearsed against
+disposable local bare remotes. ``sandbox create`` clones the current checked-out
+state, removes non-sandbox remotes from those clones, and records the original
+URLs only as metadata. ``sandbox publish`` rechecks containment immediately
+before rewriting refs:
+
+.. code:: bash
+
+   SANDBOX_DPATH=$(mktemp -d "${TMPDIR:-/tmp}/git-well-epoch-sandbox.XXXXXX")
+   git epoch sandbox create --recursive --all-submodules=epoch \
+       --output "$SANDBOX_DPATH"
+   git epoch sandbox run "$SANDBOX_DPATH" --bundle
+
+The staged ``sandbox plan``, ``sandbox apply``, ``sandbox publish``, and
+``sandbox verify`` commands expose the same phases when the rehearsal should be
+inspected between steps.
+
 A checkpoint can be split into an inspectable, resumable preparation and a
 separate publication step:
 
