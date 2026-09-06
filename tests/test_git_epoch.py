@@ -1757,7 +1757,11 @@ def test_apply_batches_archive_push_and_deep_verify_fetch(tmp_path, monkeypatch)
         if 'fetch' in args and '--stdin' in args and str(history) in args
     ]
     assert len(stdin_fetches) == 1
-    assert stdin_fetches[0][1].count('\n') >= 3
+    stdin_payload = stdin_fetches[0][1]
+    assert isinstance(stdin_payload, bytes)
+    assert stdin_payload.count(b'\n') >= 3
+    assert b'\r\n' not in stdin_payload
+    assert '--no-auto-maintenance' in stdin_fetches[0][0]
     assert any('archive refs in one batch' in message for message in progress)
 
 

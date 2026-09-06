@@ -42,7 +42,13 @@ def _fetch_refspecs(
     source: str | os.PathLike[str],
     refspecs: Iterable[str],
 ) -> None:
-    """Fetch many refs in one negotiation without command-line length issues."""
+    """Fetch many refs in one negotiation without command-line length issues.
+
+    Feed refspecs as binary LF-delimited input.  ``subprocess`` text-mode
+    stdin translates newlines to CRLF on Windows, while Git's ``fetch
+    --stdin`` refspec reader can retain the carriage return as part of the
+    refspec.  That produces invalid destination refs ending in ``\r``.
+    """
     refs = list(refspecs)
     if not refs:
         return
@@ -53,10 +59,11 @@ def _fetch_refspecs(
             bare,
             'fetch',
             '--no-tags',
+            '--no-auto-maintenance',
             '--stdin',
             source,
         ],
-        input='\n'.join(refs) + '\n',
+        input=('\n'.join(refs) + '\n').encode(),
     )
 
 

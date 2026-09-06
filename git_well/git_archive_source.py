@@ -1708,14 +1708,21 @@ def _copy_cached_branch_refs(
     if 'origin' in [remote.name for remote in cloned.remotes]:
         cloned.git.remote('remove', 'origin')
 
-    refspecs = []
-    if branch_refs.local_branches:
-        refspecs.append('+refs/heads/*:refs/heads/*')
-    if branch_refs.remote_tracking_branches:
-        refspecs.append('+refs/remotes/*:refs/remotes/*')
+    # Spell out the cached refs rather than relying on wildcard refspecs.
+    # This also avoids platform-specific wildcard/ref namespace behavior in
+    # shallow fetches and guarantees that the inventory we measured is the
+    # inventory we materialize.
+    refspecs = [
+        f'+refs/heads/{name}:refs/heads/{name}'
+        for name in branch_refs.local_branches
+    ]
+    refspecs.extend(
+        f'+refs/remotes/{name}:refs/remotes/{name}'
+        for name in branch_refs.remote_tracking_branches
+    )
 
     if refspecs:
-        fetch_args = ['--quiet']
+        fetch_args = ['--quiet', '--no-auto-maintenance']
         if clone_depth is not None:
             fetch_args += ['--depth', str(clone_depth)]
         # Use a file URI instead of a native filesystem string. In particular,
@@ -1826,7 +1833,7 @@ def _fetch_exact_commit(
     clone_depth: int | None,
 ) -> None:
     """Fetch one exact commit from a source that is willing to advertise it."""
-    fetch_args = ['--quiet']
+    fetch_args = ['--quiet', '--no-auto-maintenance']
     if clone_depth is not None:
         fetch_args += ['--depth', str(clone_depth)]
     repo.git.fetch(*fetch_args, source, commit)
@@ -1858,15 +1865,18 @@ def _fetch_commit_from_local_object_database(
         source_objects = _repo_object_database(source_repo)
         alternates = Path(helper.git_dir) / 'objects' / 'info' / 'alternates'
         alternates.parent.mkdir(parents=True, exist_ok=True)
-        alternates.write_text(os.fspath(source_objects) + '\n')
+        # Git for Windows accepts forward-slash absolute paths in alternates;
+        # they avoid backslash/drive-letter parsing surprises in plumbing.
+        alternates.write_text(source_objects.as_posix() + '\n')
 
         helper_ref = 'refs/heads/git-well-archive-source'
         helper.git.update_ref(helper_ref, commit)
 
-        fetch_args = ['--quiet']
+        fetch_args = ['--quiet', '--no-auto-maintenance']
         if clone_depth is not None:
             fetch_args += ['--depth', str(clone_depth)]
-        repo.git.fetch(*fetch_args, os.fspath(helper_root), helper_ref)
+        # A native ``C:\\...`` path is ambiguous to Git's fetch URL parser.
+        repo.git.fetch(*fetch_args, helper_root.as_uri(), helper_ref)
     finally:
         shutil.rmtree(helper_root, ignore_errors=True)
 
