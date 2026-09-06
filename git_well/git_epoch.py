@@ -2,6 +2,8 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
+import sys
+import time
 from typing import Any
 
 import kwconf
@@ -15,6 +17,7 @@ from git_well.epoch import (
     attach_history_store,
     build_plan,
     checkpoint,
+    compact_active,
     configure_submodule,
     create_sandbox,
     gc_history_store,
@@ -33,12 +36,30 @@ from git_well.epoch import (
     sandbox_stats,
     save_plan,
     status,
+    sync_history_views,
     verify,
     verify_sandbox,
 )
 
 def _print_yaml(data: Any) -> None:
     print(yaml.safe_dump(data, sort_keys=False, width=100), end='')
+
+
+class _CLIProgress:
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+
+    def __call__(self, message: str) -> None:
+        elapsed = time.monotonic() - self.started
+        print(
+            f'[git-epoch +{elapsed:6.1f}s] {message}',
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _progress_for(quiet: bool):
+    return None if quiet else _CLIProgress()
 
 
 class EpochInitCLI(kwconf.Config):
@@ -93,6 +114,7 @@ class EpochInitCLI(kwconf.Config):
         isflag=True,
         help='skip ordinary-clone acceptance validation after publication',
     )
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
@@ -119,6 +141,7 @@ class EpochInitCLI(kwconf.Config):
             bundle=config.bundle,
             bundle_dir=config.bundle_dir,
             fresh_clone=not config.no_fresh_clone,
+            progress=_progress_for(config.quiet),
         )
         printable = {k: v for k, v in result.items() if k != 'plan'}
         printable['plan_digest'] = result['plan']['digest']
@@ -260,6 +283,7 @@ class EpochApplyCLI(kwconf.Config):
         isflag=True,
         help='skip ordinary-clone acceptance validation after publication',
     )
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
@@ -268,6 +292,7 @@ class EpochApplyCLI(kwconf.Config):
             config.plan,
             publish=config.publish,
             fresh_clone=not config.no_fresh_clone,
+            progress=_progress_for(config.quiet),
         )
         _print_yaml(result)
         return result
@@ -303,6 +328,7 @@ class EpochCheckpointCLI(kwconf.Config):
         help='skip ordinary-clone acceptance validation after publication',
     )
     plan_output = kwconf.Value(None, help='also save the generated plan here')
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
@@ -320,6 +346,7 @@ class EpochCheckpointCLI(kwconf.Config):
             plan,
             publish=config.publish,
             fresh_clone=not config.no_fresh_clone,
+            progress=_progress_for(config.quiet),
         )
         _print_yaml(result)
         return result
@@ -337,6 +364,7 @@ class EpochPublishCLI(kwconf.Config):
         isflag=True,
         help='skip ordinary-clone acceptance validation',
     )
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
@@ -345,11 +373,13 @@ class EpochPublishCLI(kwconf.Config):
             result = publish_plan(
                 load_plan(config.plan),
                 fresh_clone=not config.no_fresh_clone,
+                progress=_progress_for(config.quiet),
             )
         else:
             result = publish_latest(
                 config.repo_dpath,
                 fresh_clone=not config.no_fresh_clone,
+                progress=_progress_for(config.quiet),
             )
         _print_yaml(result)
         return result
@@ -381,11 +411,61 @@ class EpochVerifyCLI(kwconf.Config):
 
     repo_dpath = kwconf.Value('.', help='repository to verify')
     deep = kwconf.Value(False, isflag=True, help='fetch archives and run git fsck')
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
 
     @classmethod
     def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
         config = cls.cli(argv=argv, data=kwargs)
-        result = verify(config.repo_dpath, deep=config.deep)
+        result = verify(
+            config.repo_dpath,
+            deep=config.deep,
+            progress=_progress_for(config.quiet),
+        )
+        _print_yaml(result)
+        return result
+
+
+class EpochHistorySyncCLI(kwconf.Config):
+    """Backfill human-browsable branches/tags and the history landing page."""
+
+    __command__ = 'history-sync'
+
+    repo_dpath = kwconf.Value('.', help='active repository attached to the history store')
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = sync_history_views(
+            config.repo_dpath,
+            progress=_progress_for(config.quiet),
+        )
+        _print_yaml(result)
+        return result
+
+
+class EpochCompactCLI(kwconf.Config):
+    """Prune unreachable retired-epoch objects from existing active clones."""
+
+    __command__ = 'compact'
+
+    repo_dpath = kwconf.Value('.', help='active epoch-managed repository')
+    recursive = kwconf.Value(
+        False,
+        isflag=True,
+        short_alias=['r'],
+        help='compact configured epoch submodules leaf-first too',
+    )
+    quiet = kwconf.Value(False, isflag=True, help='suppress progress output')
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = compact_active(
+            config.repo_dpath,
+            recursive=config.recursive,
+            progress=_progress_for(config.quiet),
+        )
         _print_yaml(result)
         return result
 
@@ -668,6 +748,8 @@ class GitEpochModalCLI(kwconf.ModalCLI):
     publish = EpochPublishCLI
     abort = EpochAbortCLI
     verify = EpochVerifyCLI
+    history_sync = EpochHistorySyncCLI
+    compact = EpochCompactCLI
     reconstruct = EpochReconstructCLI
     inspect = EpochInspectCLI
     stats = EpochStatsCLI

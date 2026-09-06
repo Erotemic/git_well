@@ -17,8 +17,11 @@ Ambition occurrences that need an explicit decision are:
 | `game/ambition_map_assets` | `ambition_map_assets` |
 
 Create the GitHub repository `Erotemic/ambition-history` before continuing. It
-may have an ordinary `main` README; Git epoch stores archival refs under
-`refs/epochs/...` and its versioned manifest under `refs/meta/main`.
+may start empty. Git epoch keeps the machine-authoritative archive under
+`refs/epochs/...` and its versioned manifest under `refs/meta/main`. After a
+successful publication it also maintains a human-facing `main` landing branch
+and derived `archive/...` branch/tag mirrors so GitHub and ordinary clones can
+browse the cold history without custom refspecs.
 
 Define the shared remote identities once:
 
@@ -136,11 +139,16 @@ git fetch --prune --tags origin \
 
 ## 3. Plan without changing refs
 
-Keep a local immutable bundle backup during the first production rollover:
+Keep a local immutable bundle backup during the first production rollover,
+and put the checkpoint plan outside the managed worktree. An unignored plan
+inside the worktree would make the later clean-tree safety check fail; current
+versions refuse that output path directly.
 
 ```bash
 BUNDLE_DPATH="${BUNDLE_DPATH:-$HOME/ambition-epoch-backups}"
-mkdir -p "$BUNDLE_DPATH"
+CUTOVER_DPATH="${CUTOVER_DPATH:-$HOME/ambition-epoch-cutover}"
+mkdir -p "$BUNDLE_DPATH" "$CUTOVER_DPATH"
+PLAN="$CUTOVER_DPATH/checkpoint.yaml"
 
 cd "$HOME/code/ambition"
 
@@ -150,7 +158,7 @@ git epoch plan \
     --bundle \
     --bundle-dir "$BUNDLE_DPATH" \
     --summary \
-    -o checkpoint.yaml
+    -o "$PLAN"
 ```
 
 Review every repository, old tip, successor root, translated gitlink, and every
@@ -162,10 +170,16 @@ command must end with `No refs have been changed.`
 ## 4. Archive and verify before publication
 
 ```bash
-git epoch apply checkpoint.yaml
+git epoch apply "$PLAN"
 git epoch inspect
 git epoch verify --deep
 ```
+
+`apply` and deep verification print elapsed repository/stage progress on stderr
+while reserving stdout for their YAML results. Use `--quiet` only when that
+progress is not wanted. Archive refs are pushed per repository in one atomic
+batch, and deep verification fetches the archived refs for a repository in one
+batch before one `git fsck`.
 
 At this point the retiring history should exist in `ambition-history`, but none
 of the active repositories should have adopted their successor roots. Treat any
@@ -182,8 +196,14 @@ When the prepared receipt is correct, the active remotes have not changed, and
 the non-fast-forward rules are temporarily disabled:
 
 ```bash
-git epoch publish --plan checkpoint.yaml
+git epoch publish --plan "$PLAN"
 ```
+
+`publish` also reports elapsed progress on stderr. The machine archive and
+manifest are authoritative. Updating the derived human browsing refs is
+best-effort: if that view update fails after the epoch itself has published,
+publication reports a warning and records `git epoch history-sync` as the
+repair command rather than making a successful cutover look failed.
 
 Publication updates managed children leaf-first and then updates the Ambition
 root to the successor whose gitlinks reference those child successor roots. It
@@ -239,15 +259,50 @@ git epoch attach \
 logical store ID and the same successor/predecessor lineage recorded in the
 active root.
 
-## 7. Make the split obvious to humans too
+## 7. Inspect the human-facing history store
 
-`.git-epoch.yaml` is the machine-readable authority for locating cold history.
-Also add a short note near the top-level project documentation along these
-lines:
+`.git-epoch.yaml`, `refs/meta/main`, and `refs/epochs/...` remain the machine
+authorities. Publication additionally maintains derived browsing views in the
+history store:
 
-> This repository uses Git epochs to keep active clones small. Earlier Git
-> history is preserved in `Erotemic/ambition-history`. See `.git-epoch.yaml` and
-> `git epoch reconstruct` for historical access.
+```text
+refs/heads/main
+refs/heads/archive/<repository>/epoch-<NNN>/<original-branch>
+refs/tags/archive/<repository>/epoch-<NNN>/<original-tag>
+```
 
-The history repository should contain the inverse note: current development is
-in `Erotemic/ambition`; this repository is the cold Git-history store.
+The `main` branch contains a generated `README.md` and `archive-index.yaml`.
+The archive mirror refs point at the same Git objects as the canonical epoch
+refs, so they add no duplicate object payload. A normal clone of
+`ambition-history` can therefore browse the retired branches using ordinary Git
+and GitHub interfaces.
+
+For a history store that was populated by an older Git Epoch version, or after
+a reported browsing-view warning, repair/backfill the views from an attached
+active repository:
+
+```bash
+cd "$HOME/code/ambition"
+git epoch history-sync
+```
+
+This operation is idempotent and reconstructs the views from the canonical
+manifest/archive refs. The first migration of an existing remote cold store may
+transfer the archive once while assembling those views, but it uses batched
+fetch/push operations and reports progress.
+
+## 8. Optionally compact existing active checkouts
+
+A successful rollover changes reachability immediately, but an existing local
+checkout may still retain old epoch objects through reflogs. After publication
+and verification, when the active repository graph is clean, compact it with:
+
+```bash
+cd "$HOME/code/ambition"
+git epoch compact --recursive
+```
+
+`compact` validates the published lineage first, expires only unreachable
+reflog entries, runs `git gc --prune=now`, and reports before/after Git-directory
+sizes. It does not delete active refs or modify the history store. Fresh clones
+already have the bounded history and do not need this step.

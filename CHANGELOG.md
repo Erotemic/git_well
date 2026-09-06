@@ -13,9 +13,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Add `git epoch stats` and `git epoch sandbox stats` to report shared history-store size, per-epoch reachable/exclusive object sizes, standalone bundle sizes, active-history size, recursive fresh-clone size, and optional `archive_source` package size.
 * Add committed `.git-epoch.yaml` public history locators and `git epoch attach` so fresh clones can discover, inspect, validate, and reconstruct split history without machine-local configuration.
 * Add explicit `--retire-extra-branches` checkpoint planning to archive auxiliary branch tips under their original names and remove them atomically from active remotes after archival verification.
+* Add human-browsable history-store views: a generated `main` landing branch, `archive/...` branch/tag mirrors, and idempotent `git epoch history-sync` repair/backfill.
+* Add `git epoch compact` to prune locally unreachable retired-epoch objects from verified published checkouts while reporting before/after Git-directory sizes.
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
 * Add programmatic `prepare` and `validate` hooks for repository-specific archive enrichment and policy checks.
 * Add `stage_source_archive()` and `ArchiveSourceContext` for direct control of staged archive contents, generated-path exclusions, metadata finalization, serialization, and retained-stage debugging.
+
+### Changed
+
+* Report elapsed stage/repository progress for epoch apply, publish, and deep verification on stderr, with `--quiet` for machine-oriented runs.
+* Batch archive publication per repository and batch deep-verification fetches, avoiding one network round trip per archived ref and redundant deep `fsck` work.
+* Refuse unignored checkpoint-plan output paths inside the managed worktree so planning cannot make its own subsequent apply fail the clean-tree gate.
 
 ### Fixed
 

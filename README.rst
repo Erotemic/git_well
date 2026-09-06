@@ -229,19 +229,30 @@ measure repacking savings. It reports before/after file bytes and allocated
 filesystem bytes, then deep-verifies the archive after packing.
 
 A checkpoint can be split into an inspectable, resumable preparation and a
-separate publication step:
+separate publication step. Keep the plan outside the worktree so writing it
+does not make the checkpoint immediately dirty:
 
 .. code:: bash
 
-   git epoch plan --recursive --bundle -o checkpoint.yaml
-   git epoch apply checkpoint.yaml
+   CUTOVER_DPATH="$HOME/ambition-epoch-cutover"
+   mkdir -p "$CUTOVER_DPATH"
+   PLAN="$CUTOVER_DPATH/checkpoint.yaml"
+
+   git epoch plan --recursive --bundle -o "$PLAN"
+   git epoch apply "$PLAN"
    git epoch inspect
-   git epoch publish --plan checkpoint.yaml
+   git epoch publish --plan "$PLAN"
+
+``apply``, ``publish``, and deep verification print elapsed-time progress to
+stderr by default while keeping their YAML result on stdout. Pass ``--quiet``
+when scripting without progress output. Archive refs are pushed per repository
+in one atomic batch, and deep verification fetches each repository's archived
+refs in one batch before one ``git fsck``.
 
 ``apply`` archives and verifies the retiring epoch before any active branch is
 rewritten. Until ``publish`` succeeds, manifest entries are marked
-``prepared``. Use ``git epoch abort --plan checkpoint.yaml`` to discard a
-prepared transaction before any successor branch has been adopted.
+``prepared``. Use ``git epoch abort --plan "$PLAN"`` to discard a prepared
+transaction before any successor branch has been adopted.
 
 After publication, verify the archive and reconstruct archaeology checkouts as
 needed:
@@ -250,6 +261,30 @@ needed:
 
    git epoch verify --deep
    git epoch reconstruct --recursive -o ../ambition-history-view
+
+Publication also maintains a human-facing ``main`` branch in the history store
+and mirrors committed archived branches/tags under ``archive/...`` refs. The
+canonical machine authorities remain ``refs/meta/main`` and ``refs/epochs/...``.
+For a history store created by an older git-epoch version, backfill those
+browsing views idempotently with:
+
+.. code:: bash
+
+   git epoch history-sync
+
+A normal clone of the history repository can then browse archived branches
+without custom refspecs. ``main`` contains a generated ``README.md`` and
+``archive-index.yaml`` explaining the store and mapping the canonical refs to
+the browsing refs.
+
+Once publication and verification are complete, an existing active checkout may
+still contain unreachable retired objects through its reflog. ``compact``
+validates the published lineage, expires only unreachable reflog entries, runs
+``git gc --prune=now``, and reports before/after Git-directory sizes:
+
+.. code:: bash
+
+   git epoch compact --recursive
 
 Reconstruction fetches the exact archived commits and creates local
 ``refs/replace`` objects that connect each successor root to its recorded

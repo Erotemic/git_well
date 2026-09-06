@@ -11,8 +11,9 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 import yaml
@@ -22,6 +23,41 @@ FORMAT_VERSION = 1
 CONFIG_RELATIVE_PATH = pathlib.Path('epoch') / 'config.yaml'
 TRANSACTION_RELATIVE_PATH = pathlib.Path('epoch') / 'transactions'
 _SAFE_REPOSITORY_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+
+ProgressFn = Callable[[str], None]
+
+
+def _emit_progress(progress: ProgressFn | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _elapsed_text(start: float) -> str:
+    return f'{time.monotonic() - start:.1f}s'
+
+
+def _fetch_refspecs(
+    bare: pathlib.Path,
+    source: str | os.PathLike[str],
+    refspecs: Iterable[str],
+) -> None:
+    """Fetch many refs in one negotiation without command-line length issues."""
+    refs = list(refspecs)
+    if not refs:
+        return
+    _run(
+        [
+            'git',
+            '--git-dir',
+            bare,
+            'fetch',
+            '--no-tags',
+            '--stdin',
+            source,
+        ],
+        input='\n'.join(refs) + '\n',
+    )
 
 
 class EpochError(RuntimeError):
@@ -907,34 +943,57 @@ class HistoryStore:
     def ref_oid(self, ref: str) -> str | None:
         return self.ls_refs(ref).get(ref)
 
+    def archive_refs(
+        self,
+        refs: Iterable[tuple[str, str, str]],
+    ) -> dict[str, str]:
+        """Archive many refs with one remote negotiation and verification."""
+        items = list(refs)
+        if not items:
+            return {}
+        actual = self.ls_refs()
+        missing: list[tuple[str, str, str]] = []
+        statuses: dict[str, str] = {}
+        for source_ref, dest_ref, expected_oid in items:
+            existing = actual.get(dest_ref)
+            if existing is not None:
+                if existing != expected_oid:
+                    raise EpochSafetyError(
+                        f'Immutable archive ref conflict: {dest_ref} points to '
+                        f'{existing}, expected {expected_oid}'
+                    )
+                statuses[dest_ref] = 'already-present'
+            else:
+                missing.append((source_ref, dest_ref, expected_oid))
+
+        if missing:
+            args = ['git', 'push', '--atomic']
+            for _source_ref, dest_ref, _expected_oid in missing:
+                args.append(f'--force-with-lease={dest_ref}:')
+            args.append(self.spec)
+            args.extend(
+                f'{source_ref}:{dest_ref}'
+                for source_ref, dest_ref, _expected_oid in missing
+            )
+            _run(args, cwd=self.source_repo)
+            actual = self.ls_refs()
+            for _source_ref, dest_ref, expected_oid in missing:
+                found = actual.get(dest_ref)
+                if found != expected_oid:
+                    raise EpochSafetyError(
+                        f'Archive verification failed for {dest_ref}: '
+                        f'expected {expected_oid}, got {found}'
+                    )
+                statuses[dest_ref] = 'created'
+        return statuses
+
     def archive_ref(
         self,
         source_ref: str,
         dest_ref: str,
         expected_oid: str,
     ) -> str:
-        existing = self.ref_oid(dest_ref)
-        if existing is not None:
-            if existing != expected_oid:
-                raise EpochSafetyError(
-                    f'Immutable archive ref conflict: {dest_ref} points to '
-                    f'{existing}, expected {expected_oid}'
-                )
-            return 'already-present'
-        _git(
-            self.source_repo,
-            'push',
-            f'--force-with-lease={dest_ref}:',
-            self.spec,
-            f'{source_ref}:{dest_ref}',
-        )
-        actual = self.ref_oid(dest_ref)
-        if actual != expected_oid:
-            raise EpochSafetyError(
-                f'Archive verification failed for {dest_ref}: '
-                f'expected {expected_oid}, got {actual}'
-            )
-        return 'created'
+        return self.archive_refs([(source_ref, dest_ref, expected_oid)])[dest_ref]
 
     def archive_oid(self, oid: str, dest_ref: str) -> str:
         existing = self.ref_oid(dest_ref)
@@ -978,7 +1037,13 @@ class HistoryStore:
             f':{ref}',
         )
 
-    def verify_refs(self, refs: Mapping[str, str], *, fsck: bool = True) -> None:
+    def verify_refs(
+        self,
+        refs: Mapping[str, str],
+        *,
+        fsck: bool = True,
+        progress: ProgressFn | None = None,
+    ) -> None:
         actual = self.ls_refs()
         for ref, expected in refs.items():
             found = actual.get(ref)
@@ -988,22 +1053,193 @@ class HistoryStore:
                     f'got {found}'
                 )
         if fsck and refs:
+            _emit_progress(
+                progress,
+                f'fetching {len(refs)} archived refs in one batch for fsck',
+            )
             with tempfile.TemporaryDirectory(prefix='git-epoch-verify-') as tmp:
                 mirror = pathlib.Path(tmp) / 'verify.git'
                 _run(['git', 'init', '--bare', mirror])
-                for ref in refs:
-                    _run(
-                        [
-                            'git',
-                            '--git-dir',
-                            mirror,
-                            'fetch',
-                            '--no-tags',
-                            self.spec,
-                            f'+{ref}:{ref}',
-                        ]
-                    )
+                _fetch_refspecs(
+                    mirror,
+                    self.spec,
+                    [f'+{ref}:{ref}' for ref in refs],
+                )
+                _emit_progress(progress, 'running git fsck --full')
                 _run(['git', '--git-dir', mirror, 'fsck', '--full'])
+
+    def sync_entry_archive_views(
+        self,
+        entry: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Publish human-browsable refs for one committed archived epoch."""
+        desired = {}
+        for item in entry['refs']:
+            view_ref = _archive_view_ref(
+                entry['repository'],
+                int(entry['old_epoch']),
+                item['source'],
+            )
+            if view_ref is not None:
+                desired[view_ref] = item['oid']
+        actual = self.ls_refs()
+        missing: dict[str, str] = {}
+        for ref, oid in desired.items():
+            existing = actual.get(ref)
+            if existing is None:
+                missing[ref] = oid
+            elif existing != oid:
+                raise EpochSafetyError(
+                    f'Browsable archive ref conflict: {ref} points to {existing}, '
+                    f'expected {oid}'
+                )
+        if missing:
+            args = ['git', 'push', '--atomic']
+            for ref in sorted(missing):
+                args.append(f'--force-with-lease={ref}:')
+            args.append(self.spec)
+            args.extend(f'{oid}:{ref}' for ref, oid in sorted(missing.items()))
+            _run(args, cwd=self.source_repo)
+        actual = self.ls_refs()
+        mismatches = {
+            ref: (actual.get(ref), oid)
+            for ref, oid in desired.items()
+            if actual.get(ref) != oid
+        }
+        if mismatches:
+            raise EpochSafetyError(
+                f'Browsable archive ref verification failed: {mismatches}'
+            )
+        return {
+            'refs': len(desired),
+            'created': len(missing),
+            'already_present': len(desired) - len(missing),
+        }
+
+    def sync_all_archive_views(
+        self,
+        manifest: Mapping[str, Any],
+        *,
+        progress: ProgressFn | None = None,
+    ) -> dict[str, Any]:
+        """Backfill browsable refs from canonical committed archive refs."""
+        desired: dict[str, tuple[str, str]] = {}
+        for repository_id, epochs in manifest.get('epochs', {}).items():
+            for epoch in epochs:
+                if epoch.get('state', 'committed') != 'committed':
+                    continue
+                number = int(epoch['number'])
+                for item in epoch.get('refs', []):
+                    view_ref = _archive_view_ref(
+                        repository_id, number, item['source']
+                    )
+                    if view_ref is not None:
+                        desired[view_ref] = (item['archive'], item['oid'])
+
+        actual = self.ls_refs()
+        missing: dict[str, tuple[str, str]] = {}
+        for view_ref, (archive_ref, oid) in desired.items():
+            existing = actual.get(view_ref)
+            if existing is None:
+                missing[view_ref] = (archive_ref, oid)
+            elif existing != oid:
+                raise EpochSafetyError(
+                    f'Browsable archive ref conflict: {view_ref} points to '
+                    f'{existing}, expected {oid}'
+                )
+
+        if missing:
+            archive_refs = sorted({archive for archive, _oid in missing.values()})
+            _emit_progress(
+                progress,
+                f'backfilling {len(missing)} browsable archive refs; '
+                f'fetching {len(archive_refs)} canonical refs in one batch',
+            )
+            with tempfile.TemporaryDirectory(prefix='git-epoch-history-view-') as tmp:
+                bare = pathlib.Path(tmp) / 'views.git'
+                _run(['git', 'init', '--bare', bare])
+                _fetch_refspecs(
+                    bare,
+                    self.spec,
+                    [f'+{ref}:{ref}' for ref in archive_refs],
+                )
+                _emit_progress(
+                    progress,
+                    f'publishing {len(missing)} browsable archive refs in one batch',
+                )
+                args = ['git', '--git-dir', bare, 'push', '--atomic']
+                for view_ref in sorted(missing):
+                    args.append(f'--force-with-lease={view_ref}:')
+                args.append(self.spec)
+                args.extend(
+                    f'{archive_ref}:{view_ref}'
+                    for view_ref, (archive_ref, _oid) in sorted(missing.items())
+                )
+                _run(args)
+
+        actual = self.ls_refs()
+        mismatches = {
+            ref: (actual.get(ref), oid)
+            for ref, (_archive, oid) in desired.items()
+            if actual.get(ref) != oid
+        }
+        if mismatches:
+            raise EpochSafetyError(
+                f'Browsable archive ref verification failed: {mismatches}'
+            )
+        return {
+            'refs': len(desired),
+            'created': len(missing),
+            'already_present': len(desired) - len(missing),
+        }
+
+    def sync_landing_branch(
+        self,
+        manifest: Mapping[str, Any],
+        manifest_oid: str,
+    ) -> dict[str, Any]:
+        """Maintain the small human-facing ``main`` branch of a history store."""
+        old = self.ref_oid('refs/heads/main')
+        if self.is_local:
+            bare = self.local_path
+            tree = _write_history_landing_tree(bare, manifest, manifest_oid)
+            if old is not None and _tree_oid(bare, old) == tree:
+                return {'ref': 'refs/heads/main', 'oid': old, 'status': 'unchanged'}
+            new = _write_history_landing_commit(bare, tree, parent=old)
+            args = ['git', '--git-dir', bare, 'update-ref', 'refs/heads/main', new]
+            args.append(old if old is not None else '0' * 40)
+            _run(args)
+            _run(
+                [
+                    'git', '--git-dir', bare, 'symbolic-ref',
+                    'HEAD', 'refs/heads/main',
+                ]
+            )
+            return {'ref': 'refs/heads/main', 'oid': new, 'status': 'updated'}
+
+        with tempfile.TemporaryDirectory(prefix='git-epoch-history-main-') as tmp:
+            bare = pathlib.Path(tmp) / 'landing.git'
+            _run(['git', 'init', '--bare', bare])
+            if old is not None:
+                _fetch_refspecs(
+                    bare, self.spec, ['+refs/heads/main:refs/heads/main']
+                )
+            tree = _write_history_landing_tree(bare, manifest, manifest_oid)
+            if old is not None and _tree_oid(bare, old) == tree:
+                return {'ref': 'refs/heads/main', 'oid': old, 'status': 'unchanged'}
+            new = _write_history_landing_commit(bare, tree, parent=old)
+            lease = (
+                f'--force-with-lease=refs/heads/main:{old}'
+                if old is not None
+                else '--force-with-lease=refs/heads/main:'
+            )
+            _run(
+                [
+                    'git', '--git-dir', bare, 'push', lease, self.spec,
+                    f'{new}:refs/heads/main',
+                ]
+            )
+            return {'ref': 'refs/heads/main', 'oid': new, 'status': 'updated'}
 
     def load_manifest(self) -> tuple[dict[str, Any], str | None]:
         if self.is_local:
@@ -1161,6 +1397,185 @@ class HistoryStore:
             args.extend(['-p', parent])
         args.extend(['-m', message])
         return _run(args, env=env).stdout.strip()
+
+
+
+def _archive_view_ref(
+    repository_id: str,
+    epoch_number: int,
+    source_ref: str,
+) -> str | None:
+    prefix = f'archive/{repository_id}/epoch-{epoch_number:03d}/'
+    if source_ref.startswith('refs/heads/'):
+        return 'refs/heads/' + prefix + source_ref[len('refs/heads/') :]
+    if source_ref.startswith('refs/tags/'):
+        return 'refs/tags/' + prefix + source_ref[len('refs/tags/') :]
+    return None
+
+
+def _history_index_data(
+    manifest: Mapping[str, Any],
+    manifest_oid: str,
+) -> dict[str, Any]:
+    repositories: dict[str, Any] = {}
+    repository_records = manifest.get('repositories', {})
+    for repository_id, epochs in manifest.get('epochs', {}).items():
+        repo_record = repository_records.get(repository_id, {})
+        epoch_rows = []
+        for epoch in epochs:
+            refs = []
+            for item in epoch.get('refs', []):
+                view_ref = _archive_view_ref(
+                    repository_id,
+                    int(epoch['number']),
+                    item['source'],
+                )
+                refs.append(
+                    {
+                        'source': item['source'],
+                        'archive': item['archive'],
+                        'browse': view_ref,
+                        'oid': item['oid'],
+                    }
+                )
+            epoch_rows.append(
+                {
+                    'number': int(epoch['number']),
+                    'state': epoch.get('state', 'committed'),
+                    'main_tip': epoch.get('main_tip'),
+                    'refs': refs,
+                }
+            )
+        repositories[repository_id] = {
+            'active_url': repo_record.get('active_url'),
+            'primary_branch': repo_record.get('primary_branch'),
+            'epochs': epoch_rows,
+        }
+    return {
+        'format_version': 1,
+        'generated_from_manifest': manifest_oid,
+        'history_store': manifest.get('history_store', {}),
+        'repositories': repositories,
+    }
+
+
+def _history_landing_readme(
+    manifest: Mapping[str, Any],
+    manifest_oid: str,
+) -> str:
+    lines = [
+        '# Git Epoch History Store',
+        '',
+        'This repository is a cold Git history store managed by `git epoch`.',
+        'Normal development happens in the active repositories listed below.',
+        '',
+        'The refs under `refs/meta/*` and `refs/epochs/*` are the machine',
+        'authority. This `main` branch and the `archive/...` branches/tags are',
+        'generated browsing views so ordinary Git clones and hosting UIs can',
+        'inspect the archived data without custom refspecs.',
+        '',
+        f'Current machine manifest: `{manifest_oid}` (`refs/meta/main`)',
+        '',
+        '## Archived repositories',
+        '',
+        '| Repository | Active source | Archived epochs |',
+        '| --- | --- | --- |',
+    ]
+    repository_records = manifest.get('repositories', {})
+    for repository_id in sorted(manifest.get('epochs', {})):
+        epochs = manifest.get('epochs', {}).get(repository_id, [])
+        committed = [
+            str(int(epoch['number']))
+            for epoch in epochs
+            if epoch.get('state', 'committed') == 'committed'
+        ]
+        prepared = [
+            str(int(epoch['number']))
+            for epoch in epochs
+            if epoch.get('state', 'committed') != 'committed'
+        ]
+        epoch_text = ', '.join(committed) if committed else 'none'
+        if prepared:
+            epoch_text += ' (prepared: ' + ', '.join(prepared) + ')'
+        active_url = repository_records.get(repository_id, {}).get('active_url')
+        active_text = f'`{active_url}`' if active_url else '—'
+        lines.append(f'| `{repository_id}` | {active_text} | {epoch_text} |')
+    lines.extend(
+        [
+            '',
+            '## Browsing archived history',
+            '',
+            'Committed source branches are mirrored as:',
+            '',
+            '```text',
+            'archive/<repository>/epoch-<NNN>/<original-branch>',
+            '```',
+            '',
+            'Committed source tags are mirrored under the same `archive/...`',
+            'prefix in the tag namespace.',
+            '',
+            'For example:',
+            '',
+            '```text',
+            'refs/epochs/ambition/000/heads/main        # machine authority',
+            'refs/heads/archive/ambition/epoch-000/main # browsing view',
+            '```',
+            '',
+            '`archive-index.yaml` on this branch contains the complete mapping',
+            'from original refs to machine archive refs and browsing refs.',
+            '',
+            '## Reconstruction',
+            '',
+            'Run `git epoch reconstruct` from an active epoch-managed repository',
+            'to assemble archived epochs with derived replace refs for archaeology.',
+            '',
+            '_This branch is generated by git-epoch. Do not edit it manually._',
+            '',
+        ]
+    )
+    return '\n'.join(lines)
+
+
+def _write_history_landing_tree(
+    bare: pathlib.Path,
+    manifest: Mapping[str, Any],
+    manifest_oid: str,
+) -> str:
+    files = {
+        'README.md': _history_landing_readme(manifest, manifest_oid),
+        'archive-index.yaml': _yaml_dump(_history_index_data(manifest, manifest_oid)),
+    }
+    records = []
+    for name, content in sorted(files.items()):
+        blob = _run(
+            ['git', '--git-dir', bare, 'hash-object', '-w', '--stdin'],
+            input=content,
+        ).stdout.strip()
+        records.append(f'100644 blob {blob}\t{name}\0'.encode())
+    return _run(
+        ['git', '--git-dir', bare, 'mktree', '-z'],
+        input=b''.join(records),
+        text=False,
+    ).stdout.decode().strip()
+
+
+def _write_history_landing_commit(
+    bare: pathlib.Path,
+    tree: str,
+    *,
+    parent: str | None,
+) -> str:
+    env = {
+        'GIT_AUTHOR_NAME': 'git-epoch',
+        'GIT_AUTHOR_EMAIL': 'git-epoch@local',
+        'GIT_COMMITTER_NAME': 'git-epoch',
+        'GIT_COMMITTER_EMAIL': 'git-epoch@local',
+    }
+    args = ['git', '--git-dir', bare, 'commit-tree', tree]
+    if parent:
+        args.extend(['-p', parent])
+    args.extend(['-m', 'Update Git epoch history index'])
+    return _run(args, env=env).stdout.strip()
 
 
 def _empty_manifest(store_id: str) -> dict[str, Any]:
@@ -1900,9 +2315,37 @@ def load_plan(path: str | os.PathLike[str]) -> dict[str, Any]:
 
 def save_plan(plan: Mapping[str, Any], path: str | os.PathLike[str]) -> pathlib.Path:
     _validate_plan(plan)
-    path = pathlib.Path(path)
-    _write_yaml(path, plan)
-    return path
+    output = pathlib.Path(path).expanduser()
+    if not output.is_absolute():
+        output = pathlib.Path.cwd() / output
+    output = output.resolve()
+    root = pathlib.Path(plan['root_repository']).resolve()
+    try:
+        rel = output.relative_to(root)
+    except ValueError:
+        rel = None
+    if rel is not None:
+        gitdir = _git_dir(root).resolve()
+        try:
+            output.relative_to(gitdir)
+        except ValueError:
+            in_gitdir = False
+        else:
+            in_gitdir = True
+        ignored = False
+        if not in_gitdir:
+            ignored = (
+                _git(root, 'check-ignore', '-q', '--', os.fspath(rel), check=False).returncode
+                == 0
+            )
+        if not in_gitdir and not ignored:
+            raise EpochSafetyError(
+                'Checkpoint plan output would make the repository dirty: '
+                f'{output}. Write the plan outside the worktree (for example '
+                '$HOME/<repo>-epoch-cutover/checkpoint.yaml) or to an ignored path.'
+            )
+    _write_yaml(output, plan)
+    return output
 
 
 def _assert_plan_inputs_current(entry: Mapping[str, Any]) -> None:
@@ -1971,7 +2414,11 @@ def _bundle_heads(repo: pathlib.Path, bundle_path: pathlib.Path) -> dict[str, st
     return heads
 
 
-def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+def _create_bundle(
+    entry: Mapping[str, Any],
+    *,
+    progress: ProgressFn | None = None,
+) -> dict[str, Any] | None:
     bundle_path_text = entry.get('bundle_path')
     if not bundle_path_text:
         return None
@@ -1980,6 +2427,7 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     expected_heads = {item['source']: item['oid'] for item in entry['refs']}
     if bundle_path.exists():
+        _emit_progress(progress, f'verifying existing bundle {bundle_path}')
         verify = _git(repo, 'bundle', 'verify', bundle_path, check=False)
         if verify.returncode != 0:
             raise EpochSafetyError(
@@ -1999,6 +2447,10 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             'refs': actual_heads,
         }
     refs = [item['source'] for item in entry['refs']]
+    _emit_progress(
+        progress,
+        f'creating recovery bundle for {len(refs)} refs: {bundle_path}',
+    )
     with tempfile.TemporaryDirectory(prefix='git-epoch-bundle-stage-') as tmp:
         stage = pathlib.Path(tmp) / 'stage.git'
         _run(['git', 'init', '--bare', stage])
@@ -2006,17 +2458,7 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             f'+{item.get("local_source", item["source"])}:{item["source"]}'
             for item in entry['refs']
         ]
-        _run(
-            [
-                'git',
-                '--git-dir',
-                stage,
-                'fetch',
-                '--no-tags',
-                str(repo),
-                *refspecs,
-            ]
-        )
+        _fetch_refspecs(stage, str(repo), refspecs)
         _run(
             ['git', '--git-dir', stage, 'bundle', 'create', bundle_path, *refs]
         )
@@ -2035,19 +2477,31 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         'refs': actual_heads,
     }
 
-def _archive_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+
+def _archive_entry(
+    entry: Mapping[str, Any],
+    *,
+    progress: ProgressFn | None = None,
+) -> dict[str, Any]:
     repo = pathlib.Path(entry['repo_path'])
     store = HistoryStore(entry['history_store'], repo)
     store.ensure()
-    archived = {}
-    expected = {}
-    for item in entry['refs']:
-        source_ref = item.get('local_source', item['source'])
-        status = store.archive_ref(source_ref, item['archive'], item['oid'])
-        archived[item['archive']] = status
-        expected[item['archive']] = item['oid']
-    store.verify_refs(expected, fsck=True)
-    bundle = _create_bundle(entry)
+    expected = {item['archive']: item['oid'] for item in entry['refs']}
+    ref_tuples = [
+        (
+            item.get('local_source', item['source']),
+            item['archive'],
+            item['oid'],
+        )
+        for item in entry['refs']
+    ]
+    _emit_progress(
+        progress,
+        f'archiving {len(ref_tuples)} refs to history store in one atomic push',
+    )
+    archived = store.archive_refs(ref_tuples)
+    store.verify_refs(expected, fsck=True, progress=progress)
+    bundle = _create_bundle(entry, progress=progress)
     return {
         'archive_refs': expected,
         'archive_status': archived,
@@ -2381,16 +2835,31 @@ def apply_plan(
     *,
     publish: bool = False,
     fresh_clone: bool = True,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
+    overall_start = time.monotonic()
     if isinstance(plan_or_path, Mapping):
         plan = dict(plan_or_path)
         _validate_plan(plan)
     else:
         plan = load_plan(plan_or_path)
-    for entry in plan['repositories']:
+    repositories = plan['repositories']
+    _emit_progress(
+        progress,
+        f'apply transaction {plan["transaction_id"]}: '
+        f'{len(repositories)} repositories',
+    )
+    for index, entry in enumerate(repositories, start=1):
+        repo_start = time.monotonic()
         state = _transaction_state(entry, plan['transaction_id'])
+        label = f'[{index}/{len(repositories)}] {entry["repository"]}'
         if state.get('status') in {'prepared', 'published'}:
+            _emit_progress(
+                progress,
+                f'{label}: already {state.get("status")}; skipping preparation',
+            )
             continue
+        _emit_progress(progress, f'{label}: validating checkpoint inputs')
         _assert_plan_inputs_current(entry)
         state = {
             'status': 'preparing',
@@ -2400,9 +2869,14 @@ def apply_plan(
             'phases': {},
         }
         _write_transaction_files(plan, entry, state)
-        verification = _archive_entry(entry)
+
+        def repo_progress(message: str, *, _label: str = label) -> None:
+            _emit_progress(progress, f'{_label}: {message}')
+
+        verification = _archive_entry(entry, progress=repo_progress)
         state['phases']['archive'] = 'verified'
         _write_transaction_files(plan, entry, state)
+        _emit_progress(progress, f'{label}: materializing successor root')
         _materialize_successor(entry)
         boundary = verify_boundary(entry)
         verification['boundary'] = boundary
@@ -2411,13 +2885,25 @@ def apply_plan(
         state['status'] = 'prepared'
         state['prepared_at'] = _isoformat()
         _write_transaction_files(plan, entry, state)
+        bundle = verification.get('bundle')
+        bundle_note = ''
+        if bundle:
+            bundle_note = f', bundle={_format_bytes(int(bundle["bytes"]))}'
+        _emit_progress(
+            progress,
+            f'{label}: prepared in {_elapsed_text(repo_start)}{bundle_note}',
+        )
+
+    _emit_progress(progress, 'updating versioned history manifest')
     manifest_commits = _update_manifests_for_plan(plan)
     from .locator import verify_public_archive_visibility
 
     public_visibility: dict[str, Any] = {}
-    for entry in plan['repositories']:
+    for index, entry in enumerate(repositories, start=1):
+        label = f'[{index}/{len(repositories)}] {entry["repository"]}'
         state = _transaction_state(entry, plan['transaction_id'])
         state['manifest_commits'] = manifest_commits
+        _emit_progress(progress, f'{label}: verifying public archive visibility')
         visibility = verify_public_archive_visibility(
             entry['repo_path'],
             history_store_id=entry['history_store_id'],
@@ -2435,8 +2921,11 @@ def apply_plan(
     }
     if public_visibility:
         result['public_archive_visibility'] = public_visibility
+    _emit_progress(progress, f'apply prepared in {_elapsed_text(overall_start)}')
     if publish:
-        publish_result = publish_plan(plan, fresh_clone=fresh_clone)
+        publish_result = publish_plan(
+            plan, fresh_clone=fresh_clone, progress=progress
+        )
         result.update(publish_result)
     return result
 
@@ -2796,24 +3285,56 @@ def _fresh_clone_validate(
         }
 
 
+def _sync_published_history_views(
+    entry: Mapping[str, Any],
+    *,
+    progress: ProgressFn | None = None,
+) -> dict[str, Any]:
+    repo = pathlib.Path(entry['repo_path'])
+    store = HistoryStore(entry['history_store'], repo)
+    _emit_progress(progress, 'publishing browsable archive refs')
+    archive_views = store.sync_entry_archive_views(entry)
+    manifest, meta_oid = store.load_manifest()
+    if meta_oid is None:
+        raise EpochSafetyError('History manifest disappeared during publication')
+    _emit_progress(progress, 'updating human-facing history-store main branch')
+    landing = store.sync_landing_branch(manifest, meta_oid)
+    return {
+        'archive_views': archive_views,
+        'landing': landing,
+        'manifest': meta_oid,
+    }
+
+
 def publish_plan(
     plan_or_path: Mapping[str, Any] | str | os.PathLike[str],
     *,
     fresh_clone: bool = True,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
+    overall_start = time.monotonic()
     if isinstance(plan_or_path, Mapping):
         plan = dict(plan_or_path)
         _validate_plan(plan)
     else:
         plan = load_plan(plan_or_path)
+    repositories = plan['repositories']
     clone_results = {}
-    for entry in plan['repositories']:
+    _emit_progress(
+        progress,
+        f'publish transaction {plan["transaction_id"]}: '
+        f'{len(repositories)} repositories',
+    )
+    for index, entry in enumerate(repositories, start=1):
+        repo_start = time.monotonic()
+        label = f'[{index}/{len(repositories)}] {entry["repository"]}'
         state = _transaction_state(entry, plan['transaction_id'])
         if not state:
             raise EpochSafetyError(
                 f'Transaction has not been prepared for {entry["repository"]}'
             )
         if state.get('status') == 'published':
+            _emit_progress(progress, f'{label}: already published; skipping')
             continue
         if state.get('status') not in {'prepared', 'publishing'}:
             raise EpochSafetyError(
@@ -2825,24 +3346,54 @@ def publish_plan(
             raise EpochPlanStaleError(
                 f'{entry["repository"]} changed before publication: {current}'
             )
+        _emit_progress(progress, f'{label}: rechecking worktree and archive')
         _assert_publish_worktree_safe(entry)
         _archive_refs_verified(entry)
         verify_boundary(entry)
         state['status'] = 'publishing'
         _write_transaction_files(plan, entry, state)
+        _emit_progress(progress, f'{label}: atomically updating active remote refs')
         _publish_remote(entry)
+        _emit_progress(progress, f'{label}: updating local refs and checkout')
         _publish_local(entry)
         _update_remote_tracking(entry)
         _update_active_epoch_config(entry)
+        _emit_progress(progress, f'{label}: committing archive boundary metadata')
         committed_meta = _mark_manifest_entry_state(
             entry, plan['transaction_id'], 'committed'
         )
         state['committed_manifest'] = committed_meta
+
+        def repo_progress(message: str, *, _label: str = label) -> None:
+            _emit_progress(progress, f'{_label}: {message}')
+
+        try:
+            state['history_views'] = _sync_published_history_views(
+                entry, progress=repo_progress
+            )
+        except EpochError as ex:
+            state['history_views'] = {
+                'status': 'failed',
+                'error': str(ex),
+                'repair_command': 'git epoch history-sync',
+            }
+            _emit_progress(
+                progress,
+                f'{label}: WARNING: history browsing views were not updated; '
+                'run `git epoch history-sync` after publication',
+            )
         state['status'] = 'published'
         state['published_at'] = _isoformat()
         _write_transaction_files(plan, entry, state)
+        _emit_progress(
+            progress,
+            f'{label}: published in {_elapsed_text(repo_start)}',
+        )
     if fresh_clone:
-        for entry in plan['repositories']:
+        for index, entry in enumerate(repositories, start=1):
+            label = f'[{index}/{len(repositories)}] {entry["repository"]}'
+            clone_start = time.monotonic()
+            _emit_progress(progress, f'{label}: validating ordinary fresh clone')
             clone_results[entry['repository']] = _fresh_clone_validate(
                 entry,
                 recursive=bool(entry.get('translations')),
@@ -2854,11 +3405,26 @@ def publish_plan(
             verification = _read_yaml(verification_path)
             verification['fresh_clone'] = clone_results[entry['repository']]
             _write_yaml(verification_path, verification)
-    return {
+            _emit_progress(
+                progress,
+                f'{label}: fresh clone verified in {_elapsed_text(clone_start)} '
+                f'({_format_bytes(clone_results[entry["repository"]]["git_size"])})',
+            )
+    history_view_warnings = {}
+    for entry in repositories:
+        state = _transaction_state(entry, plan['transaction_id'])
+        views = state.get('history_views')
+        if isinstance(views, Mapping) and views.get('status') == 'failed':
+            history_view_warnings[entry['repository']] = views
+    _emit_progress(progress, f'publish completed in {_elapsed_text(overall_start)}')
+    result = {
         'transaction_id': plan['transaction_id'],
         'status': 'published',
         'fresh_clones': clone_results,
     }
+    if history_view_warnings:
+        result['history_view_warnings'] = history_view_warnings
+    return result
 
 
 def _remove_prepared_manifest_entry(
@@ -2975,6 +3541,7 @@ def checkpoint(
     bundle_dir: str | os.PathLike[str] | None = None,
     fresh_clone: bool = True,
     retire_extra_branches: bool = False,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     plan = build_plan(
         repo,
@@ -2983,7 +3550,12 @@ def checkpoint(
         bundle_dir=bundle_dir,
         retire_extra_branches=retire_extra_branches,
     )
-    result = apply_plan(plan, publish=publish, fresh_clone=fresh_clone)
+    result = apply_plan(
+        plan,
+        publish=publish,
+        fresh_clone=fresh_clone,
+        progress=progress,
+    )
     result['plan'] = plan
     return result
 
@@ -3002,10 +3574,11 @@ def publish_latest(
     repo: str | os.PathLike[str] = '.',
     *,
     fresh_clone: bool = True,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     repo_path = _repo_root(repo)
     plan = _find_latest_prepared_plan(repo_path)
-    return publish_plan(plan, fresh_clone=fresh_clone)
+    return publish_plan(plan, fresh_clone=fresh_clone, progress=progress)
 
 
 def status(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
@@ -3107,6 +3680,8 @@ def _deep_verify_manifest(
     repo_path: pathlib.Path,
     config: Mapping[str, Any],
     manifest: Mapping[str, Any],
+    *,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     repository_id = config['repository']
     store = HistoryStore(config['history_store'], repo_path)
@@ -3145,18 +3720,15 @@ def _deep_verify_manifest(
             for ref, oid in store.ls_refs().items()
             if ref.startswith(archive_prefix)
         }
-        for ref in archive_refs:
-            _run(
-                [
-                    'git',
-                    '--git-dir',
-                    bare,
-                    'fetch',
-                    '--no-tags',
-                    store.spec,
-                    f'+{ref}:{ref}',
-                ]
-            )
+        _emit_progress(
+            progress,
+            f'fetching {len(archive_refs)} archive refs in one batch',
+        )
+        _fetch_refspecs(
+            bare,
+            store.spec,
+            [f'+{ref}:{ref}' for ref in archive_refs],
+        )
         boundary_results = []
         for boundary in committed_boundaries:
             previous = boundary['previous']['commit']
@@ -3237,6 +3809,7 @@ def _deep_verify_manifest(
                 'Committed retired epoch tips remain ancestors of the active branch: '
                 + ', '.join(retired_reachable)
             )
+        _emit_progress(progress, 'running git fsck --full on assembled archive')
         _run(['git', '--git-dir', bare, 'fsck', '--full'])
         return {
             'boundaries': boundary_results,
@@ -3249,19 +3822,25 @@ def verify(
     repo: str | os.PathLike[str] = '.',
     *,
     deep: bool = False,
+    progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
+    started = time.monotonic()
     repo_path = _repo_root(repo)
     config = load_config(repo_path)
+    repository_id = config['repository']
+    _emit_progress(progress, f'{repository_id}: loading history manifest')
     store = HistoryStore(config['history_store'], repo_path)
     manifest, meta_oid = store.load_manifest()
     _manifest_validate(manifest)
-    repository_id = config['repository']
     epoch_records = manifest.get('epochs', {}).get(repository_id, [])
     refs = {}
     for epoch in epoch_records:
         for item in epoch.get('refs', []):
             refs[item['archive']] = item['oid']
-    store.verify_refs(refs, fsck=deep)
+    _emit_progress(progress, f'{repository_id}: checking {len(refs)} archive refs')
+    # Deep verification assembles the archive once and fscks it below. Avoid the
+    # old double-fetch/double-fsck path.
+    store.verify_refs(refs, fsck=False)
     boundaries = [
         boundary
         for boundary in manifest.get('boundaries', [])
@@ -3274,8 +3853,6 @@ def verify(
     for boundary in boundaries:
         previous = boundary['previous']['commit']
         successor = boundary['successor']['commit']
-        # The active checkout may not have every archived object, so verify
-        # archived boundaries in a temporary reconstruction when needed.
         have_previous = _git(repo_path, 'cat-file', '-e', previous, check=False).returncode == 0
         have_successor = _git(repo_path, 'cat-file', '-e', successor, check=False).returncode == 0
         boundary_results.append(
@@ -3288,7 +3865,14 @@ def verify(
         )
     deep_result = None
     if deep:
-        deep_result = _deep_verify_manifest(repo_path, config, manifest)
+        _emit_progress(progress, f'{repository_id}: starting deep verification')
+        deep_result = _deep_verify_manifest(
+            repo_path, config, manifest, progress=progress
+        )
+    _emit_progress(
+        progress,
+        f'{repository_id}: verification complete in {_elapsed_text(started)}',
+    )
     return {
         'repository': repository_id,
         'manifest': meta_oid,
@@ -3459,6 +4043,119 @@ def inspect_manifest(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
         'history_store': config['history_store'],
         'meta_oid': meta_oid,
         'manifest': manifest,
+    }
+
+
+def sync_history_views(
+    repo: str | os.PathLike[str] = '.',
+    *,
+    progress: ProgressFn | None = None,
+) -> dict[str, Any]:
+    """Backfill/repair the human-facing views of an existing history store."""
+    started = time.monotonic()
+    repo_path = _repo_root(repo)
+    config = load_config(repo_path)
+    store = HistoryStore(config['history_store'], repo_path)
+    store.ensure()
+    _emit_progress(progress, 'loading machine-authoritative history manifest')
+    manifest, meta_oid = store.load_manifest()
+    _manifest_validate(manifest)
+    if meta_oid is None:
+        raise EpochError('History store has no manifest to expose')
+    archive_views = store.sync_all_archive_views(manifest, progress=progress)
+    _emit_progress(progress, 'updating human-facing history-store main branch')
+    landing = store.sync_landing_branch(manifest, meta_oid)
+    _emit_progress(
+        progress,
+        f'history views synchronized in {_elapsed_text(started)}',
+    )
+    return {
+        'history_store': config['history_store'],
+        'manifest': meta_oid,
+        'archive_views': archive_views,
+        'landing': landing,
+    }
+
+
+def compact_active(
+    repo: str | os.PathLike[str] = '.',
+    *,
+    recursive: bool = False,
+    progress: ProgressFn | None = None,
+) -> dict[str, Any]:
+    """Prune unreachable retired-epoch objects from existing active clones."""
+    root_repo = _repo_root(repo)
+    graph = _plan_repository_graph(root_repo, recursive=recursive)
+    epoch_nodes = [node for node in graph if node['config']['policy'] == 'epoch']
+    results: dict[str, Any] = {}
+    for index, node in enumerate(epoch_nodes, start=1):
+        repo_path = node['repo']
+        config = node['config']
+        repository_id = config['repository']
+        label = f'[{index}/{len(epoch_nodes)}] {repository_id}'
+        started = time.monotonic()
+        if int(config['active_epoch']) <= 0:
+            raise EpochSafetyError(
+                f'{repository_id} has no published retired epoch to compact'
+            )
+        _emit_progress(progress, f'{label}: validating published lineage and worktree')
+        _assert_clean(repo_path)
+        _assert_one_worktree(repo_path)
+        branch = config['primary_branch']
+        tip = _resolve_ref(repo_path, f'refs/heads/{branch}')
+        _validate_epoch_lineage_before_plan(repo_path, config, tip)
+        roots = _root_commits(repo_path, tip)
+        predecessor = None
+        if len(roots) == 1:
+            predecessor = _parse_epoch_trailers(repo_path, roots[0]).get(
+                'Git-Epoch-Predecessor'
+            )
+        gitdir = _git_dir(repo_path)
+        before = _directory_size(gitdir)
+        _emit_progress(progress, f'{label}: expiring unreachable reflog entries')
+        _git(
+            repo_path,
+            'reflog',
+            'expire',
+            '--expire-unreachable=now',
+            '--all',
+        )
+        _emit_progress(progress, f'{label}: running git gc --prune=now')
+        _git(repo_path, 'gc', '--prune=now')
+        after = _directory_size(gitdir)
+        predecessor_present = None
+        if predecessor:
+            predecessor_present = (
+                _git(
+                    repo_path,
+                    'cat-file',
+                    '-e',
+                    f'{predecessor}^{{commit}}',
+                    check=False,
+                ).returncode
+                == 0
+            )
+        result = {
+            'repo_path': str(repo_path),
+            'active_epoch': int(config['active_epoch']),
+            'before_bytes': before,
+            'before_human': _format_bytes(before),
+            'after_bytes': after,
+            'after_human': _format_bytes(after),
+            'reclaimed_bytes': max(0, before - after),
+            'reclaimed_human': _format_bytes(max(0, before - after)),
+            'retired_predecessor_present': predecessor_present,
+        }
+        results[repository_id] = result
+        _emit_progress(
+            progress,
+            f'{label}: compacted in {_elapsed_text(started)}; '
+            f'{result["before_human"]} -> {result["after_human"]}',
+        )
+    return {
+        'root_repository': str(root_repo),
+        'recursive': recursive,
+        'repositories': results,
     }
 
 

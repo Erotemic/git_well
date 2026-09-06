@@ -869,6 +869,35 @@ successor commit/tree, and predecessor commit/tree against the active root
 before writing local config. `inspect` and `reconstruct` may use the same
 validated public context read-only without first attaching.
 
+## 12.6 Human-facing history-store views
+
+The machine archive refs deliberately live outside `refs/heads/*` so their
+namespace can express repository and epoch identity without pretending those
+refs are active development branches. That makes the canonical store awkward
+to browse in GitHub and in an ordinary clone, both of which primarily expose
+normal branches and tags.
+
+The history store therefore maintains derived browsing views in addition to the
+machine authorities:
+
+```text
+refs/heads/main
+refs/heads/archive/<repository>/epoch-<NNN>/<original-branch>
+refs/tags/archive/<repository>/epoch-<NNN>/<original-tag>
+```
+
+`refs/heads/main` is an independent human landing branch containing a generated
+`README.md` and `archive-index.yaml`. The archive branch/tag mirrors point to
+the exact same object IDs as their canonical `refs/epochs/...` counterparts;
+they do not duplicate Git object payload. `refs/meta/main` and
+`refs/epochs/...` remain authoritative.
+
+View publication must be idempotent and repairable from the canonical manifest.
+A view failure after the machine epoch has committed must be reported clearly
+but must not turn an otherwise successful epoch publication into an ambiguous
+failed transaction. `git epoch history-sync` is the explicit repair/backfill
+operation for that case and for stores created by older tool versions.
+
 ---
 
 # 13. Periodic checkpoint
@@ -1755,6 +1784,21 @@ even though distributed publication atomicity is outside the design.
 
 This makes inspection before force updates easier.
 
+A saved plan should live outside the managed worktree (or at an ignored path).
+The planner must refuse an unignored output path inside the managed worktree,
+because writing that file would make the subsequent clean-tree apply gate fail.
+
+Long-running production phases must expose progress without corrupting
+machine-readable results. `apply`, `publish`, and deep verification should emit
+repository/stage progress and elapsed time on stderr while reserving stdout for
+result YAML. A `--quiet` option suppresses progress for callers that do not want
+it.
+
+Archive publication should batch all refs for one repository into one atomic
+push after checking existing remote OIDs. Verification should likewise fetch a
+repository's archived refs in one batch. Avoid repeating a full archive fetch
+and `fsck` in both the normal and deep verification paths.
+
 ---
 
 # 39. `git epoch verify`
@@ -1780,6 +1824,11 @@ Checks should include:
 * active refs do not retain retired history;
 * optional bundles verify;
 * optional external dependency availability.
+
+Deep verification should assemble each repository's canonical archive refs with
+a single batched fetch and run one object-integrity check over that assembled
+archive. It should not perform a second equivalent fetch/fsck pass merely
+because `--deep` was requested.
 
 ---
 
@@ -1831,6 +1880,36 @@ boundary:
       old ...
       new ...
 ```
+
+## 41.1 `git epoch history-sync`
+
+Rebuild the derived human-facing history-store branch/tag views from the
+authoritative manifest and canonical archived refs:
+
+```bash
+git epoch history-sync
+```
+
+The operation is idempotent. It is intended both for migrating an existing
+pre-view history store and for repairing a warning reported by publication.
+
+## 41.2 `git epoch compact`
+
+After publication and verification, an existing active checkout may retain
+unreachable retired objects through reflogs even though a fresh clone is already
+bounded. `compact` provides an explicit local cleanup step:
+
+```bash
+git epoch compact
+git epoch compact --recursive
+```
+
+Before mutation it must validate that the checkout is clean, has one worktree,
+and represents a published successor with a committed boundary. It may then
+expire only unreachable reflog entries and run `git gc --prune=now`. It must
+report before/after Git-directory sizes and whether the recorded predecessor
+object remains locally available. It must not delete active refs or mutate the
+history store.
 
 ---
 

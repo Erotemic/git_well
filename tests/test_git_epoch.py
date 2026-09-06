@@ -14,6 +14,7 @@ from git_well.epoch import (
     apply_sandbox,
     apply_plan,
     build_plan,
+    compact_active,
     configure_submodule,
     create_sandbox,
     gc_history_store,
@@ -28,6 +29,7 @@ from git_well.epoch import (
     run_sandbox,
     sandbox_stats,
     status,
+    sync_history_views,
     verify_sandbox,
 )
 
@@ -1637,3 +1639,187 @@ def test_initialize_config_reconcile_allows_only_locator_dirt(tmp_path):
             primary_branch='main',
         )
     assert not (repo / '.git-epoch.yaml').exists()
+
+
+def test_history_store_exposes_browsable_views_and_can_backfill(tmp_path):
+    remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', remote)
+    old_main = _commit(repo, 'A', 'main payload\n')
+    _git(repo, 'tag', '-a', 'v0', '-m', 'v0', old_main)
+    _push(repo)
+    _git(repo, 'push', 'origin', 'v0')
+
+    _git(repo, 'switch', '-c', 'feature/old')
+    feature_tip = _commit(repo, 'feature', 'feature payload\n')
+    _git(repo, 'push', '-u', 'origin', 'feature/old')
+    _git(repo, 'switch', 'main')
+
+    history = tmp_path / 'history.git'
+    initialize_config(repo, repository_id='view-demo', history_store=history)
+    plan = build_plan(repo, retire_extra_branches=True)
+    apply_plan(plan)
+    publish_plan(plan, fresh_clone=False)
+
+    def history_ref(ref):
+        return _run(
+            ['git', '--git-dir', history, 'rev-parse', '--verify', ref]
+        ).stdout.strip()
+
+    assert history_ref('refs/heads/archive/view-demo/epoch-000/main') == old_main
+    assert (
+        history_ref('refs/heads/archive/view-demo/epoch-000/feature/old')
+        == feature_tip
+    )
+    # The source tag was retired locally at publication, so compare the view to
+    # the machine archive ref instead of the now-absent active tag.
+    archived_tag = history_ref('refs/epochs/view-demo/000/tags/v0')
+    assert history_ref('refs/tags/archive/view-demo/epoch-000/v0') == archived_tag
+
+    landing = _run(
+        ['git', '--git-dir', history, 'show', 'refs/heads/main:README.md']
+    ).stdout
+    assert 'Git Epoch History Store' in landing
+    assert '`view-demo`' in landing
+    assert 'refs/epochs/view-demo/000/heads/main' not in landing  # generic example only
+    index_text = _run(
+        ['git', '--git-dir', history, 'show', 'refs/heads/main:archive-index.yaml']
+    ).stdout
+    assert 'archive/view-demo/epoch-000/main' in index_text
+
+    clone = tmp_path / 'history-clone'
+    _run(['git', 'clone', '--no-local', history, clone])
+    branches = _git(clone, 'branch', '-r').stdout
+    assert 'origin/archive/view-demo/epoch-000/main' in branches
+    assert _git(
+        clone,
+        'log',
+        '-1',
+        '--format=%s',
+        'origin/archive/view-demo/epoch-000/main',
+    ).stdout.strip() == 'A'
+
+    # Simulate a store created by an older git-epoch version, then backfill.
+    for ref in [
+        'refs/heads/archive/view-demo/epoch-000/main',
+        'refs/heads/archive/view-demo/epoch-000/feature/old',
+        'refs/tags/archive/view-demo/epoch-000/v0',
+        'refs/heads/main',
+    ]:
+        _run(['git', '--git-dir', history, 'update-ref', '-d', ref])
+    repaired = sync_history_views(repo)
+    assert repaired['archive_views']['created'] == 3
+    assert repaired['landing']['status'] == 'updated'
+    assert history_ref('refs/heads/archive/view-demo/epoch-000/main') == old_main
+
+
+def test_apply_batches_archive_push_and_deep_verify_fetch(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / 'work')
+    old_main = _commit(repo, 'A')
+    _git(repo, 'tag', 'v0')
+    _git(repo, 'switch', '-c', 'feature/a')
+    _commit(repo, 'feature')
+    _git(repo, 'switch', 'main')
+    history = tmp_path / 'history.git'
+    initialize_config(repo, repository_id='batch-demo', history_store=history)
+    plan = build_plan(repo, retire_extra_branches=True)
+
+    import git_well.epoch.core as core
+
+    calls = []
+    original_run = core._run
+
+    def recording_run(args, **kwargs):
+        args_list = [str(a) for a in args]
+        calls.append((args_list, kwargs.get('input')))
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(core, '_run', recording_run)
+    progress = []
+    apply_plan(plan, progress=progress.append)
+    archive_pushes = [
+        args
+        for args, _input in calls
+        if args[:3] == ['git', 'push', '--atomic'] and str(history) in args
+    ]
+    assert len(archive_pushes) == 1
+    assert sum(1 for token in archive_pushes[0] if token.endswith('/heads/main')) >= 1
+    assert any('one atomic push' in message for message in progress)
+
+    publish_plan(plan, fresh_clone=False)
+    calls.clear()
+    progress.clear()
+    from git_well.epoch import verify
+    result = verify(repo, deep=True, progress=progress.append)
+    assert result['fsck'] == 'passed'
+    stdin_fetches = [
+        (args, input_text)
+        for args, input_text in calls
+        if 'fetch' in args and '--stdin' in args and str(history) in args
+    ]
+    assert len(stdin_fetches) == 1
+    assert stdin_fetches[0][1].count('\n') >= 3
+    assert any('archive refs in one batch' in message for message in progress)
+
+
+def test_compact_active_prunes_unreachable_retired_tip(tmp_path):
+    remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', remote)
+    _commit(repo, 'A', 'alpha\n')
+    old_tip = _commit(repo, 'B', 'beta\n')
+    _push(repo)
+    history = tmp_path / 'history.git'
+    initialize_config(repo, repository_id='compact-demo', history_store=history)
+    plan = build_plan(repo)
+    apply_plan(plan)
+    publish_plan(plan, fresh_clone=False)
+    assert _git(repo, 'cat-file', '-e', f'{old_tip}^{{commit}}', check=False).returncode == 0
+
+    progress = []
+    result = compact_active(repo, progress=progress.append)
+    row = result['repositories']['compact-demo']
+    assert row['before_bytes'] > 0
+    assert row['after_bytes'] > 0
+    assert row['retired_predecessor_present'] is False
+    assert _git(repo, 'cat-file', '-e', f'{old_tip}^{{commit}}', check=False).returncode != 0
+    assert any('git gc --prune=now' in message for message in progress)
+
+
+def test_save_plan_refuses_unignored_worktree_output(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    initialize_config(repo, repository_id='plan-output-demo', history_store=tmp_path / 'history.git')
+    plan = build_plan(repo)
+    monkeypatch.chdir(repo)
+    from git_well.epoch import save_plan
+    with pytest.raises(EpochSafetyError, match='would make the repository dirty'):
+        save_plan(plan, 'checkpoint.yaml')
+    outside = tmp_path / 'cutover' / 'checkpoint.yaml'
+    saved = save_plan(plan, outside)
+    assert saved == outside.resolve()
+    assert outside.exists()
+
+
+def test_history_view_failure_does_not_fail_published_epoch(tmp_path, monkeypatch):
+    remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', remote)
+    _commit(repo, 'A', 'payload\n')
+    _push(repo)
+    history = tmp_path / 'history.git'
+    initialize_config(repo, repository_id='view-warning-demo', history_store=history)
+    plan = build_plan(repo)
+    apply_plan(plan)
+
+    import git_well.epoch.core as core
+
+    def fail_views(*args, **kwargs):
+        raise core.EpochError('simulated browsing-view failure')
+
+    monkeypatch.setattr(core, '_sync_published_history_views', fail_views)
+    progress = []
+    result = publish_plan(plan, fresh_clone=False, progress=progress.append)
+    assert result['status'] == 'published'
+    warning = result['history_view_warnings']['view-warning-demo']
+    assert warning['status'] == 'failed'
+    assert warning['repair_command'] == 'git epoch history-sync'
+    assert _git(repo, 'rev-parse', 'HEAD').stdout.strip() == plan['repositories'][0]['successor_root']
+    assert any('WARNING: history browsing views were not updated' in msg for msg in progress)
