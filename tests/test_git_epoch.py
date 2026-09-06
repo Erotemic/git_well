@@ -1745,7 +1745,34 @@ def test_apply_batches_archive_push_and_deep_verify_fetch(tmp_path, monkeypatch)
     assert sum(1 for token in archive_pushes[0] if token.endswith('/heads/main')) >= 1
     assert any('one atomic push' in message for message in progress)
 
+    apply_stdin_calls = [
+        (args, input_payload)
+        for args, input_payload in calls
+        if '--stdin' in args
+    ]
+    assert apply_stdin_calls
+    for _args, input_payload in apply_stdin_calls:
+        assert isinstance(input_payload, bytes)
+        assert b'\r\n' not in input_payload
+
+    calls.clear()
     publish_plan(plan, fresh_clone=False)
+    publish_stdin_calls = [
+        (args, input_payload)
+        for args, input_payload in calls
+        if '--stdin' in args
+    ]
+    assert publish_stdin_calls
+    update_ref_batches = [
+        (args, input_payload)
+        for args, input_payload in publish_stdin_calls
+        if args[:3] == ['git', 'update-ref', '--stdin']
+    ]
+    assert len(update_ref_batches) == 1
+    for _args, input_payload in publish_stdin_calls:
+        assert isinstance(input_payload, bytes)
+        assert b'\r\n' not in input_payload
+
     calls.clear()
     progress.clear()
     from git_well.epoch import verify

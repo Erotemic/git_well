@@ -391,14 +391,14 @@ def _reachable_size(repo: pathlib.Path, tip: str) -> int:
     revs = _git_stdout(repo, 'rev-list', '--objects', '--no-object-names', tip)
     if not revs.strip():
         return 0
-    proc = _git(
+    stdout = _git_stdout(
         repo,
         'cat-file',
         '--batch-check=%(objectsize:disk)',
-        input=revs,
+        input=revs.encode(),
     )
     total = 0
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         with contextlib.suppress(ValueError):
             total += int(line)
     return total
@@ -454,13 +454,14 @@ def _parse_epoch_trailers(repo: pathlib.Path, root: str) -> dict[str, str]:
         repo,
         'interpret-trailers',
         '--parse',
-        input=message,
+        input=message.encode(),
         check=False,
     )
     if proc.returncode:
         return {}
+    stdout = proc.stdout.decode() if isinstance(proc.stdout, bytes) else proc.stdout
     result: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         if ':' not in line:
             continue
         key, value = line.split(':', 1)
@@ -1383,10 +1384,14 @@ class HistoryStore:
         message: str,
     ) -> str:
         text = _yaml_dump(manifest)
-        blob = _run(
+        blob_proc = _run(
             ['git', '--git-dir', bare, 'hash-object', '-w', '--stdin'],
-            input=text,
-        ).stdout.strip()
+            input=text.encode(),
+        )
+        blob_stdout = blob_proc.stdout
+        if isinstance(blob_stdout, bytes):
+            blob_stdout = blob_stdout.decode()
+        blob = blob_stdout.strip()
         tree_input = f'100644 blob {blob}\tmanifest.yaml\0'.encode()
         tree = _run(
             ['git', '--git-dir', bare, 'mktree', '-z'],
@@ -1554,10 +1559,14 @@ def _write_history_landing_tree(
     }
     records = []
     for name, content in sorted(files.items()):
-        blob = _run(
+        blob_proc = _run(
             ['git', '--git-dir', bare, 'hash-object', '-w', '--stdin'],
-            input=content,
-        ).stdout.strip()
+            input=content.encode(),
+        )
+        blob_stdout = blob_proc.stdout
+        if isinstance(blob_stdout, bytes):
+            blob_stdout = blob_stdout.decode()
+        blob = blob_stdout.strip()
         records.append(f'100644 blob {blob}\t{name}\0'.encode())
     return _run(
         ['git', '--git-dir', bare, 'mktree', '-z'],
@@ -3177,7 +3186,12 @@ def _publish_local(entry: Mapping[str, Any]) -> None:
         commands.append(f'delete {ref} {oid}')
     if commands:
         commands.append('')
-        _git(repo, 'update-ref', '--stdin', input='\n'.join(commands))
+        _git(
+            repo,
+            'update-ref',
+            '--stdin',
+            input='\n'.join(commands).encode(),
+        )
 
     current_branch = _current_branch(repo)
     head_oid = _resolve_ref(repo, 'HEAD')
