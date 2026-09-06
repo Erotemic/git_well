@@ -993,6 +993,153 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
     assert 'Content pruning: yes' in manifest_text
 
 
+def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'local_recovery_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib': sub_repo}
+    )
+    sub_checkout = super_repo / 'external/lib'
+    committed_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_checkout, check=True)
+    ).strip()
+
+    ub.cmd(
+        ['git', 'checkout', '--orphan', 'replacement'],
+        cwd=sub_checkout,
+        check=True,
+    )
+    ub.cmd(['git', 'rm', '-rf', '.'], cwd=sub_checkout, check=True)
+    (sub_checkout / 'replacement.txt').write_text('replacement\n')
+    _commit_all(sub_checkout, 'replacement history')
+    replacement_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_checkout, check=True)
+    ).strip()
+
+    for ref in ['refs/heads/master', 'refs/remotes/origin/master']:
+        ub.cmd(
+            ['git', 'update-ref', '-d', ref],
+            cwd=sub_checkout,
+            check=False,
+        )
+    ub.cmd(['git', 'remote', 'remove', 'origin'], cwd=sub_checkout, check=True)
+
+    assert committed_sha != replacement_sha
+    ub.cmd(
+        ['git', 'cat-file', '-e', f'{committed_sha}^{{commit}}'],
+        cwd=sub_checkout,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'local-recovery.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+
+    extracted_root = _extract_tar_root(archive, tmp_path / 'local-extracted')
+    archived_submodule = extracted_root / 'external/lib'
+    archived_sha = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_sha == committed_sha
+    assert (archived_submodule / 'tracked.txt').read_text() == 'submodule\n'
+
+
+def test_archive_source_recovers_submodule_commit_from_source_remote(tmp_path):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    remote_work = _make_submodule_repo(tmp_path, 'remote_recovery_work')
+    committed_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=remote_work, check=True)
+    ).strip()
+    ub.cmd(['git', 'branch', 'archive-required', committed_sha], cwd=remote_work, check=True)
+    (remote_work / 'tracked.txt').write_text('new tip\n')
+    _commit_all(remote_work, 'advance default branch')
+
+    remote_bare = tmp_path / 'remote_recovery.git'
+    ub.cmd(['git', 'clone', '--bare', str(remote_work), str(remote_bare)], check=True)
+
+    super_repo = tmp_path / 'remote_super'
+    _init_demo_repo(super_repo)
+    (super_repo / 'root.txt').write_text('root\n')
+    _commit_all(super_repo, 'initial superproject content')
+    (super_repo / '.gitmodules').write_text(
+        '[submodule "external/lib"]\n'
+        '\tpath = external/lib\n'
+        f'\turl = {remote_bare.as_uri()}\n'
+    )
+    (super_repo / 'external').mkdir()
+    ub.cmd(
+        [
+            'git',
+            'clone',
+            '--depth',
+            '1',
+            remote_bare.as_uri(),
+            'lib',
+        ],
+        cwd=super_repo / 'external',
+        check=True,
+    )
+    ub.cmd(['git', 'add', '.gitmodules'], cwd=super_repo, check=True)
+    ub.cmd(
+        [
+            'git',
+            'update-index',
+            '--add',
+            '--cacheinfo',
+            f'160000,{committed_sha},external/lib',
+        ],
+        cwd=super_repo,
+        check=True,
+    )
+    ub.cmd(
+        ['git', 'commit', '-m', 'record older submodule commit'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    local_submodule = super_repo / 'external/lib'
+    missing = ub.cmd(
+        ['git', 'cat-file', '-e', f'{committed_sha}^{{commit}}'],
+        cwd=local_submodule,
+        check=False,
+    )
+    assert missing.returncode != 0
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'remote-recovery.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+
+    extracted_root = _extract_tar_root(archive, tmp_path / 'remote-extracted')
+    archived_submodule = extracted_root / 'external/lib'
+    archived_sha = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_sha == committed_sha
+    assert (archived_submodule / 'tracked.txt').read_text() == 'submodule\n'
+
+
 def test_archive_source_warns_and_omits_uninitialized_submodule(
     tmp_path, capsys
 ):

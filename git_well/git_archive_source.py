@@ -1656,7 +1656,14 @@ def _clone_committed_checkout(
     ]
     git.Git(str(src_root.parent)).execute(clone_command)
     cloned = git.Repo(dst)
-    _checkout_commit(cloned, commit, label, clone_depth, log)
+    _checkout_commit(
+        cloned,
+        commit,
+        label,
+        clone_depth,
+        log,
+        source_repo=src,
+    )
 
     if branch_refs is not None:
         _copy_cached_branch_refs(
@@ -1740,6 +1747,7 @@ def _checkout_commit(
     label: str,
     clone_depth: int | None,
     log: '_Logger',
+    source_repo: 'git.Repo',
 ) -> None:
     import git
 
@@ -1748,19 +1756,146 @@ def _checkout_commit(
         return
     except git.GitCommandError:
         log(
-            f'[source-archive] checkout of {label} failed after clone; fetching exact commit'
+            f'[source-archive] checkout of {label} failed after clone; '
+            'recovering exact commit'
         )
 
-    if clone_depth is not None:
+    recovery_errors: list[str] = []
+    source_has_commit = _repo_has_commit(source_repo, commit)
+
+    if source_has_commit:
         try:
-            repo.git.fetch(
-                '--quiet', '--depth', str(clone_depth), 'origin', commit
+            log(
+                f'[source-archive] recovering {label} commit {commit[:12]} '
+                'from local object database'
             )
+            _fetch_commit_from_local_object_database(
+                repo=repo,
+                source_repo=source_repo,
+                commit=commit,
+                clone_depth=clone_depth,
+            )
+            repo.git.checkout('-q', '--detach', commit)
+            return
         except git.GitCommandError:
-            repo.git.fetch('--quiet', 'origin', commit)
-    else:
-        repo.git.fetch('--quiet', 'origin', commit)
-    repo.git.checkout('-q', '--detach', commit)
+            recovery_errors.append('local object database recovery failed')
+
+    remote_names = []
+    for remote_name, remote_url in _source_remote_urls(source_repo):
+        remote_names.append(remote_name)
+        try:
+            log(
+                f'[source-archive] recovering {label} commit {commit[:12]} '
+                f'from source remote {remote_name}'
+            )
+            _fetch_exact_commit(
+                repo=repo,
+                source=remote_url,
+                commit=commit,
+                clone_depth=clone_depth,
+            )
+            repo.git.checkout('-q', '--detach', commit)
+            return
+        except git.GitCommandError:
+            recovery_errors.append(
+                f'source remote {remote_name} did not provide the commit'
+            )
+
+    source_head = source_repo.head.commit.hexsha
+    tried = ', '.join(remote_names) if remote_names else '(none configured)'
+    local_state = 'present but recovery failed' if source_has_commit else 'absent'
+    details = '\n'.join(f'  - {item}' for item in recovery_errors)
+    if details:
+        details = '\nRecovery failures:\n' + details
+    raise RuntimeError(
+        f'cannot materialize {label} commit {commit}; source checkout HEAD is '
+        f'{source_head}. Required commit in local object database: '
+        f'{local_state}. Configured source remotes tried: {tried}. The '
+        'committed gitlink cannot be reconstructed; publish the referenced '
+        'commit, update the superproject gitlink, or explicitly exclude the '
+        f'submodule from the archive.{details}'
+    )
+
+
+def _fetch_exact_commit(
+    repo: 'git.Repo',
+    source: str,
+    commit: str,
+    clone_depth: int | None,
+) -> None:
+    """Fetch one exact commit from a source that is willing to advertise it."""
+    fetch_args = ['--quiet']
+    if clone_depth is not None:
+        fetch_args += ['--depth', str(clone_depth)]
+    repo.git.fetch(*fetch_args, source, commit)
+
+
+def _fetch_commit_from_local_object_database(
+    repo: 'git.Repo',
+    source_repo: 'git.Repo',
+    commit: str,
+    clone_depth: int | None,
+) -> None:
+    """
+    Fetch an arbitrary locally present commit without mutating ``source_repo``.
+
+    A normal local clone/fetch still goes through upload-pack, which may refuse
+    to serve an object that exists locally but is not reachable from an
+    advertised ref. Expose the commit through a temporary bare repository whose
+    object database borrows from ``source_repo``. The destination can then fetch
+    the temporary advertised ref at the requested history depth.
+    """
+    import shutil
+    import tempfile
+
+    import git
+
+    helper_root = Path(tempfile.mkdtemp(prefix='git-well-archive-source-ref.'))
+    try:
+        helper = git.Repo.init(helper_root, bare=True)
+        source_objects = _repo_object_database(source_repo)
+        alternates = Path(helper.git_dir) / 'objects' / 'info' / 'alternates'
+        alternates.parent.mkdir(parents=True, exist_ok=True)
+        alternates.write_text(os.fspath(source_objects) + '\n')
+
+        helper_ref = 'refs/heads/git-well-archive-source'
+        helper.git.update_ref(helper_ref, commit)
+
+        fetch_args = ['--quiet']
+        if clone_depth is not None:
+            fetch_args += ['--depth', str(clone_depth)]
+        repo.git.fetch(*fetch_args, os.fspath(helper_root), helper_ref)
+    finally:
+        shutil.rmtree(helper_root, ignore_errors=True)
+
+
+def _repo_object_database(repo: 'git.Repo') -> Path:
+    """Return the repository's actual object database, including worktrees."""
+    objects = Path(repo.git.rev_parse('--git-path', 'objects').strip())
+    if not objects.is_absolute():
+        working_tree = cast(str | None, repo.working_tree_dir)
+        base = Path(working_tree) if working_tree is not None else Path(repo.git_dir)
+        objects = base / objects
+    return objects.resolve()
+
+
+def _source_remote_urls(repo: 'git.Repo') -> list[tuple[str, str]]:
+    """Return unique configured fetch URLs from the source repository."""
+    import git
+
+    pairs: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for remote in repo.remotes:
+        try:
+            stdout = repo.git.remote('get-url', '--all', remote.name)
+        except git.GitCommandError:
+            continue
+        for url in stdout.splitlines():
+            url = url.strip()
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                pairs.append((remote.name, url))
+    return pairs
 
 
 def _extract_git_archive(
