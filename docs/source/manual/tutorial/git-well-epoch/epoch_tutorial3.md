@@ -56,10 +56,21 @@ git push origin main
 Repeat only for the children you intend to epoch-manage. `.git-epoch.yaml` is
 tracked public metadata. `.git/epoch/config.yaml` remains machine-local.
 
+Before the production plan, synchronize the complete active branch/tag namespace
+for every epoch-managed repository. This does not merge or rewrite branches; it
+only makes the remote tips locally available for exact archival:
+
+```bash
+git fetch --prune --tags origin \
+    '+refs/heads/*:refs/remotes/origin/*'
+```
+
 If a child was checked out detached, do not invent a different state merely to
 obtain a branch. The child's `main`, its published `origin/main`, and the parent
 gitlink must all identify the intended retiring state before the recursive plan
-is accepted.
+is accepted. Auxiliary remote branches may remain present at this stage; the
+explicit retirement plan below archives them under their original branch names
+before publication removes them from the active remote.
 
 ## 2. Update the Ambition superproject
 
@@ -115,7 +126,13 @@ git push origin main
 ```
 
 Before planning, `git status --short` should be empty and every managed child
-gitlink should equal the child's configured primary-branch tip.
+gitlink should equal the child's configured primary-branch tip. Also synchronize
+the root remote branch/tag namespace:
+
+```bash
+git fetch --prune --tags origin \
+    '+refs/heads/*:refs/remotes/origin/*'
+```
 
 ## 3. Plan without changing refs
 
@@ -129,13 +146,17 @@ cd "$HOME/code/ambition"
 
 git epoch plan \
     --recursive \
+    --retire-extra-branches \
     --bundle \
     --bundle-dir "$BUNDLE_DPATH" \
     --summary \
     -o checkpoint.yaml
 ```
 
-Review every repository, old tip, successor root, and translated gitlink. The
+Review every repository, old tip, successor root, translated gitlink, and every
+branch listed under `retire branches after archival verification`. The retirement
+flag is explicit authorization to preserve those branch tips in the closing
+epoch and remove the corresponding active branch refs during publication. The
 command must end with `No refs have been changed.`
 
 ## 4. Archive and verify before publication
@@ -152,14 +173,23 @@ archive or verification failure as a stop condition.
 
 ## 5. Publish during the maintenance window
 
-When the prepared receipt is correct and the active remotes have not changed:
+GitHub rules that reject non-fast-forward updates must be disabled for the
+managed default branches during this narrow publication window. Do this only
+after `apply` and deep verification have succeeded. Record which rulesets were
+disabled so they can be restored immediately afterward.
+
+When the prepared receipt is correct, the active remotes have not changed, and
+the non-fast-forward rules are temporarily disabled:
 
 ```bash
 git epoch publish --plan checkpoint.yaml
 ```
 
 Publication updates managed children leaf-first and then updates the Ambition
-root to the successor whose gitlinks reference those child successor roots.
+root to the successor whose gitlinks reference those child successor roots. It
+also removes every auxiliary branch explicitly listed by the plan, in the same
+atomic push that installs that repository's successor root. Re-enable the
+GitHub rulesets immediately after publication.
 
 ## 6. Prove the public post-cutover experience
 

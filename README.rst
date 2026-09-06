@@ -283,11 +283,13 @@ Attachment verifies the public locator, successor-root trailers, archive
 manifest, successor commit/tree, and predecessor commit/tree before writing
 ``.git/epoch/config.yaml``.
 
-Version one intentionally requires SHA-1 repositories, a clean single
-worktree, and one active local branch at checkpoint time. An active publication
-remote may not expose extra branches that would keep the retired epoch
-reachable to ordinary clones. See ``docs/planning/git_epoch.md`` for the data
-model, safety invariants, recursive submodule semantics, and deferred scope.
+Version one intentionally requires SHA-1 repositories and a clean single
+worktree. By default checkpoint planning refuses extra active branches because
+they would keep the retired epoch reachable. Maintainers can explicitly use
+``--retire-extra-branches`` to archive those branch tips under their original
+names and delete the auxiliary active refs atomically during publication. See
+``docs/planning/git_epoch.md`` for the data model, safety invariants, recursive
+submodule semantics, and deferred scope.
 
 
 Tracking large files with IPFS

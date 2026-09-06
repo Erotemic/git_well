@@ -1041,9 +1041,10 @@ Default policy:
 * normally create a successor for the default branch;
 * require explicit handling for long-lived feature branches.
 
-A future extension might support translating several active branches independently into successor roots.
-
-Version one should favor a single active default branch at checkpoint time.
+Version one keeps a single successor default branch. Extra branches are refused
+by default, but an explicit retirement mode may archive their exact tips under
+the closing epoch and remove those active refs atomically at publication. It
+does not translate those branches into successor roots.
 
 ---
 
@@ -2457,7 +2458,8 @@ Support:
 * SHA-1 Git repositories;
 * one main worktree;
 * clean working tree;
-* one primary branch per epoch;
+* one successor primary branch per epoch;
+* explicit archival retirement of auxiliary branches during publication;
 * local or ordinary Git remote history stores;
 * `epoch`, `continuous`, and `external` repository policies;
 * recursive submodules;

@@ -212,6 +212,11 @@ class EpochPlanCLI(kwconf.Config):
         help='plan configured epoch submodules leaf-first',
     )
     bundle = kwconf.Value(False, isflag=True, help='include bundle backups')
+    retire_extra_branches = kwconf.Value(
+        False,
+        isflag=True,
+        help='archive and remove non-primary active branches during publication',
+    )
     bundle_dir = kwconf.Value(None, help='bundle backup directory')
     output = kwconf.Value(None, short_alias=['o'], help='write plan YAML to this path')
     summary = kwconf.Value(
@@ -228,6 +233,7 @@ class EpochPlanCLI(kwconf.Config):
             recursive=config.recursive,
             bundle=config.bundle,
             bundle_dir=config.bundle_dir,
+            retire_extra_branches=config.retire_extra_branches,
         )
         if config.output:
             save_plan(plan, config.output)
@@ -285,6 +291,11 @@ class EpochCheckpointCLI(kwconf.Config):
         help='publish successor refs after preparation',
     )
     bundle = kwconf.Value(False, isflag=True, help='create bundle backups')
+    retire_extra_branches = kwconf.Value(
+        False,
+        isflag=True,
+        help='archive and remove non-primary active branches during publication',
+    )
     bundle_dir = kwconf.Value(None, help='bundle backup directory')
     no_fresh_clone = kwconf.Value(
         False,
@@ -301,6 +312,7 @@ class EpochCheckpointCLI(kwconf.Config):
             recursive=config.recursive,
             bundle=config.bundle,
             bundle_dir=config.bundle_dir,
+            retire_extra_branches=config.retire_extra_branches,
         )
         if config.plan_output:
             save_plan(plan, config.plan_output)

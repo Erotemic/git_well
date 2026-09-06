@@ -1379,6 +1379,7 @@ def _validate_primary_ref_policy(
     branch: str,
     *,
     active_remote: str | None,
+    retire_extra_branches: bool = False,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     heads = _local_heads(repo)
     primary_ref = f'refs/heads/{branch}'
@@ -1391,15 +1392,9 @@ def _validate_primary_ref_policy(
             f'HEAD must identify the primary branch tip before checkpointing: '
             f'HEAD={head_oid}, {primary_ref}={primary_tip}'
         )
-    extras = sorted(set(heads) - {primary_ref})
-    if extras:
-        raise EpochSafetyError(
-            'git-epoch v1 supports one active local branch per checkpoint. '
-            f'Archive/delete or otherwise resolve these branches first in {repo}: '
-            + ', '.join(extras)
-        )
     tags = _local_tags(repo)
     remote_refs: dict[str, str] = {}
+    remote_heads: dict[str, str] = {}
     if active_remote and _default_remote_url(repo, active_remote):
         remote_refs = _remote_refs(repo, active_remote)
         remote_heads = {
@@ -1407,13 +1402,6 @@ def _validate_primary_ref_policy(
             for ref, oid in remote_refs.items()
             if ref.startswith('refs/heads/')
         }
-        extra_remote_heads = sorted(set(remote_heads) - {primary_ref})
-        if extra_remote_heads:
-            raise EpochSafetyError(
-                'Active remote has additional branches that could retain the old '
-                f'epoch for ordinary clones of {repo}: '
-                + ', '.join(extra_remote_heads)
-            )
         remote_tags = {
             ref: oid
             for ref, oid in remote_refs.items()
@@ -1432,6 +1420,35 @@ def _validate_primary_ref_policy(
                     'refuse to checkpoint until tags are synchronized. '
                     f'missing_local={missing_local}, differing={differing}'
                 )
+
+    local_extras = sorted(set(heads) - {primary_ref})
+    remote_extras = sorted(set(remote_heads) - {primary_ref})
+    if (local_extras or remote_extras) and not retire_extra_branches:
+        details = []
+        if local_extras:
+            details.append('local=' + ', '.join(local_extras))
+        if remote_extras:
+            details.append('remote=' + ', '.join(remote_extras))
+        raise EpochSafetyError(
+            'Additional active branches would retain the retired epoch. '
+            'Re-run planning with --retire-extra-branches to archive them exactly '
+            'and delete them from the active namespace during publication, or '
+            'resolve them manually first. ' + '; '.join(details)
+        )
+
+    if retire_extra_branches:
+        for ref in sorted(set(heads) & set(remote_heads)):
+            if heads[ref] != remote_heads[ref]:
+                raise EpochSafetyError(
+                    f'Local and remote branch disagree before retirement: {ref}: '
+                    f'local={heads[ref]}, remote={remote_heads[ref]}'
+                )
+        local_only = sorted(set(heads) - set(remote_heads) - {primary_ref})
+        if local_only:
+            # Local-only branches are still preserved in the archive/bundle before
+            # deletion. The explicit flag is the user's authorization to retire them.
+            pass
+
     return heads, tags, remote_refs
 
 
@@ -1441,6 +1458,7 @@ def build_plan(
     recursive: bool = False,
     bundle: bool = False,
     bundle_dir: str | os.PathLike[str] | None = None,
+    retire_extra_branches: bool = False,
 ) -> dict[str, Any]:
     root_repo = _repo_root(repo)
     graph = _plan_repository_graph(root_repo, recursive=recursive)
@@ -1461,7 +1479,10 @@ def build_plan(
         branch = config['primary_branch']
         active_remote = config.get('active_remote')
         heads, tags, remote_refs = _validate_primary_ref_policy(
-            repo_path, branch, active_remote=active_remote
+            repo_path,
+            branch,
+            active_remote=active_remote,
+            retire_extra_branches=retire_extra_branches,
         )
         branch_ref = f'refs/heads/{branch}'
         old_tip = heads[branch_ref]
@@ -1470,7 +1491,54 @@ def build_plan(
         active_epoch = int(config['active_epoch'])
         new_epoch = active_epoch + 1
         refs = []
-        for source_ref, oid in sorted({**heads, **tags}.items()):
+        remote_heads = {
+            ref: oid
+            for ref, oid in remote_refs.items()
+            if ref.startswith('refs/heads/')
+        }
+        archived_heads = dict(remote_heads)
+        archived_heads.update(heads)
+        for source_ref, oid in sorted(archived_heads.items()):
+            local_present = source_ref in heads
+            remote_present = source_ref in remote_heads
+            if local_present:
+                local_source = source_ref
+            else:
+                if not active_remote:
+                    raise EpochSafetyError(
+                        f'No local source ref is available for archived branch {source_ref}'
+                    )
+                branch_name = source_ref[len('refs/heads/') :]
+                local_source = f'refs/remotes/{active_remote}/{branch_name}'
+                proc = _git(
+                    repo_path,
+                    'rev-parse',
+                    '--verify',
+                    local_source,
+                    check=False,
+                )
+                local_oid = proc.stdout.strip() if proc.returncode == 0 else None
+                if local_oid != oid:
+                    raise EpochSafetyError(
+                        f'Remote branch {source_ref} must be fetched locally before '
+                        f'it can be retired safely: expected {oid}, '
+                        f'{local_source}={local_oid!r}. Run `git fetch --prune '
+                        f'{active_remote} "+refs/heads/*:refs/remotes/'
+                        f'{active_remote}/*"` and re-plan.'
+                    )
+            refs.append(
+                {
+                    'source': source_ref,
+                    'local_source': local_source,
+                    'oid': oid,
+                    'archive': _archive_ref_name(
+                        config['repository'], active_epoch, source_ref
+                    ),
+                    'local_present': local_present,
+                    'remote_present': remote_present,
+                }
+            )
+        for source_ref, oid in sorted(tags.items()):
             refs.append(
                 {
                     'source': source_ref,
@@ -1478,6 +1546,9 @@ def build_plan(
                     'archive': _archive_ref_name(
                         config['repository'], active_epoch, source_ref
                     ),
+                    'local_source': source_ref,
+                    'local_present': True,
+                    'remote_present': source_ref in remote_refs,
                 }
             )
         translations = []
@@ -1573,6 +1644,7 @@ def build_plan(
             'old_roots': _root_commits(repo_path, old_tip),
             'refs': refs,
             'remote_refs': remote_refs,
+            'retire_extra_branches': retire_extra_branches,
             'translations': translations,
             'equivalence': 'recursive' if translations else 'exact-tree',
             'new_tree': new_tree,
@@ -1597,6 +1669,7 @@ def build_plan(
         ),
         'root_repository': str(root_repo),
         'recursive': recursive,
+        'retire_extra_branches': retire_extra_branches,
         'repositories': entries,
     }
     plan['digest'] = _plan_digest(plan)
@@ -1715,6 +1788,30 @@ def _assert_plan_inputs_current(entry: Mapping[str, Any]) -> None:
             f'{entry["repository"]} HEAD changed since plan generation: '
             f'{head_oid}, expected {entry["old_tip"]}'
         )
+
+    expected_local_heads = {
+        item['source']: item['oid']
+        for item in entry['refs']
+        if item['source'].startswith('refs/heads/')
+        and item.get('local_present', True)
+    }
+    current_local_heads = _local_heads(repo)
+    if current_local_heads != expected_local_heads:
+        raise EpochPlanStaleError(
+            f'Local branches changed since planning for {entry["repository"]}: '
+            f'expected={expected_local_heads}, current={current_local_heads}'
+        )
+
+    remote = entry.get('active_remote')
+    if remote and _default_remote_url(repo, remote):
+        expected_remote = entry.get('remote_refs', {})
+        current_remote = _remote_refs(repo, remote)
+        if current_remote != expected_remote:
+            raise EpochPlanStaleError(
+                f'Active remote refs changed since planning for '
+                f'{entry["repository"]}; re-plan before archiving.'
+            )
+
     config = load_config(repo)
     if int(config['active_epoch']) != int(entry['old_epoch']):
         raise EpochPlanStaleError(
@@ -1769,9 +1866,29 @@ def _create_bundle(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             'refs': actual_heads,
         }
     refs = [item['source'] for item in entry['refs']]
-    _git(repo, 'bundle', 'create', bundle_path, *refs)
-    _git(repo, 'bundle', 'verify', bundle_path)
-    actual_heads = _bundle_heads(repo, bundle_path)
+    with tempfile.TemporaryDirectory(prefix='git-epoch-bundle-stage-') as tmp:
+        stage = pathlib.Path(tmp) / 'stage.git'
+        _run(['git', 'init', '--bare', stage])
+        refspecs = [
+            f'+{item.get("local_source", item["source"])}:{item["source"]}'
+            for item in entry['refs']
+        ]
+        _run(
+            [
+                'git',
+                '--git-dir',
+                stage,
+                'fetch',
+                '--no-tags',
+                str(repo),
+                *refspecs,
+            ]
+        )
+        _run(
+            ['git', '--git-dir', stage, 'bundle', 'create', bundle_path, *refs]
+        )
+        _run(['git', '--git-dir', stage, 'bundle', 'verify', bundle_path])
+        actual_heads = _bundle_heads(stage, bundle_path)
     if actual_heads != expected_heads:
         raise EpochSafetyError(
             f'Created bundle contains different refs: {bundle_path}; '
@@ -1792,7 +1909,8 @@ def _archive_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     archived = {}
     expected = {}
     for item in entry['refs']:
-        status = store.archive_ref(item['source'], item['archive'], item['oid'])
+        source_ref = item.get('local_source', item['source'])
+        status = store.archive_ref(source_ref, item['archive'], item['oid'])
         archived[item['archive']] = status
         expected[item['archive']] = item['oid']
     store.verify_refs(expected, fsck=True)
@@ -2290,31 +2408,16 @@ def _publish_remote(entry: Mapping[str, Any]) -> None:
     current_remote = _remote_refs(repo, remote)
     branch_ref = entry['branch_ref']
 
+    expected_heads = {
+        ref: oid
+        for ref, oid in expected_remote.items()
+        if ref.startswith('refs/heads/')
+    }
     current_heads = {
         ref: oid
         for ref, oid in current_remote.items()
         if ref.startswith('refs/heads/')
     }
-    extra_heads = sorted(set(current_heads) - {branch_ref})
-    if extra_heads:
-        raise EpochPlanStaleError(
-            'Active remote gained additional branches after planning: '
-            + ', '.join(extra_heads)
-        )
-
-    old_remote_tip = expected_remote.get(branch_ref)
-    current_tip = current_heads.get(branch_ref)
-    if old_remote_tip is None:
-        if current_tip not in {None, entry['successor_root']}:
-            raise EpochPlanStaleError(
-                f'Remote branch appeared since planning: {branch_ref}={current_tip}'
-            )
-    elif current_tip not in {old_remote_tip, entry['successor_root']}:
-        raise EpochPlanStaleError(
-            f'Remote branch changed since planning: {branch_ref} is {current_tip}, '
-            f'expected {old_remote_tip}'
-        )
-
     expected_tags = {
         ref: oid
         for ref, oid in expected_remote.items()
@@ -2325,50 +2428,97 @@ def _publish_remote(entry: Mapping[str, Any]) -> None:
         for ref, oid in current_remote.items()
         if ref.startswith('refs/tags/')
     }
-    unexpected_tags = {
-        ref: oid
-        for ref, oid in current_tags.items()
-        if expected_tags.get(ref) != oid
+
+    old_remote_tip = expected_heads.get(branch_ref)
+    current_tip = current_heads.get(branch_ref)
+    expected_extra_heads = {
+        ref: oid for ref, oid in expected_heads.items() if ref != branch_ref
     }
-    if unexpected_tags:
+    current_extra_heads = {
+        ref: oid for ref, oid in current_heads.items() if ref != branch_ref
+    }
+
+    # A completed atomic remote publication is a valid resume point after a
+    # process failure before local refs/config were updated.
+    if current_tip == entry['successor_root']:
+        if current_extra_heads or current_tags:
+            raise EpochPlanStaleError(
+                f'Remote primary branch is already published but retired refs '
+                f'remain for {entry["repository"]}: '
+                f'heads={current_extra_heads}, tags={current_tags}'
+            )
+        return
+
+    if old_remote_tip is None:
+        if current_tip is not None:
+            raise EpochPlanStaleError(
+                f'Remote branch appeared since planning: {branch_ref}={current_tip}'
+            )
+    elif current_tip != old_remote_tip:
         raise EpochPlanStaleError(
-            f'Remote tags changed since planning for {entry["repository"]}: '
-            f'{unexpected_tags}'
+            f'Remote branch changed since planning: {branch_ref} is {current_tip}, '
+            f'expected {old_remote_tip}'
         )
 
-    if current_tip == entry['successor_root'] and not current_tags:
-        return
+    if current_extra_heads != expected_extra_heads:
+        raise EpochPlanStaleError(
+            f'Remote auxiliary branches changed since planning for '
+            f'{entry["repository"]}: expected={expected_extra_heads}, '
+            f'current={current_extra_heads}'
+        )
+    if current_tags != expected_tags:
+        raise EpochPlanStaleError(
+            f'Remote tags changed since planning for {entry["repository"]}: '
+            f'expected={expected_tags}, current={current_tags}'
+        )
 
     args = ['git', 'push', '--atomic']
     refspecs = []
-    if current_tip != entry['successor_root']:
-        if old_remote_tip is None:
-            args.append(f'--force-with-lease={branch_ref}:')
-        else:
-            args.append(f'--force-with-lease={branch_ref}:{old_remote_tip}')
-        refspecs.append(f'{entry["successor_root"]}:{branch_ref}')
-    for ref, oid in sorted(current_tags.items()):
+    if old_remote_tip is None:
+        args.append(f'--force-with-lease={branch_ref}:')
+    else:
+        args.append(f'--force-with-lease={branch_ref}:{old_remote_tip}')
+    refspecs.append(f'{entry["successor_root"]}:{branch_ref}')
+
+    for ref, oid in sorted(expected_extra_heads.items()):
+        args.append(f'--force-with-lease={ref}:{oid}')
+        refspecs.append(f':{ref}')
+    for ref, oid in sorted(expected_tags.items()):
         args.append(f'--force-with-lease={ref}:{oid}')
         refspecs.append(f':{ref}')
     args.append(remote)
     args.extend(refspecs)
     _run(args, cwd=repo)
 
+
 def _publish_local(entry: Mapping[str, Any]) -> None:
     repo = pathlib.Path(entry['repo_path'])
     branch_ref = entry['branch_ref']
     heads = _local_heads(repo)
-    extra_heads = sorted(set(heads) - {branch_ref})
-    if extra_heads:
-        raise EpochPlanStaleError(
-            'Local repository gained additional branches after planning: '
-            + ', '.join(extra_heads)
-        )
     current = heads.get(branch_ref)
     if current not in {entry['old_tip'], entry['successor_root']}:
         raise EpochPlanStaleError(
             f'Local branch changed before publication: {branch_ref} is {current}, '
             f'expected {entry["old_tip"]}'
+        )
+
+    expected_local_heads = {
+        item['source']: item['oid']
+        for item in entry['refs']
+        if item['source'].startswith('refs/heads/')
+        and item.get('local_present', True)
+    }
+    expected_local_extras = {
+        ref: oid for ref, oid in expected_local_heads.items() if ref != branch_ref
+    }
+    current_local_extras = {
+        ref: oid for ref, oid in heads.items() if ref != branch_ref
+    }
+    if current_local_extras != expected_local_extras:
+        raise EpochPlanStaleError(
+            f'Local auxiliary branches changed before publication for '
+            f'{entry["repository"]}: expected={expected_local_extras}, '
+            f'current={current_local_extras}'
         )
 
     expected_tags = {
@@ -2377,27 +2527,25 @@ def _publish_local(entry: Mapping[str, Any]) -> None:
         if item['source'].startswith('refs/tags/')
     }
     current_tags = _local_tags(repo)
-    unexpected_tags = {
-        ref: oid
-        for ref, oid in current_tags.items()
-        if expected_tags.get(ref) != oid
-    }
-    if unexpected_tags:
+    if current_tags != expected_tags:
         raise EpochPlanStaleError(
             f'Local tags changed before publication for {entry["repository"]}: '
-            f'{unexpected_tags}'
+            f'expected={expected_tags}, current={current_tags}'
         )
 
+    commands = ['start']
     if current == entry['old_tip']:
-        _git(
-            repo,
-            'update-ref',
-            branch_ref,
-            entry['successor_root'],
-            entry['old_tip'],
+        commands.append(
+            f'update {branch_ref} {entry["successor_root"]} {entry["old_tip"]}'
         )
-    for ref, oid in current_tags.items():
-        _delete_local_tag(repo, ref, oid)
+    for ref, oid in sorted(expected_local_extras.items()):
+        commands.append(f'delete {ref} {oid}')
+    for ref, oid in sorted(current_tags.items()):
+        commands.append(f'delete {ref} {oid}')
+    commands.extend(['prepare', 'commit', ''])
+    if len(commands) > 4:
+        _git(repo, 'update-ref', '--stdin', input='\n'.join(commands))
+
     current_branch = _current_branch(repo)
     head_oid = _resolve_ref(repo, 'HEAD')
     if current_branch == entry['branch'] or (
@@ -2410,6 +2558,7 @@ def _publish_local(entry: Mapping[str, Any]) -> None:
             f'HEAD changed during local publication in {repo}'
         )
 
+
 def _update_remote_tracking(entry: Mapping[str, Any]) -> None:
     repo = pathlib.Path(entry['repo_path'])
     remote = entry.get('active_remote')
@@ -2421,6 +2570,20 @@ def _update_remote_tracking(entry: Mapping[str, Any]) -> None:
         current = proc.stdout.strip()
         if current in {entry['old_tip'], entry['successor_root']}:
             _git(repo, 'update-ref', tracking, entry['successor_root'])
+
+    for item in entry['refs']:
+        source = item['source']
+        if (
+            not source.startswith('refs/heads/')
+            or source == entry['branch_ref']
+            or not item.get('remote_present', False)
+        ):
+            continue
+        branch_name = source[len('refs/heads/') :]
+        tracking_ref = f'refs/remotes/{remote}/{branch_name}'
+        proc = _git(repo, 'rev-parse', '--verify', tracking_ref, check=False)
+        if proc.returncode == 0 and proc.stdout.strip() == item['oid']:
+            _git(repo, 'update-ref', '-d', tracking_ref, item['oid'])
 
 
 def _update_active_epoch_config(entry: Mapping[str, Any]) -> None:
@@ -2678,12 +2841,14 @@ def checkpoint(
     bundle: bool = False,
     bundle_dir: str | os.PathLike[str] | None = None,
     fresh_clone: bool = True,
+    retire_extra_branches: bool = False,
 ) -> dict[str, Any]:
     plan = build_plan(
         repo,
         recursive=recursive,
         bundle=bundle,
         bundle_dir=bundle_dir,
+        retire_extra_branches=retire_extra_branches,
     )
     result = apply_plan(plan, publish=publish, fresh_clone=fresh_clone)
     result['plan'] = plan
@@ -3216,6 +3381,22 @@ def plan_summary(plan: Mapping[str, Any]) -> str:
                 f'   history store: {entry["history_store"]}',
             ]
         )
+        retired_branches = [
+            item for item in entry.get('refs', [])
+            if item['source'].startswith('refs/heads/')
+            and item['source'] != entry['branch_ref']
+        ]
+        if retired_branches:
+            lines.append('   retire branches after archival verification:')
+            for item in retired_branches:
+                scopes = []
+                if item.get('local_present'):
+                    scopes.append('local')
+                if item.get('remote_present'):
+                    scopes.append('remote')
+                scope_text = '+'.join(scopes) or 'archive-only'
+                name = item['source'][len('refs/heads/') :]
+                lines.append(f'     {name}: {item["oid"]} ({scope_text})')
         if entry.get('translations'):
             lines.append('   translate:')
             for item in entry['translations']:

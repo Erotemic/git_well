@@ -873,8 +873,151 @@ def test_checkpoint_refuses_additional_active_branch(tmp_path):
         repository_id='branch-policy-demo',
         history_store=tmp_path / 'history.git',
     )
-    with pytest.raises(EpochSafetyError, match='one active local branch'):
+    with pytest.raises(EpochSafetyError, match='Additional active branches'):
         build_plan(repo)
+
+
+def test_checkpoint_retires_remote_only_branch_exactly(tmp_path):
+    remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', remote)
+    main_tip = _commit(repo, 'main-A', 'main\n')
+    _push(repo)
+
+    _git(repo, 'checkout', '-b', 'feature/old-work')
+    (repo / 'feature-only.txt').write_text('retired branch payload\n')
+    _git(repo, 'add', 'feature-only.txt')
+    _git(repo, 'commit', '-m', 'feature-only')
+    feature_tip = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+    _git(repo, 'push', '-u', 'origin', 'feature/old-work')
+    _git(repo, 'checkout', 'main')
+    _git(repo, 'branch', '-D', 'feature/old-work')
+    assert _git(
+        repo, 'rev-parse', 'refs/remotes/origin/feature/old-work'
+    ).stdout.strip() == feature_tip
+
+    _git(repo, 'checkout', '-b', 'feature/local-copy')
+    (repo / 'local-copy.txt').write_text('local and remote branch payload\n')
+    _git(repo, 'add', 'local-copy.txt')
+    _git(repo, 'commit', '-m', 'local-copy')
+    local_copy_tip = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+    _git(repo, 'push', '-u', 'origin', 'feature/local-copy')
+    _git(repo, 'checkout', 'main')
+
+    history = tmp_path / 'history.git'
+    bundle_dir = tmp_path / 'bundles'
+    initialize_config(
+        repo,
+        repository_id='branch-retire-demo',
+        history_store=history,
+    )
+    with pytest.raises(EpochSafetyError, match='Additional active branches'):
+        build_plan(repo)
+    plan = build_plan(
+        repo,
+        retire_extra_branches=True,
+        bundle=True,
+        bundle_dir=bundle_dir,
+    )
+    entry = plan['repositories'][0]
+    retired = [
+        item for item in entry['refs']
+        if item['source'] == 'refs/heads/feature/old-work'
+    ]
+    assert len(retired) == 1
+    assert retired[0]['oid'] == feature_tip
+    assert retired[0]['local_present'] is False
+    assert retired[0]['remote_present'] is True
+    assert retired[0]['local_source'] == 'refs/remotes/origin/feature/old-work'
+    local_copy = [
+        item for item in entry['refs']
+        if item['source'] == 'refs/heads/feature/local-copy'
+    ]
+    assert len(local_copy) == 1
+    assert local_copy[0]['oid'] == local_copy_tip
+    assert local_copy[0]['local_present'] is True
+    assert local_copy[0]['remote_present'] is True
+    assert local_copy[0]['local_source'] == 'refs/heads/feature/local-copy'
+
+    apply_plan(plan, publish=False)
+    archived = _run(
+        [
+            'git', '--git-dir', history, 'rev-parse',
+            'refs/epochs/branch-retire-demo/000/heads/feature/old-work',
+        ]
+    ).stdout.strip()
+    assert archived == feature_tip
+    archived_local_copy = _run(
+        [
+            'git', '--git-dir', history, 'rev-parse',
+            'refs/epochs/branch-retire-demo/000/heads/feature/local-copy',
+        ]
+    ).stdout.strip()
+    assert archived_local_copy == local_copy_tip
+    bundle = pathlib.Path(entry['bundle_path'])
+    bundle_heads = {}
+    for line in _git(repo, 'bundle', 'list-heads', bundle).stdout.splitlines():
+        oid, ref = line.split(' ', 1)
+        bundle_heads[ref] = oid
+    assert bundle_heads['refs/heads/feature/old-work'] == feature_tip
+    assert bundle_heads['refs/heads/feature/local-copy'] == local_copy_tip
+    assert bundle_heads['refs/heads/main'] == main_tip
+
+    publish_plan(plan, fresh_clone=True)
+    remote_heads = _run(
+        ['git', '--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/']
+    ).stdout.splitlines()
+    assert remote_heads == ['refs/heads/main']
+    assert _git(
+        repo, 'rev-parse', '--verify', 'refs/remotes/origin/feature/old-work', check=False
+    ).returncode != 0
+    assert _git(
+        repo, 'rev-parse', '--verify', 'refs/heads/feature/local-copy', check=False
+    ).returncode != 0
+    assert _git(
+        repo, 'rev-parse', '--verify', 'refs/remotes/origin/feature/local-copy', check=False
+    ).returncode != 0
+
+    fresh = tmp_path / 'fresh'
+    _run(['git', 'clone', '--no-local', '--branch', 'main', remote, fresh])
+    assert _git(fresh, 'cat-file', '-e', feature_tip, check=False).returncode != 0
+
+
+def test_branch_retirement_requires_remote_branch_to_be_fetched(tmp_path):
+    remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', remote)
+    _commit(repo, 'A')
+    _push(repo)
+
+    other = tmp_path / 'other'
+    _run(['git', 'clone', '--no-local', remote, other])
+    _git(other, 'config', 'user.name', 'Test User')
+    _git(other, 'config', 'user.email', 'test@example.com')
+    _git(other, 'checkout', '-b', 'remote-only')
+    (other / 'remote-only.txt').write_text('remote only\n')
+    _git(other, 'add', 'remote-only.txt')
+    _git(other, 'commit', '-m', 'remote-only')
+    _git(other, 'push', 'origin', 'remote-only')
+
+    initialize_config(
+        repo,
+        repository_id='unfetched-branch-demo',
+        history_store=tmp_path / 'history.git',
+    )
+    with pytest.raises(EpochSafetyError, match='must be fetched locally'):
+        build_plan(repo, retire_extra_branches=True)
+
+    _git(
+        repo,
+        'fetch',
+        '--prune',
+        'origin',
+        '+refs/heads/*:refs/remotes/origin/*',
+    )
+    plan = build_plan(repo, retire_extra_branches=True)
+    assert any(
+        item['source'] == 'refs/heads/remote-only'
+        for item in plan['repositories'][0]['refs']
+    )
 
 
 def test_publish_refuses_worktree_change_after_prepare(tmp_path):
@@ -953,7 +1096,7 @@ def test_publish_refuses_remote_branch_created_after_plan(tmp_path):
     apply_plan(plan, publish=False)
 
     _git(repo, 'push', 'origin', f'{old_tip}:refs/heads/keep-old')
-    with pytest.raises(EpochPlanStaleError, match='additional branches'):
+    with pytest.raises(EpochPlanStaleError, match='auxiliary branches changed'):
         publish_plan(plan, fresh_clone=False)
     assert _git(repo, 'rev-parse', 'main').stdout.strip() == old_tip
     assert _run(
