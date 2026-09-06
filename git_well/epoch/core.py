@@ -177,7 +177,11 @@ def _assert_sha1(repo: pathlib.Path) -> None:
         )
 
 
-def _assert_clean(repo: pathlib.Path) -> None:
+def _assert_clean(
+    repo: pathlib.Path,
+    *,
+    allowed_paths: set[str] | None = None,
+) -> None:
     status = _git_stdout(
         repo,
         'status',
@@ -185,9 +189,20 @@ def _assert_clean(repo: pathlib.Path) -> None:
         '--untracked-files=all',
         '--ignore-submodules=none',
     )
-    if status.strip():
+    dirty_lines = []
+    allowed_paths = allowed_paths or set()
+    for line in status.splitlines():
+        # Porcelain v1 starts ordinary entries with two status columns and a
+        # space. Setup recovery only uses this allowance for the fixed public
+        # locator filename, so rename/copy syntax is intentionally not special
+        # cased here.
+        path = line[3:] if len(line) >= 4 else ''
+        if path not in allowed_paths:
+            dirty_lines.append(line)
+    if dirty_lines:
+        dirty = '\n'.join(dirty_lines)
         raise EpochSafetyError(
-            f'Repository must be clean before epoch planning/apply: {repo}\n{status}'
+            f'Repository must be clean before epoch planning/apply: {repo}\n{dirty}'
         )
     for marker in [
         'MERGE_HEAD',
@@ -452,6 +467,114 @@ def _history_store_id(spec: str) -> str:
     return name or 'history-store'
 
 
+def _reconcile_existing_config(
+    repo_path: pathlib.Path,
+    *,
+    config_path: pathlib.Path,
+    repository_id: str | None,
+    history_store: str | os.PathLike[str],
+    history_store_id: str | None,
+    public_history_url: str | None,
+    public_history_browse_url: str | None,
+    primary_branch: str | None,
+    active_remote: str,
+    policy: str,
+) -> dict[str, Any]:
+    """Make repeated ``git epoch init`` setup calls safely idempotent.
+
+    This path is deliberately conservative: it can fill setup metadata that was
+    absent in an older/local configuration and can create the public locator,
+    but it never changes an already-recorded identity or publication target.
+    """
+    config = _read_yaml(config_path)
+    _validate_config(config, repo_path)
+    _assert_no_prepared_transaction(repo_path)
+
+    # A previous successful setup attempt may have created the public locator
+    # immediately before the shell session was interrupted. Allow exactly that
+    # file to remain modified/untracked so rerunning the same command repairs or
+    # confirms the setup. All unrelated worktree changes remain a hard stop.
+    _assert_clean(repo_path, allowed_paths={'.git-epoch.yaml'})
+
+    requested_store = _normalize_history_store(
+        repo_path, os.fspath(history_store)
+    )
+    requested_store_id = history_store_id or _history_store_id(requested_store)
+    _validate_repository_id(requested_store_id)
+
+    mismatches: dict[str, tuple[Any, Any]] = {}
+
+    def compare_if_requested(
+        field: str, requested: Any, *, always: bool = False
+    ) -> None:
+        if always or requested is not None:
+            actual = config.get(field)
+            if actual != requested:
+                mismatches[field] = (actual, requested)
+
+    compare_if_requested('repository', repository_id)
+    compare_if_requested('history_store', requested_store, always=True)
+    compare_if_requested('primary_branch', primary_branch)
+    compare_if_requested('active_remote', active_remote, always=True)
+    compare_if_requested('policy', policy, always=True)
+
+    existing_store_id = config.get('history_store_id')
+    repaired = False
+    if existing_store_id in {None, ''}:
+        # Older setup state may predate the explicit stable store-id field.
+        # Filling it from the user's current request is safe because no
+        # successor-root lineage has been created by epoch zero yet.
+        config['history_store_id'] = requested_store_id
+        repaired = True
+    elif existing_store_id != requested_store_id:
+        mismatches['history_store_id'] = (
+            existing_store_id, requested_store_id
+        )
+
+    if mismatches:
+        rendered = ', '.join(
+            f'{key}: existing={actual!r}, requested={requested!r}'
+            for key, (actual, requested) in sorted(mismatches.items())
+        )
+        raise EpochSafetyError(
+            'Existing epoch configuration conflicts with the requested '
+            f'initialization ({rendered}). Refusing to overwrite local epoch '
+            'identity or publication settings. Use the existing values or '
+            'remove/reconfigure the local epoch state intentionally.'
+        )
+
+    active_url = _default_remote_url(repo_path, active_remote)
+    if not config.get('active_url') and active_url:
+        config['active_url'] = active_url
+        repaired = True
+
+    from .locator import (
+        read_public_locator,
+        validate_public_locator_against_config,
+        write_public_locator,
+    )
+
+    if public_history_url is not None:
+        write_public_locator(
+            repo_path,
+            repository_id=config['repository'],
+            history_store_id=config['history_store_id'],
+            history_url=public_history_url,
+            browse_url=public_history_browse_url,
+            overwrite=False,
+        )
+    else:
+        committed_locator = read_public_locator(repo_path, required=False)
+        if committed_locator is not None:
+            validate_public_locator_against_config(
+                repo_path, config, required=True
+            )
+
+    if repaired:
+        _write_yaml(config_path, config)
+    return config
+
+
 def initialize_config(
     repo: str | os.PathLike[str],
     *,
@@ -467,20 +590,30 @@ def initialize_config(
 ) -> dict[str, Any]:
     repo_path = _repo_root(repo)
     _assert_sha1(repo_path)
-    _assert_clean(repo_path)
     _assert_one_worktree(repo_path)
     if policy not in {'epoch', 'continuous', 'external'}:
         raise EpochError(f'Unknown policy: {policy!r}')
+    config_path = _config_path(repo_path)
+    if config_path.exists() and not overwrite:
+        return _reconcile_existing_config(
+            repo_path,
+            config_path=config_path,
+            repository_id=repository_id,
+            history_store=history_store,
+            history_store_id=history_store_id,
+            public_history_url=public_history_url,
+            public_history_browse_url=public_history_browse_url,
+            primary_branch=primary_branch,
+            active_remote=active_remote,
+            policy=policy,
+        )
+    _assert_clean(repo_path)
     if primary_branch is None:
         primary_branch = _current_branch(repo_path)
     if primary_branch is None:
         raise EpochError('Unable to infer a primary branch from detached HEAD')
     branch_ref = f'refs/heads/{primary_branch}'
     tip = _resolve_ref(repo_path, branch_ref)
-    config_path = _config_path(repo_path)
-    if config_path.exists() and not overwrite:
-        raise EpochError(f'Epoch configuration already exists: {config_path}')
-
     roots = _root_commits(repo_path, tip)
     trailers = _parse_epoch_trailers(repo_path, roots[0]) if len(roots) == 1 else {}
     trailer_repository = trailers.get('Git-Epoch-Repository')

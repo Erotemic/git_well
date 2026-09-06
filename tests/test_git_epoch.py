@@ -1524,3 +1524,116 @@ def test_public_locator_reconstructs_detached_recursive_submodule(tmp_path):
     assert result['attached'] is False
     assert 'child-public' in result['children']
     assert result['children']['child-public']['attached'] is False
+
+
+def test_initialize_config_repairs_equivalent_existing_setup(tmp_path):
+    """Repeated setup repairs a missing public locator instead of failing."""
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    history = tmp_path / 'history.git'
+    history_url = history.as_uri()
+
+    first = initialize_config(
+        repo,
+        repository_id='repair-demo',
+        history_store=history_url,
+        history_store_id='shared-history',
+        primary_branch='main',
+    )
+    assert first['repository'] == 'repair-demo'
+    assert not (repo / '.git-epoch.yaml').exists()
+
+    repaired = initialize_config(
+        repo,
+        repository_id='repair-demo',
+        history_store=history_url,
+        history_store_id='shared-history',
+        public_history_url=history_url,
+        public_history_browse_url='https://example.test/history',
+        primary_branch='main',
+    )
+    assert repaired == first
+    locator_path = repo / '.git-epoch.yaml'
+    assert locator_path.exists()
+    locator = yaml.safe_load(locator_path.read_text())
+    assert locator['repository'] == 'repair-demo'
+    assert locator['history_store']['id'] == 'shared-history'
+    assert locator['history_store']['url'] == history_url
+
+    # The locator is intentionally still untracked here. A user can rerun the
+    # same setup command after an interrupted shell block and get a no-op rather
+    # than a dirty-worktree failure.
+    repeated_uncommitted = initialize_config(
+        repo,
+        repository_id='repair-demo',
+        history_store=history_url,
+        history_store_id='shared-history',
+        public_history_url=history_url,
+        public_history_browse_url='https://example.test/history',
+        primary_branch='main',
+    )
+    assert repeated_uncommitted == repaired
+
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record locator')
+    repeated_committed = initialize_config(
+        repo,
+        repository_id='repair-demo',
+        history_store=history_url,
+        history_store_id='shared-history',
+        public_history_url=history_url,
+        public_history_browse_url='https://example.test/history',
+        primary_branch='main',
+    )
+    assert repeated_committed == repaired
+
+
+def test_initialize_config_reconcile_refuses_real_conflict(tmp_path):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    first_history = (tmp_path / 'history-a.git').as_uri()
+    other_history = (tmp_path / 'history-b.git').as_uri()
+    initialize_config(
+        repo,
+        repository_id='conflict-demo',
+        history_store=first_history,
+        history_store_id='shared-history',
+        primary_branch='main',
+    )
+
+    with pytest.raises(
+        EpochSafetyError,
+        match='Existing epoch configuration conflicts with the requested initialization',
+    ):
+        initialize_config(
+            repo,
+            repository_id='conflict-demo',
+            history_store=other_history,
+            history_store_id='shared-history',
+            primary_branch='main',
+        )
+
+
+def test_initialize_config_reconcile_allows_only_locator_dirt(tmp_path):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    history_url = (tmp_path / 'history.git').as_uri()
+    initialize_config(
+        repo,
+        repository_id='dirty-demo',
+        history_store=history_url,
+        history_store_id='shared-history',
+        primary_branch='main',
+    )
+    (repo / 'unrelated.txt').write_text('unfinished work\n')
+
+    with pytest.raises(EpochSafetyError, match='Repository must be clean'):
+        initialize_config(
+            repo,
+            repository_id='dirty-demo',
+            history_store=history_url,
+            history_store_id='shared-history',
+            public_history_url=history_url,
+            primary_branch='main',
+        )
+    assert not (repo / '.git-epoch.yaml').exists()

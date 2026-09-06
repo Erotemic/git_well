@@ -19,6 +19,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Make repeated `git epoch init` setup calls idempotently reconcile equivalent local configuration, recreate a missing public locator, and tolerate only an in-progress locator edit while still rejecting real configuration conflicts or unrelated dirty state.
 * Preserve explicit logical history-store IDs when creating the first remote archive manifest instead of deriving the manifest ID from the remote URL basename.
 * Make sandbox verification perform a real recursive fresh clone through contained `file://` remotes, prove every submodule initializes at the translated gitlink without retired commits leaking through local-clone optimization, and report idempotent `sandbox run` phases as explicit skips.
 * Let `archive_source` omit uninitialized submodules with a warning instead of aborting the entire archive; record each omission in `GIT_WELL_ARCHIVE_INFO.txt`.

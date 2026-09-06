@@ -42,7 +42,7 @@ def _print_yaml(data: Any) -> None:
 
 
 class EpochInitCLI(kwconf.Config):
-    """Initialize epoch management and prepare the first rollover."""
+    """Initialize or reconcile epoch management before rollover."""
 
     __command__ = 'init'
 
@@ -69,7 +69,7 @@ class EpochInitCLI(kwconf.Config):
     config_only = kwconf.Value(
         False,
         isflag=True,
-        help='write configuration only; do not archive/prepare epoch zero',
+        help='write/reconcile configuration only; do not archive/prepare epoch zero',
     )
     recursive = kwconf.Value(
         False,
