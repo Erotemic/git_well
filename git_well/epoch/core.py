@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import yaml
@@ -1660,7 +1660,7 @@ def _user_identity(repo: pathlib.Path, timestamp: int) -> dict[str, Any]:
 def _write_successor_tree(
     repo: pathlib.Path,
     old_tip: str,
-    translations: list[Mapping[str, Any]],
+    translations: Sequence[Mapping[str, Any]],
     *,
     object_directory: pathlib.Path | None = None,
 ) -> str:
@@ -1767,6 +1767,10 @@ def _plan_repository_graph(
             item['repository'] = child_id
             resolved_occurrences.append(item)
             if recursive and policy == 'epoch':
+                if child_config is None:
+                    raise EpochSafetyError(
+                        f'Missing epoch configuration for {occurrence["path"]}'
+                    )
                 child_repo = _repo_root(repo / occurrence['path'])
                 visit(child_repo)
                 child_tip = _resolve_ref(
@@ -3155,7 +3159,7 @@ def _publish_local(entry: Mapping[str, Any]) -> None:
             f'expected={expected_tags}, current={current_tags}'
         )
 
-    commands = ['start']
+    commands = []
     if current == entry['old_tip']:
         commands.append(
             f'update {branch_ref} {entry["successor_root"]} {entry["old_tip"]}'
@@ -3164,8 +3168,8 @@ def _publish_local(entry: Mapping[str, Any]) -> None:
         commands.append(f'delete {ref} {oid}')
     for ref, oid in sorted(current_tags.items()):
         commands.append(f'delete {ref} {oid}')
-    commands.extend(['prepare', 'commit', ''])
-    if len(commands) > 4:
+    if commands:
+        commands.append('')
         _git(repo, 'update-ref', '--stdin', input='\n'.join(commands))
 
     current_branch = _current_branch(repo)

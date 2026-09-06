@@ -1718,7 +1718,9 @@ def _copy_cached_branch_refs(
         fetch_args = ['--quiet']
         if clone_depth is not None:
             fetch_args += ['--depth', str(clone_depth)]
-        cloned.git.fetch(*fetch_args, str(src_root), *refspecs)
+        # Use a file URI instead of a native filesystem string. In particular,
+        # ``C:\\...`` is ambiguous to Git's fetch URL parser on Windows.
+        cloned.git.fetch(*fetch_args, src_root.as_uri(), *refspecs)
 
     cloned.git.remote('add', 'origin', str(src_root))
     log(

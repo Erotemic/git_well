@@ -899,6 +899,17 @@ def _make_repo_with_submodules(tmp_path, submodules):
             cwd=super_repo,
             check=True,
         )
+        sub_checkout = super_repo / path
+        ub.cmd(
+            ['git', 'config', 'user.email', 'test@example.com'],
+            cwd=sub_checkout,
+            check=True,
+        )
+        ub.cmd(
+            ['git', 'config', 'user.name', 'Test User'],
+            cwd=sub_checkout,
+            check=True,
+        )
     _commit_all(super_repo, 'add submodules')
     return super_repo
 
