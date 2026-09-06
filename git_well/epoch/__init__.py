@@ -26,7 +26,15 @@ from .core import (
     verify,
     verify_boundary,
 )
-from .stats import history_store_stats
+from .locator import (
+    PUBLIC_LOCATOR_FILENAME,
+    attach_history_store,
+    public_locator_path,
+    read_public_locator,
+    resolve_public_epoch_context,
+    validate_public_locator_against_config,
+    write_public_locator,
+)
 from .sandbox import (
     apply_sandbox,
     assert_sandbox_contained,
@@ -39,11 +47,19 @@ from .sandbox import (
     sandbox_stats,
     verify_sandbox,
 )
+from .stats import history_store_stats
 
 __all__ = [
     'EpochError',
     'EpochPlanStaleError',
     'EpochSafetyError',
+    'PUBLIC_LOCATOR_FILENAME',
+    'attach_history_store',
+    'public_locator_path',
+    'read_public_locator',
+    'resolve_public_epoch_context',
+    'validate_public_locator_against_config',
+    'write_public_locator',
     'abort_latest',
     'abort_plan',
     'apply_plan',

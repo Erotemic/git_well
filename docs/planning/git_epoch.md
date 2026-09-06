@@ -831,6 +831,44 @@ Git-Epoch-History-Store: <logical-store-id>
 
 The archive manifest remains authoritative; the commit trailers provide local discoverability.
 
+## 12.5 Clone-visible archive locator
+
+Commit trailers deliberately store the logical history-store ID rather than a
+network location. URLs move; immutable epoch roots must not need rewriting when
+they do. Each remotely archived active repository therefore carries a small
+tracked locator at the repository root:
+
+```yaml
+format_version: 1
+repository: ambition
+history_store:
+  id: ambition-history
+  url: https://github.com/Erotemic/ambition-history.git
+  browse_url: https://github.com/Erotemic/ambition-history
+```
+
+The authorities are intentionally separate:
+
+* successor-root trailers are immutable lineage evidence;
+* `.git-epoch.yaml` is the clone-visible, movable archive locator;
+* `refs/meta/main` in the history store is the authoritative epoch manifest;
+* `.git/epoch/config.yaml` is machine-local management state and may use a
+  different writable endpoint for the same logical store.
+
+The locator must be committed before the first rollover to a remote history
+store so the successor tree carries it into the new root. Planning against a
+remote store must refuse a missing or conflicting committed locator. Updating
+the archive URL later is an ordinary active-epoch commit as long as the logical
+store ID remains unchanged.
+
+A fresh clone with no local epoch config should still be able to report its
+repository ID, active epoch, predecessor, logical store ID, and public archive
+URL without contacting the archive. `git epoch attach` follows the locator,
+loads `refs/meta/main`, and verifies the manifest's store ID, repository record,
+successor commit/tree, and predecessor commit/tree against the active root
+before writing local config. `inspect` and `reconstruct` may use the same
+validated public context read-only without first attaching.
+
 ---
 
 # 13. Periodic checkpoint

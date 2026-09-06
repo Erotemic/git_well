@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 
 import pytest
+import yaml
 
 from git_well.epoch import (
     EpochError,
@@ -727,7 +728,11 @@ def test_file_url_history_store_uses_remote_manifest_path(tmp_path):
         repo,
         repository_id='remote-store-demo',
         history_store=history_url,
+        public_history_url=history_url,
     )
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record public history locator')
+    old_tip = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
     plan = build_plan(repo)
     apply_plan(plan, publish=False)
     meta = _run(
@@ -1128,3 +1133,251 @@ def test_nested_recursive_checkpoint_supports_detached_submodule_heads(tmp_path)
     assert _git(root, 'ls-tree', 'HEAD', 'middle').stdout.split()[2] == (
         middle_entry['successor_root']
     )
+
+
+def test_remote_history_store_requires_committed_public_locator(tmp_path):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    history = tmp_path / 'history.git'
+    _run(['git', 'init', '--bare', history])
+    history_url = history.as_uri()
+    initialize_config(
+        repo,
+        repository_id='remote-locator-demo',
+        history_store=history_url,
+    )
+    with pytest.raises(EpochError, match='No committed .git-epoch.yaml'):
+        build_plan(repo)
+
+    from git_well.epoch import write_public_locator
+
+    write_public_locator(
+        repo,
+        repository_id='remote-locator-demo',
+        history_store_id='history',
+        history_url=history_url,
+    )
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record epoch history locator')
+    plan = build_plan(repo)
+    assert plan['repositories'][0]['repository'] == 'remote-locator-demo'
+
+
+def test_public_locator_status_attach_inspect_and_reconstruct(tmp_path):
+    active_remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', active_remote)
+    _commit(repo, 'A')
+    history = tmp_path / 'history.git'
+    _run(['git', 'init', '--bare', history])
+    history_url = history.as_uri()
+
+    initialize_config(
+        repo,
+        repository_id='public-demo',
+        history_store=history_url,
+        history_store_id='public-history',
+        public_history_url=history_url,
+        public_history_browse_url='https://example.test/public-history',
+    )
+    locator_path = repo / '.git-epoch.yaml'
+    assert locator_path.exists()
+    locator = yaml.safe_load(locator_path.read_text())
+    assert locator == {
+        'format_version': 1,
+        'repository': 'public-demo',
+        'history_store': {
+            'id': 'public-history',
+            'url': history_url,
+            'browse_url': 'https://example.test/public-history',
+        },
+    }
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record public history location')
+    _push(repo)
+
+    plan = build_plan(repo)
+    old_tip = plan['repositories'][0]['old_tip']
+    new_root = plan['repositories'][0]['successor_root']
+    apply_plan(plan, publish=True)
+
+    fresh = tmp_path / 'fresh'
+    _run(['git', 'clone', '--no-local', '--branch', 'main', active_remote, fresh])
+    assert _git(fresh, 'cat-file', '-e', old_tip, check=False).returncode != 0
+
+    public_status = status(fresh)
+    assert public_status['repository'] == 'public-demo'
+    assert public_status['active_epoch'] == 1
+    assert public_status['attached'] is False
+    assert public_status['archive_verification'] == 'not-attached'
+    assert public_status['attach_command'] == 'git epoch attach'
+    assert public_status['public_locator']['history_store_id'] == 'public-history'
+    assert public_status['public_locator']['url'] == history_url
+
+    public_inspect = inspect_manifest(fresh)
+    assert public_inspect['attached'] is False
+    assert public_inspect['manifest']['history_store']['id'] == 'public-history'
+
+    public_reconstructed = tmp_path / 'public-reconstructed'
+    rec = reconstruct(fresh, output=public_reconstructed)
+    assert rec['attached'] is False
+    assert rec['replacements'][0]['root'] == new_root
+    assert rec['replacements'][0]['predecessor'] == old_tip
+
+    from git_well.epoch import attach_history_store
+
+    attached = attach_history_store(fresh)
+    assert attached['status'] == 'attached'
+    assert attached['repository'] == 'public-demo'
+    assert attached['history_store_id'] == 'public-history'
+    attached_status = status(fresh)
+    assert attached_status['attached'] is True
+    assert attached_status['archive_verification'] == 'available'
+
+
+def test_attach_rejects_public_locator_that_conflicts_with_root(tmp_path):
+    active_remote = tmp_path / 'active.git'
+    repo = _init_repo(tmp_path / 'work', active_remote)
+    _commit(repo, 'A')
+    history = tmp_path / 'history.git'
+    _run(['git', 'init', '--bare', history])
+    history_url = history.as_uri()
+    initialize_config(
+        repo,
+        repository_id='locator-tamper-demo',
+        history_store=history_url,
+        history_store_id='history',
+        public_history_url=history_url,
+    )
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record locator')
+    _push(repo)
+    plan = build_plan(repo)
+    apply_plan(plan, publish=True)
+
+    fresh = tmp_path / 'fresh'
+    _run(['git', 'clone', '--no-local', '--branch', 'main', active_remote, fresh])
+    locator_path = fresh / '.git-epoch.yaml'
+    locator = yaml.safe_load(locator_path.read_text())
+    locator['history_store']['id'] = 'other-history'
+    locator_path.write_text(yaml.safe_dump(locator, sort_keys=False))
+    _git(fresh, 'add', '.git-epoch.yaml')
+    _git(fresh, 'config', 'user.name', 'Epoch Tester')
+    _git(fresh, 'config', 'user.email', 'epoch@example.com')
+    _git(fresh, 'commit', '-m', 'Tamper locator')
+
+    from git_well.epoch import attach_history_store
+
+    with pytest.raises(EpochSafetyError, match='conflicts with successor-root trailers'):
+        attach_history_store(fresh)
+
+
+def test_apply_refuses_public_locator_that_cannot_see_prepared_archive(tmp_path):
+    repo = _init_repo(tmp_path / 'work')
+    _commit(repo, 'A')
+    writable_history = tmp_path / 'writable-history.git'
+    wrong_public_history = tmp_path / 'wrong-public-history.git'
+    _run(['git', 'init', '--bare', writable_history])
+    _run(['git', 'init', '--bare', wrong_public_history])
+
+    initialize_config(
+        repo,
+        repository_id='public-visibility-demo',
+        history_store=writable_history.as_uri(),
+        history_store_id='shared-history',
+        public_history_url=wrong_public_history.as_uri(),
+    )
+    _git(repo, 'add', '.git-epoch.yaml')
+    _git(repo, 'commit', '-m', 'Record intentionally wrong public locator')
+    plan = build_plan(repo)
+
+    with pytest.raises(
+        EpochSafetyError,
+        match='public history URL does not expose the prepared archive refs',
+    ):
+        apply_plan(plan, publish=False)
+    retiring_tip = plan['repositories'][0]['old_tip']
+    assert _git(repo, 'rev-parse', 'HEAD').stdout.strip() == retiring_tip
+    assert retiring_tip != plan['repositories'][0]['successor_root']
+
+
+def test_public_locator_reconstructs_detached_recursive_submodule(tmp_path):
+    child_remote = tmp_path / 'child-active.git'
+    child_seed = _init_repo(tmp_path / 'child-seed', child_remote)
+    _commit(child_seed, 'child-A')
+    _push(child_seed)
+
+    parent_remote = tmp_path / 'parent-active.git'
+    parent = _init_repo(tmp_path / 'parent', parent_remote)
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'submodule', 'add', child_remote, 'child',
+        ],
+        cwd=parent,
+    )
+    _git(parent, 'commit', '-am', 'parent-A')
+    _push(parent)
+
+    child = parent / 'child'
+    _git(child, 'switch', 'main')
+    _git(child, 'config', 'user.name', 'Epoch Tester')
+    _git(child, 'config', 'user.email', 'epoch@example.com')
+    shared_history = tmp_path / 'shared-history.git'
+    _run(['git', 'init', '--bare', shared_history])
+    history_url = shared_history.as_uri()
+
+    initialize_config(
+        child,
+        repository_id='child-public',
+        history_store=history_url,
+        history_store_id='shared-history',
+        public_history_url=history_url,
+        primary_branch='main',
+    )
+    _git(child, 'add', '.git-epoch.yaml')
+    _git(child, 'commit', '-m', 'Record child history locator')
+    _git(child, 'push', '-u', 'origin', 'main')
+    _git(parent, 'add', 'child')
+    _git(parent, 'commit', '-m', 'Advance child to epoch-ready tip')
+    _push(parent)
+
+    initialize_config(
+        parent,
+        repository_id='parent-public',
+        history_store=history_url,
+        history_store_id='shared-history',
+        public_history_url=history_url,
+    )
+    configure_submodule(
+        parent,
+        'child',
+        policy='epoch',
+        repository_id='child-public',
+    )
+    _git(parent, 'add', '.git-epoch.yaml')
+    _git(parent, 'commit', '-m', 'Record parent history locator')
+    _push(parent)
+
+    plan = build_plan(parent, recursive=True)
+    apply_plan(plan, publish=True)
+
+    fresh = tmp_path / 'fresh-parent'
+    _run(
+        [
+            'git', '-c', 'protocol.file.allow=always',
+            'clone', '--no-local', '--recurse-submodules',
+            '--branch', 'main', parent_remote, fresh,
+        ]
+    )
+    fresh_child = fresh / 'child'
+    assert _git(fresh_child, 'symbolic-ref', '-q', 'HEAD', check=False).returncode != 0
+    child_status = status(fresh_child)
+    assert child_status['attached'] is False
+    assert child_status['branch'] == '(detached)'
+    assert child_status['active_epoch'] == 1
+
+    reconstructed = tmp_path / 'reconstructed-public-parent'
+    result = reconstruct(fresh, output=reconstructed, recursive=True)
+    assert result['attached'] is False
+    assert 'child-public' in result['children']
+    assert result['children']['child-public']['attached'] is False

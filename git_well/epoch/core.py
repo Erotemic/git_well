@@ -457,6 +457,9 @@ def initialize_config(
     *,
     repository_id: str | None = None,
     history_store: str | os.PathLike[str],
+    history_store_id: str | None = None,
+    public_history_url: str | None = None,
+    public_history_browse_url: str | None = None,
     primary_branch: str | None = None,
     active_remote: str = 'origin',
     policy: str = 'epoch',
@@ -515,7 +518,17 @@ def initialize_config(
     assert repository_id is not None
     _validate_repository_id(repository_id)
     store = _normalize_history_store(repo_path, os.fspath(history_store))
-    history_store_id = _history_store_id(store)
+    requested_store_id = history_store_id
+    if requested_store_id is None:
+        history_store_id = _history_store_id(store)
+    else:
+        _validate_repository_id(requested_store_id)
+        history_store_id = requested_store_id
+    if managed_root and history_store_id != trailer_store_id:
+        raise EpochSafetyError(
+            'History-store identity conflicts with successor root: '
+            f'{history_store_id!r} != {trailer_store_id!r}'
+        )
 
     if managed_root:
         history = HistoryStore(store, repo_path)
@@ -577,6 +590,25 @@ def initialize_config(
     }
     if managed_root:
         _validate_epoch_lineage_before_plan(repo_path, config, tip)
+
+    from .locator import (
+        read_public_locator,
+        validate_public_locator_against_config,
+        write_public_locator,
+    )
+
+    committed_locator = read_public_locator(repo_path, required=False)
+    if public_history_url is not None:
+        write_public_locator(
+            repo_path,
+            repository_id=repository_id,
+            history_store_id=history_store_id,
+            history_url=public_history_url,
+            browse_url=public_history_browse_url,
+            overwrite=overwrite,
+        )
+    elif committed_locator is not None:
+        validate_public_locator_against_config(repo_path, config, required=True)
     _write_yaml(config_path, config)
     return config
 
@@ -604,10 +636,21 @@ def load_config(
                     and trailers.get('Git-Epoch-Number')
                     and trailers.get('Git-Epoch-History-Store')
                 ):
+                    from .locator import read_public_locator
+
+                    locator = read_public_locator(repo_path, required=False)
+                    if locator is not None:
+                        raise EpochError(
+                            'This checkout is already epoch-managed, but local '
+                            'epoch configuration is absent. A clone-visible '
+                            '.git-epoch.yaml locator is available; run '
+                            '`git epoch attach`.'
+                        )
                     raise EpochError(
                         'This checkout is already epoch-managed, but local epoch '
-                        'configuration is absent. Attach the history store with '
-                        '`git epoch init --history-store <store> --config-only`.'
+                        'configuration is absent. No clone-visible archive locator '
+                        'exists; attach explicitly with `git epoch init '
+                        '--history-store <store> --config-only`.'
                     )
     raise EpochError(
         f'No epoch configuration at {config_path}. Run `git epoch init` first.'
@@ -1234,6 +1277,13 @@ def _validate_epoch_lineage_before_plan(
             )
 
     store = HistoryStore(str(config['history_store']), repo)
+    from .locator import validate_public_locator_against_config
+
+    validate_public_locator_against_config(
+        repo,
+        config,
+        required=not store.is_local,
+    )
     if store.is_local and not store.local_path.exists():
         if active_epoch == 0:
             return
@@ -1302,6 +1352,25 @@ def _validate_epoch_lineage_before_plan(
         raise EpochSafetyError(
             f'Active root tree does not match manifest metadata for '
             f'{repository_id}:{active_epoch}'
+        )
+    trailers = _parse_epoch_trailers(repo, active_root)
+    lineage_pairs = {
+        'previous.commit': (
+            boundary.get('previous', {}).get('commit'),
+            trailers.get('Git-Epoch-Predecessor'),
+        ),
+        'previous.tree': (
+            boundary.get('previous', {}).get('tree'),
+            trailers.get('Git-Epoch-Predecessor-Tree'),
+        ),
+    }
+    lineage_mismatches = {
+        key: pair for key, pair in lineage_pairs.items() if pair[0] != pair[1]
+    }
+    if lineage_mismatches:
+        raise EpochSafetyError(
+            f'Active root predecessor trailers do not match manifest metadata '
+            f'for {repository_id}:{active_epoch}: {lineage_mismatches}'
         )
 
 
@@ -2016,6 +2085,21 @@ def _update_manifests_for_plan(plan: Mapping[str, Any]) -> dict[str, str]:
         store = HistoryStore(store_spec, source_repo)
         manifest, old_meta = store.load_manifest()
         _manifest_validate(manifest)
+        expected_store_ids = {entry['history_store_id'] for entry in entries}
+        if len(expected_store_ids) != 1:
+            raise EpochSafetyError(
+                f'One physical history store cannot use multiple logical ids in '
+                f'the same transaction: {sorted(expected_store_ids)}'
+            )
+        expected_store_id = next(iter(expected_store_ids))
+        manifest_store_id = manifest.get('history_store', {}).get('id')
+        if old_meta is None:
+            manifest.setdefault('history_store', {})['id'] = expected_store_id
+        elif manifest_store_id != expected_store_id:
+            raise EpochSafetyError(
+                'History-store identity mismatch before manifest update: '
+                f'{manifest_store_id!r} != {expected_store_id!r}'
+            )
         for entry in entries:
             verification_path = (
                 _transaction_dir(entry, plan['transaction_id'])
@@ -2077,15 +2161,29 @@ def apply_plan(
         state['prepared_at'] = _isoformat()
         _write_transaction_files(plan, entry, state)
     manifest_commits = _update_manifests_for_plan(plan)
+    from .locator import verify_public_archive_visibility
+
+    public_visibility: dict[str, Any] = {}
     for entry in plan['repositories']:
         state = _transaction_state(entry, plan['transaction_id'])
         state['manifest_commits'] = manifest_commits
+        visibility = verify_public_archive_visibility(
+            entry['repo_path'],
+            history_store_id=entry['history_store_id'],
+            manifest_oid=manifest_commits[entry['history_store']],
+            archive_refs={item['archive']: item['oid'] for item in entry['refs']},
+        )
+        if visibility is not None:
+            public_visibility[entry['repository']] = visibility
+            state.setdefault('phases', {})['public_archive'] = 'verified'
         _write_transaction_files(plan, entry, state)
     result = {
         'transaction_id': plan['transaction_id'],
         'status': 'prepared',
         'manifest_commits': manifest_commits,
     }
+    if public_visibility:
+        result['public_archive_visibility'] = public_visibility
     if publish:
         publish_result = publish_plan(plan, fresh_clone=fresh_clone)
         result.update(publish_result)
@@ -2614,35 +2712,76 @@ def publish_latest(
 
 def status(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
     repo_path = _repo_root(repo)
-    config = load_config(repo_path)
-    branch = config['primary_branch']
-    tip = _resolve_ref(repo_path, f'refs/heads/{branch}')
+    attached = True
+    public_context: dict[str, Any] | None = None
+    try:
+        config = load_config(repo_path, allow_bootstrap=False)
+    except EpochError:
+        from .locator import resolve_public_epoch_context
+
+        public_context = resolve_public_epoch_context(
+            repo_path,
+            verify_remote=False,
+        )
+        config = public_context['config']
+        attached = False
+    if attached:
+        branch = config['primary_branch']
+        tip = _resolve_ref(repo_path, f'refs/heads/{branch}')
+    else:
+        assert public_context is not None
+        branch = public_context['observed_branch'] or '(detached)'
+        tip = public_context['observed_tip']
     roots = _root_commits(repo_path, tip)
-    store = HistoryStore(config['history_store'], repo_path)
     manifest_info: dict[str, Any]
-    if store.is_local and not store.local_path.exists():
+    if not attached:
         manifest_info = {
             'meta_oid': None,
             'archived_epochs': [],
-            'archive_verification': 'not-initialized',
+            'archive_verification': 'not-attached',
         }
     else:
-        try:
-            manifest, meta_oid = store.load_manifest()
-            archived_epochs = manifest.get('epochs', {}).get(config['repository'], [])
-            manifest_info = {
-                'meta_oid': meta_oid,
-                'archived_epochs': [int(e['number']) for e in archived_epochs],
-                'archive_verification': 'available',
-            }
-        except EpochError as ex:
+        store = HistoryStore(config['history_store'], repo_path)
+        if store.is_local and not store.local_path.exists():
             manifest_info = {
                 'meta_oid': None,
                 'archived_epochs': [],
-                'archive_verification': f'unavailable: {ex}',
+                'archive_verification': 'not-initialized',
             }
+        else:
+            try:
+                manifest, meta_oid = store.load_manifest()
+                archived_epochs = manifest.get('epochs', {}).get(
+                    config['repository'], []
+                )
+                manifest_info = {
+                    'meta_oid': meta_oid,
+                    'archived_epochs': [int(e['number']) for e in archived_epochs],
+                    'archive_verification': 'available',
+                }
+            except EpochError as ex:
+                manifest_info = {
+                    'meta_oid': None,
+                    'archived_epochs': [],
+                    'archive_verification': f'unavailable: {ex}',
+                }
     reachable_size = _reachable_size(repo_path, tip)
-    return {
+    from .locator import read_public_locator
+
+    locator = (
+        public_context['locator']
+        if public_context is not None
+        else read_public_locator(repo_path, required=False)
+    )
+    public_metadata = None
+    if locator is not None:
+        public_metadata = {
+            'path': str(repo_path / '.git-epoch.yaml'),
+            'history_store_id': locator['history_store']['id'],
+            'url': locator['history_store']['url'],
+            'browse_url': locator['history_store'].get('browse_url'),
+        }
+    result = {
         'repository': config['repository'],
         'policy': config['policy'],
         'repo_path': str(repo_path),
@@ -2654,10 +2793,16 @@ def status(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
         'reachable_size': reachable_size,
         'reachable_size_human': _format_bytes(reachable_size),
         'history_store': config['history_store'],
+        'history_store_id': config.get('history_store_id'),
+        'attached': attached,
+        'public_locator': public_metadata,
         'submodules': config.get('submodules', {}),
-        'transactions': find_transactions(repo_path),
+        'transactions': find_transactions(repo_path) if attached else [],
         **manifest_info,
     }
+    if not attached:
+        result['attach_command'] = 'git epoch attach'
+    return result
 
 
 def _deep_verify_manifest(
@@ -2894,6 +3039,16 @@ def _fetch_archived_repo(
     _git(dest, 'fetch', '--no-tags', store_spec, refspec)
 
 
+def _load_read_context(repo_path: pathlib.Path) -> tuple[dict[str, Any], bool]:
+    try:
+        return load_config(repo_path, allow_bootstrap=False), True
+    except EpochError:
+        from .locator import resolve_public_epoch_context
+
+        context = resolve_public_epoch_context(repo_path, verify_remote=True)
+        return context['config'], False
+
+
 def reconstruct(
     repo: str | os.PathLike[str] = '.',
     *,
@@ -2901,7 +3056,7 @@ def reconstruct(
     recursive: bool = False,
 ) -> dict[str, Any]:
     source_repo = _repo_root(repo)
-    config = load_config(source_repo)
+    config, attached = _load_read_context(source_repo)
     repository_id = config['repository']
     if output is None:
         output_path = source_repo.parent / f'{source_repo.name}-reconstructed'
@@ -2962,6 +3117,7 @@ def reconstruct(
         'repository': repository_id,
         'source_repository': str(source_repo),
         'history_store': config['history_store'],
+        'attached': attached,
         'manifest': meta_oid,
         'replacements': replacements,
         'recursive': recursive,
@@ -2996,10 +3152,16 @@ def reconstruct(
 
 def inspect_manifest(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:
     repo_path = _repo_root(repo)
-    config = load_config(repo_path)
+    config, attached = _load_read_context(repo_path)
     store = HistoryStore(config['history_store'], repo_path)
     manifest, meta_oid = store.load_manifest()
-    return {'meta_oid': meta_oid, 'manifest': manifest}
+    _manifest_validate(manifest)
+    return {
+        'attached': attached,
+        'history_store': config['history_store'],
+        'meta_oid': meta_oid,
+        'manifest': manifest,
+    }
 
 
 def gc_history_store(repo: str | os.PathLike[str] = '.') -> dict[str, Any]:

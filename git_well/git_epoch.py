@@ -10,8 +10,9 @@ import yaml
 from git_well.epoch import (
     abort_latest,
     abort_plan,
-    apply_sandbox,
     apply_plan,
+    apply_sandbox,
+    attach_history_store,
     build_plan,
     checkpoint,
     configure_submodule,
@@ -19,14 +20,14 @@ from git_well.epoch import (
     gc_history_store,
     history_store_stats,
     initialize_config,
-    inspect_sandbox,
     inspect_manifest,
+    inspect_sandbox,
     load_plan,
     plan_sandbox,
     plan_summary,
     publish_latest,
-    publish_sandbox,
     publish_plan,
+    publish_sandbox,
     reconstruct,
     run_sandbox,
     sandbox_stats,
@@ -35,7 +36,6 @@ from git_well.epoch import (
     verify,
     verify_sandbox,
 )
-
 
 def _print_yaml(data: Any) -> None:
     print(yaml.safe_dump(data, sort_keys=False, width=100), end='')
@@ -51,6 +51,18 @@ class EpochInitCLI(kwconf.Config):
     history_store = kwconf.Value(
         None,
         help='bare Git history-store path or ordinary Git remote URL',
+    )
+    history_store_id = kwconf.Value(
+        None,
+        help='stable logical history-store id; defaults to the store basename',
+    )
+    public_history_url = kwconf.Value(
+        None,
+        help='clone-visible history-store fetch URL written to .git-epoch.yaml',
+    )
+    public_history_browse_url = kwconf.Value(
+        None,
+        help='optional human-facing archive page written to .git-epoch.yaml',
     )
     branch = kwconf.Value(None, help='primary branch; defaults to current branch')
     remote = kwconf.Value('origin', help='active publication remote')
@@ -91,6 +103,9 @@ class EpochInitCLI(kwconf.Config):
             config.repo_dpath,
             repository_id=config.repository,
             history_store=config.history_store,
+            history_store_id=config.history_store_id,
+            public_history_url=config.public_history_url,
+            public_history_browse_url=config.public_history_browse_url,
             primary_branch=config.branch,
             active_remote=config.remote,
         )
@@ -108,6 +123,36 @@ class EpochInitCLI(kwconf.Config):
         printable = {k: v for k, v in result.items() if k != 'plan'}
         printable['plan_digest'] = result['plan']['digest']
         _print_yaml(printable)
+        return result
+
+
+class EpochAttachCLI(kwconf.Config):
+    """Attach local management state using committed public epoch metadata."""
+
+    __command__ = 'attach'
+
+    repo_dpath = kwconf.Value('.', help='epoch-managed repository to attach')
+    history_store = kwconf.Value(
+        None,
+        help='optional writable/local store override; public locator URL is the default',
+    )
+    remote = kwconf.Value('origin', help='active publication remote')
+    overwrite = kwconf.Value(
+        False,
+        isflag=True,
+        help='replace existing local epoch attachment after validating the archive',
+    )
+
+    @classmethod
+    def main(cls, argv: list[str] | str | bool | None = True, **kwargs: Any) -> Any:
+        config = cls.cli(argv=argv, data=kwargs)
+        result = attach_history_store(
+            config.repo_dpath,
+            history_store=config.history_store,
+            active_remote=config.remote,
+            overwrite=config.overwrite,
+        )
+        _print_yaml(result)
         return result
 
 
@@ -602,6 +647,7 @@ class GitEpochModalCLI(kwconf.ModalCLI):
     __command__ = 'epoch'
 
     init = EpochInitCLI
+    attach = EpochAttachCLI
     configure_submodule = EpochConfigureSubmoduleCLI
     status = EpochStatusCLI
     plan = EpochPlanCLI

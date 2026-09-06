@@ -167,6 +167,24 @@ Initialize a repository without changing its active refs:
        --history-store ../ambition-history.git \
        --config-only
 
+For a remote history store, also write a committed clone-visible locator before
+planning the first rollover. The history-store ID is stable even if the archive
+URL later moves:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store git@github.com:Erotemic/ambition-history.git \
+       --history-store-id ambition-history \
+       --public-history-url https://github.com/Erotemic/ambition-history.git \
+       --public-history-browse-url https://github.com/Erotemic/ambition-history \
+       --config-only
+   git add .git-epoch.yaml
+   git commit -m "Record Git epoch history location"
+
+A checkpoint using a remote history store refuses to proceed until this file is
+committed and agrees with the local repository/store identity.
+
 For managed submodules, initialize the child repositories as well and classify
 each superproject occurrence before a recursive checkpoint:
 
@@ -237,16 +255,33 @@ Reconstruction fetches the exact archived commits and creates local
 ``refs/replace`` objects that connect each successor root to its recorded
 predecessor. The archived commit objects themselves are not rewritten.
 
-A successor root records the logical history-store ID, not a machine-local
-archive path. After cloning an already-epochized repository onto a new machine,
-attach the archive explicitly before running epoch-management commands:
+A successor root records immutable lineage and the logical history-store ID,
+not a machine-local archive path. ``.git-epoch.yaml`` supplies the movable public
+locator. A fresh clone can therefore explain its split history immediately:
 
 .. code:: bash
 
-   git epoch init --history-store ../ambition-history.git --config-only
+   git epoch status
+   git epoch inspect
 
-The repository ID, active epoch number, and managed-submodule policy are then
-validated against the successor root and archive manifest.
+``status`` does not contact the public archive when local attachment is absent.
+``inspect`` and ``reconstruct`` may use the committed public locator read-only.
+To create machine-local management state, validate and attach the archive:
+
+.. code:: bash
+
+   git epoch attach
+
+Maintainers may override the public fetch URL with a writable/local endpoint
+while keeping the same logical store identity:
+
+.. code:: bash
+
+   git epoch attach --history-store git@github.com:Erotemic/ambition-history.git
+
+Attachment verifies the public locator, successor-root trailers, archive
+manifest, successor commit/tree, and predecessor commit/tree before writing
+``.git/epoch/config.yaml``.
 
 Version one intentionally requires SHA-1 repositories, a clean single
 worktree, and one active local branch at checkpoint time. An active publication
