@@ -27,8 +27,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Make the Git epoch subprocess boundary encode all string stdin as bytes before invoking Git, so line-oriented plumbing cannot acquire CRLF terminators on Windows regardless of the caller.
 * Keep Git epoch batched local ref publication compatible with Git for Windows by using the portable `update-ref --stdin` batch form.
 * Use `file://` URLs when copying cached archive-source refs so Windows drive-letter paths are not parsed as remote URLs.
+* Recover unadvertised local archive-source commits by streaming Git objects directly from the source object database instead of constructing an alternates-backed temporary fetch remote.
+* Make sandbox verification generation-scoped so a locked pack file from an earlier Windows verification run cannot block a later run.
 * Resolve `ty` diagnostics in recursive epoch planning, successor-tree translation typing, and repository command forwarding.
 * Make repeated `git epoch init` setup calls idempotently reconcile equivalent local configuration, recreate a missing public locator, and tolerate only an in-progress locator edit while still rejecting real configuration conflicts or unrelated dirty state.
 * Preserve explicit logical history-store IDs when creating the first remote archive manifest instead of deriving the manifest ID from the remote URL basename.

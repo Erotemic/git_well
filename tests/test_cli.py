@@ -1064,6 +1064,14 @@ def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
     ).strip()
     assert archived_sha == committed_sha
     assert (archived_submodule / 'tracked.txt').read_text() == 'submodule\n'
+    archived_count = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-list', '--count', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_count == '1'
 
 
 def test_archive_source_recovers_submodule_commit_from_source_remote(tmp_path):

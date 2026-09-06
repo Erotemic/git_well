@@ -188,12 +188,21 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     assert _git(
         recursive_root / 'middle' / 'leaf', 'rev-parse', 'HEAD'
     ).returncode == 0
+    first_verification_run = pathlib.Path(
+        result['verification']['verification_run']
+    )
 
     rerun = run_sandbox(sandbox_dpath, bundle=False)
     assert rerun['planned']['status'] == 'skipped'
     assert rerun['prepared']['status'] == 'skipped'
     assert rerun['published']['status'] == 'skipped'
     assert rerun['verification']['status'] == 'verified'
+    second_verification_run = pathlib.Path(
+        rerun['verification']['verification_run']
+    )
+    assert second_verification_run != first_verification_run
+    assert first_verification_run.exists()
+    assert second_verification_run.exists()
 
 
 def test_sandbox_reports_gitlink_mismatch_before_generic_dirty_error(tmp_path):

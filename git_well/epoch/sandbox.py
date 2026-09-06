@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-import shutil
 import tempfile
 from typing import Any, Mapping
 
@@ -559,16 +558,16 @@ def create_sandbox(
     }
 
 
-def _fresh_recursive_clone_validate(data: Mapping[str, Any]) -> dict[str, Any]:
+def _fresh_recursive_clone_validate(
+    data: Mapping[str, Any],
+    verification_run: pathlib.Path,
+) -> dict[str, Any]:
     """Clone the sandbox root and initialize the complete submodule graph."""
     nodes = list(data['nodes'])
     by_id = {node['repository']: node for node in nodes}
     root_node = by_id[data['root_repository']]
-    sandbox_root = pathlib.Path(data['sandbox_root'])
-    fresh_parent = sandbox_root / 'verification' / 'fresh-recursive'
+    fresh_parent = verification_run / 'fresh-recursive'
     fresh = fresh_parent / root_node['repository']
-    if fresh_parent.exists():
-        shutil.rmtree(fresh_parent)
     fresh_parent.mkdir(parents=True)
 
     _run(
@@ -781,9 +780,17 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
     assert_sandbox_contained(data)
     nodes = data['nodes']
     by_id = {node['repository']: node for node in nodes}
-    fresh_root = pathlib.Path(data['sandbox_root']) / 'verification' / 'fresh'
-    if fresh_root.exists():
-        shutil.rmtree(fresh_root)
+
+    # Verification output is append-only by generation.  Correctness never
+    # depends on deleting an older clone first, which is important on Windows
+    # where a just-exited Git process or scanner may temporarily retain a pack
+    # handle.  A failed run also remains available for diagnosis.
+    verification_root = pathlib.Path(data['sandbox_root']) / 'verification'
+    verification_root.mkdir(parents=True, exist_ok=True)
+    verification_run = pathlib.Path(
+        tempfile.mkdtemp(prefix='run-', dir=verification_root)
+    )
+    fresh_root = verification_run / 'fresh'
     fresh_root.mkdir(parents=True)
 
     results: dict[str, Any] = {}
@@ -877,14 +884,16 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
         node['new_tip'] = new
         node['new_tree'] = _tree_oid(repo, new)
 
-    recursive_fresh = _fresh_recursive_clone_validate(data)
+    recursive_fresh = _fresh_recursive_clone_validate(data, verification_run)
     data['state'] = 'verified'
     data['verification'] = results
     data['recursive_fresh_clone'] = recursive_fresh
+    data['verification_run'] = str(verification_run)
     _save_sandbox(data)
     return {
         'sandbox': data['sandbox_root'],
         'status': 'verified',
+        'verification_run': str(verification_run),
         'repositories': results,
         'recursive_fresh_clone': recursive_fresh,
         'publication_contained': True,

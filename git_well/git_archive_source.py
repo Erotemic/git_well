@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import subprocess
+import tempfile
 import textwrap
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -1786,7 +1788,7 @@ def _checkout_commit(
             )
             repo.git.checkout('-q', '--detach', commit)
             return
-        except git.GitCommandError:
+        except (git.GitCommandError, RuntimeError):
             recovery_errors.append('local object database recovery failed')
 
     remote_names = []
@@ -1846,49 +1848,192 @@ def _fetch_commit_from_local_object_database(
     clone_depth: int | None,
 ) -> None:
     """
-    Fetch an arbitrary locally present commit without mutating ``source_repo``.
+    Import an arbitrary locally present commit without using Git transport.
 
-    A normal local clone/fetch still goes through upload-pack, which may refuse
-    to serve an object that exists locally but is not reachable from an
-    advertised ref. Expose the commit through a temporary bare repository whose
-    object database borrows from ``source_repo``. The destination can then fetch
-    the temporary advertised ref at the requested history depth.
+    The source repository already owns the required objects.  Treating that
+    object database as a fetch remote adds several avoidable failure surfaces:
+    ref advertisement, temporary refs, alternates-file syntax, ``file://`` URL
+    parsing, and Windows drive-letter handling.  Instead, enumerate exactly the
+    objects needed for the requested history slice, stream them through
+    ``pack-objects``, and feed the resulting pack directly to ``index-pack`` in
+    the destination repository.
+
+    This path has no shell, no remote, no URL, and no filesystem path embedded
+    in a Git protocol.  Every process boundary is a binary pipe.
     """
-    import shutil
-    import tempfile
+    source_root_text = cast(str | None, source_repo.working_tree_dir)
+    destination_root_text = cast(str | None, repo.working_tree_dir)
+    if source_root_text is None or destination_root_text is None:
+        raise RuntimeError('local object recovery requires working-tree repositories')
+    source_root = Path(source_root_text).resolve()
+    destination_root = Path(destination_root_text).resolve()
 
-    import git
+    selected_commits, shallow_boundaries = _local_history_slice(
+        source_repo,
+        commit,
+        clone_depth,
+    )
 
-    helper_root = Path(tempfile.mkdtemp(prefix='git-well-archive-source-ref.'))
-    try:
-        helper = git.Repo.init(helper_root, bare=True)
-        source_objects = _repo_object_database(source_repo)
-        alternates = Path(helper.git_dir) / 'objects' / 'info' / 'alternates'
-        alternates.parent.mkdir(parents=True, exist_ok=True)
-        # Git for Windows accepts forward-slash absolute paths in alternates;
-        # they avoid backslash/drive-letter parsing surprises in plumbing.
-        alternates.write_text(source_objects.as_posix() + '\n')
+    rev_args = [
+        'git',
+        'rev-list',
+        '--objects',
+        '--no-object-names',
+    ]
+    rev_input: bytes | None
+    if selected_commits is None:
+        rev_args.append(commit)
+        rev_input = None
+    else:
+        rev_args.extend(['--no-walk', '--stdin'])
+        rev_input = ('\n'.join(selected_commits) + '\n').encode()
 
-        helper_ref = 'refs/heads/git-well-archive-source'
-        helper.git.update_ref(helper_ref, commit)
+    with tempfile.TemporaryFile() as rev_stderr_file, tempfile.TemporaryFile() as pack_stderr_file:
+        rev_proc = subprocess.Popen(
+            rev_args,
+            cwd=source_root,
+            stdin=subprocess.PIPE if rev_input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=rev_stderr_file,
+        )
+        assert rev_proc.stdout is not None
+        pack_proc = subprocess.Popen(
+            ['git', 'pack-objects', '--stdout'],
+            cwd=source_root,
+            stdin=rev_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=pack_stderr_file,
+        )
+        rev_proc.stdout.close()
+        assert pack_proc.stdout is not None
+        index_proc = subprocess.Popen(
+            ['git', 'index-pack', '--stdin'],
+            cwd=destination_root,
+            stdin=pack_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        pack_proc.stdout.close()
 
-        fetch_args = ['--quiet', '--no-auto-maintenance']
-        if clone_depth is not None:
-            fetch_args += ['--depth', str(clone_depth)]
-        # A native ``C:\\...`` path is ambiguous to Git's fetch URL parser.
-        repo.git.fetch(*fetch_args, helper_root.as_uri(), helper_ref)
-    finally:
-        shutil.rmtree(helper_root, ignore_errors=True)
+        if rev_input is not None:
+            assert rev_proc.stdin is not None
+            try:
+                rev_proc.stdin.write(rev_input)
+            except BrokenPipeError:
+                # Preserve the real rev-list diagnostic below.
+                pass
+            finally:
+                rev_proc.stdin.close()
+
+        _index_stdout, index_stderr = index_proc.communicate()
+        pack_returncode = pack_proc.wait()
+        rev_returncode = rev_proc.wait()
+
+        if rev_returncode or pack_returncode or index_proc.returncode:
+            rev_stderr_file.seek(0)
+            pack_stderr_file.seek(0)
+            rev_stderr = rev_stderr_file.read().decode(errors='replace').strip()
+            pack_stderr = pack_stderr_file.read().decode(errors='replace').strip()
+            index_error = (index_stderr or b'').decode(errors='replace').strip()
+            raise RuntimeError(
+                'local Git object transfer failed: '
+                f'rev-list={rev_returncode} {rev_stderr!r}; '
+                f'pack-objects={pack_returncode} {pack_stderr!r}; '
+                f'index-pack={index_proc.returncode} {index_error!r}'
+            )
+
+    if not _repo_has_commit(repo, commit):
+        raise RuntimeError(
+            f'local Git object transfer completed without importing {commit}'
+        )
+    if shallow_boundaries:
+        _record_shallow_boundaries(repo, shallow_boundaries)
 
 
-def _repo_object_database(repo: 'git.Repo') -> Path:
-    """Return the repository's actual object database, including worktrees."""
-    objects = Path(repo.git.rev_parse('--git-path', 'objects').strip())
-    if not objects.is_absolute():
+def _local_history_slice(
+    source_repo: 'git.Repo',
+    commit: str,
+    clone_depth: int | None,
+) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """Resolve exact commit generations for local object import.
+
+    ``None`` means full reachable history.  A finite depth is computed by
+    parent generations rather than by command-output count, so merge histories
+    retain the same depth interpretation as a shallow clone.
+    """
+    if clone_depth is None:
+        return None, ()
+    if clone_depth <= 0:
+        raise ValueError(f'clone_depth must be positive or None, got {clone_depth!r}')
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+    parent_map: dict[str, tuple[str, ...]] = {}
+    frontier = [commit]
+    for _generation in range(clone_depth):
+        current: list[str] = []
+        for oid in frontier:
+            if oid not in selected_set:
+                selected_set.add(oid)
+                selected.append(oid)
+                current.append(oid)
+        if not current:
+            break
+
+        source_root = cast(str | None, source_repo.working_tree_dir)
+        if source_root is None:
+            raise RuntimeError('local history slicing requires a working tree')
+        parent_input = ('\n'.join(current) + '\n').encode('ascii')
+        parent_proc = subprocess.run(
+            ['git', 'rev-list', '--parents', '--no-walk', '--stdin'],
+            cwd=source_root,
+            input=parent_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if parent_proc.returncode:
+            error = parent_proc.stderr.decode(errors='replace').strip()
+            raise RuntimeError(
+                f'could not resolve local commit parents: {error}'
+            )
+        text = parent_proc.stdout.decode()
+        next_frontier: list[str] = []
+        for line in text.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            oid, *parents = parts
+            parent_map[oid] = tuple(parents)
+            next_frontier.extend(parents)
+        missing = [oid for oid in current if oid not in parent_map]
+        if missing:
+            raise RuntimeError(
+                f'could not resolve parent metadata for local commits: {missing}'
+            )
+        frontier = next_frontier
+
+    boundaries = tuple(
+        oid
+        for oid in selected
+        if any(parent not in selected_set for parent in parent_map.get(oid, ()))
+    )
+    return tuple(selected), boundaries
+
+
+def _record_shallow_boundaries(repo: 'git.Repo', commits: Iterable[str]) -> None:
+    """Merge imported shallow roots into the destination's shallow file."""
+    raw = repo.git.rev_parse('--git-path', 'shallow').strip()
+    path = Path(raw)
+    if not path.is_absolute():
         working_tree = cast(str | None, repo.working_tree_dir)
-        base = Path(working_tree) if working_tree is not None else Path(repo.git_dir)
-        objects = base / objects
-    return objects.resolve()
+        if working_tree is None:
+            raise RuntimeError('cannot resolve shallow file for a bare repository')
+        path = Path(working_tree) / path
+    existing = set(path.read_text().splitlines()) if path.exists() else set()
+    existing.update(commits)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(('\n'.join(sorted(existing)) + '\n').encode())
 
 
 def _source_remote_urls(repo: 'git.Repo') -> list[tuple[str, str]]:

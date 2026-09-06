@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import datetime as datetime_mod
 import hashlib
+import locale
 import os
 import pathlib
 import re
@@ -123,8 +124,19 @@ def _run(
     text: bool | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     argv = [os.fspath(arg) for arg in args]
-    if text is None:
-        text = not isinstance(input, bytes)
+    requested_text = text
+    if requested_text is None:
+        requested_text = not isinstance(input, bytes)
+
+    # Keep stdin transport binary whenever a caller provides text.  Python's
+    # subprocess text mode translates ``\n`` to ``\r\n`` on Windows, but several
+    # Git plumbing commands consume stdin as a byte protocol and treat the
+    # carriage return as data.  Enforcing this at the one process boundary makes
+    # every present and future string-input caller LF-stable by construction.
+    string_input = isinstance(input, str)
+    subprocess_input = input.encode('utf-8') if string_input else input
+    subprocess_text = False if string_input else requested_text
+
     final_env = os.environ.copy()
     if env:
         final_env.update({str(k): str(v) for k, v in env.items()})
@@ -132,12 +144,30 @@ def _run(
         argv,
         cwd=os.fspath(cwd) if cwd is not None else None,
         env=final_env,
-        input=input,
+        input=subprocess_input,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=text,
+        text=subprocess_text,
         check=False,
     )
+
+    if string_input and requested_text:
+        assert isinstance(proc.stdout, bytes)
+        assert isinstance(proc.stderr, bytes)
+        encoding = locale.getpreferredencoding(False)
+        stdout = proc.stdout.decode(encoding)
+        stderr = proc.stderr.decode(encoding)
+        # Match subprocess text-mode universal-newline behavior on output while
+        # retaining byte-exact stdin transport.
+        stdout = stdout.replace('\r\n', '\n').replace('\r', '\n')
+        stderr = stderr.replace('\r\n', '\n').replace('\r', '\n')
+        proc = subprocess.CompletedProcess(
+            proc.args,
+            proc.returncode,
+            stdout,
+            stderr,
+        )
+
     if check and proc.returncode:
         stdout = proc.stdout.decode() if isinstance(proc.stdout, bytes) else proc.stdout
         stderr = proc.stderr.decode() if isinstance(proc.stderr, bytes) else proc.stderr
