@@ -698,11 +698,27 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
         all_branches=True,
         verbose=0,
     )
-    # Deliberately make the extraction root long enough that the packed object
-    # path crosses the traditional Windows MAX_PATH boundary. The archive's
-    # repository-local core.longpaths setting must make Git traversal work
-    # without requiring any global machine configuration.
-    extract_dpath = tmp_path / ('all-branches-shallow-extract-' + ('x' * 80))
+    # On Windows, exercise a packed-object path beyond the traditional
+    # MAX_PATH boundary without making the repository directory itself too
+    # long for Python 3.10's CreateProcess ``cwd`` handling. Git must be able
+    # to start in the checkout and then use the archive-local long-path config
+    # while opening deeper object paths.
+    if os.name == 'nt':
+        import tarfile
+
+        with tarfile.open(archive, 'r:gz') as tar:
+            root_names = {
+                name.split('/', 1)[0] for name in tar.getnames() if name
+            }
+        assert len(root_names) == 1
+        archive_root_name = next(iter(root_names))
+        target_unpack_len = 220
+        fixed_len = len(str(tmp_path.resolve())) + 2 + len(archive_root_name)
+        padding_len = max(1, target_unpack_len - fixed_len)
+        extract_dpath = tmp_path / ('x' * padding_len)
+    else:
+        extract_dpath = tmp_path / 'all-branches-shallow-extract'
+
     unpacked = _extract_tar_root(archive, extract_dpath)
     longpaths = _stdout_text(
         ub.cmd(
@@ -713,9 +729,16 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
     ).strip()
     assert longpaths == 'true'
     if os.name == 'nt':
-        pack_paths = list((unpacked / '.git' / 'objects' / 'pack').glob('*.pack'))
-        assert pack_paths
-        assert max(len(str(path.resolve())) for path in pack_paths) > 260
+        unpacked_text = str(unpacked.resolve())
+        representative_pack = str(
+            unpacked
+            / '.git'
+            / 'objects'
+            / 'pack'
+            / ('pack-' + ('0' * 40) + '.pack')
+        )
+        assert len(unpacked_text) < 240
+        assert len(representative_pack) > 260
     archived_topic = _stdout_text(
         ub.cmd(
             ['git', 'rev-parse', '--verify', 'refs/heads/topic'],
