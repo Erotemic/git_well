@@ -1629,6 +1629,19 @@ def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
     return options
 
 
+def _configure_archive_git_portability(repo: 'git.Repo') -> None:
+    """Make an archived Git checkout portable to deep Windows paths.
+
+    Git for Windows keeps long-path support disabled by default. Source archives
+    commonly gain a long extraction prefix before reaching
+    ``.git/objects/pack/pack-<hash>.pack``, so a repository that is valid while
+    staged can become unreadable after extraction even though its refs remain
+    accessible. Keep this repository-local: the archive carries the setting and
+    the user's global Git configuration is never changed.
+    """
+    repo.git.config('--local', 'core.longpaths', 'true')
+
+
 def _clone_committed_checkout(
     src: 'git.Repo',
     dst: PathLike,
@@ -1658,6 +1671,7 @@ def _clone_committed_checkout(
     ]
     git.Git(str(src_root.parent)).execute(clone_command)
     cloned = git.Repo(dst)
+    _configure_archive_git_portability(cloned)
     _checkout_commit(
         cloned,
         commit,

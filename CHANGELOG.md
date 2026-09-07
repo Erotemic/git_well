@@ -27,6 +27,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Store `core.longpaths=true` in every history-bearing source archive checkout so Git for Windows can read packed objects after extraction beneath long directory prefixes without requiring global Git configuration.
 * Make the Git epoch subprocess boundary encode all string stdin as bytes before invoking Git, so line-oriented plumbing cannot acquire CRLF terminators on Windows regardless of the caller.
 * Keep Git epoch batched local ref publication compatible with Git for Windows by using the portable `update-ref --stdin` batch form.
 * Materialize cached archive-source branch refs by direct local object import and local ref creation, removing Git transport/refspec parsing from local branch preservation on every platform.

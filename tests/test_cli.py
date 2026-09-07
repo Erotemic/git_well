@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 
@@ -697,9 +698,24 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
         all_branches=True,
         verbose=0,
     )
-    unpacked = _extract_tar_root(
-        archive, tmp_path / 'all-branches-shallow-extract'
-    )
+    # Deliberately make the extraction root long enough that the packed object
+    # path crosses the traditional Windows MAX_PATH boundary. The archive's
+    # repository-local core.longpaths setting must make Git traversal work
+    # without requiring any global machine configuration.
+    extract_dpath = tmp_path / ('all-branches-shallow-extract-' + ('x' * 80))
+    unpacked = _extract_tar_root(archive, extract_dpath)
+    longpaths = _stdout_text(
+        ub.cmd(
+            ['git', 'config', '--local', '--get', 'core.longpaths'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert longpaths == 'true'
+    if os.name == 'nt':
+        pack_paths = list((unpacked / '.git' / 'objects' / 'pack').glob('*.pack'))
+        assert pack_paths
+        assert max(len(str(path.resolve())) for path in pack_paths) > 260
     archived_topic = _stdout_text(
         ub.cmd(
             ['git', 'rev-parse', '--verify', 'refs/heads/topic'],
