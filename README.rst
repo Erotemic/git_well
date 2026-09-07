@@ -208,9 +208,10 @@ before rewriting refs:
 
 The staged ``sandbox plan``, ``sandbox apply``, ``sandbox publish``, and
 ``sandbox verify`` commands expose the same phases when the rehearsal should be
-inspected between steps. Verification also performs a true recursive fresh clone
-using only sandbox remotes, so the combined parent/submodule checkout is tested
-rather than only six independent repository clones.
+inspected between steps. Verification fresh-clones every repository using only
+sandbox remotes and composes those clones at the translated gitlinks. Git admin
+directories are kept flat and separate from the recursive worktree, avoiding
+platform path growth while still checking the combined parent/submodule tree.
 
 Use ``git epoch stats`` to inspect the physical local history store and each
 archived epoch. The report separates shared-store bytes from standalone bundle

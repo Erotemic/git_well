@@ -1701,7 +1701,7 @@ def _copy_cached_branch_refs(
     branch_refs: BranchRefInventory,
     log: '_Logger',
 ) -> None:
-    """Copy local and remote-tracking refs from ``src`` without networking."""
+    """Copy cached branch refs by importing local objects, never by fetching."""
     src_root = Path(cast(str, src.working_tree_dir)).resolve()
 
     # The initial clone creates synthetic ``origin/*`` refs for the local
@@ -1710,26 +1710,30 @@ def _copy_cached_branch_refs(
     if 'origin' in [remote.name for remote in cloned.remotes]:
         cloned.git.remote('remove', 'origin')
 
-    # Spell out the cached refs rather than relying on wildcard refspecs.
-    # This also avoids platform-specific wildcard/ref namespace behavior in
-    # shallow fetches and guarantees that the inventory we measured is the
-    # inventory we materialize.
-    refspecs = [
-        f'+refs/heads/{name}:refs/heads/{name}'
+    # Local cached refs are local state, so keep them entirely out of Git's
+    # transport layer. This uses the same direct object-database import as
+    # unadvertised submodule commits; no URL/refspec parsing is involved.
+    source_to_dest = [
+        (f'refs/heads/{name}', f'refs/heads/{name}')
         for name in branch_refs.local_branches
     ]
-    refspecs.extend(
-        f'+refs/remotes/{name}:refs/remotes/{name}'
+    source_to_dest.extend(
+        (f'refs/remotes/{name}', f'refs/remotes/{name}')
         for name in branch_refs.remote_tracking_branches
     )
-
-    if refspecs:
-        fetch_args = ['--quiet', '--no-auto-maintenance']
-        if clone_depth is not None:
-            fetch_args += ['--depth', str(clone_depth)]
-        # Use a file URI instead of a native filesystem string. In particular,
-        # ``C:\\...`` is ambiguous to Git's fetch URL parser on Windows.
-        cloned.git.fetch(*fetch_args, src_root.as_uri(), *refspecs)
+    ref_targets = [
+        (dest_ref, src.git.rev_parse('--verify', source_ref).strip())
+        for source_ref, dest_ref in source_to_dest
+    ]
+    if ref_targets:
+        _import_local_history_from_object_database(
+            repo=cloned,
+            source_repo=src,
+            commits=(oid for _dest_ref, oid in ref_targets),
+            clone_depth=clone_depth,
+        )
+        for dest_ref, oid in ref_targets:
+            cloned.git.update_ref(dest_ref, oid)
 
     cloned.git.remote('add', 'origin', str(src_root))
     log(
@@ -1780,10 +1784,10 @@ def _checkout_commit(
                 f'[source-archive] recovering {label} commit {commit[:12]} '
                 'from local object database'
             )
-            _fetch_commit_from_local_object_database(
+            _import_local_history_from_object_database(
                 repo=repo,
                 source_repo=source_repo,
-                commit=commit,
+                commits=(commit,),
                 clone_depth=clone_depth,
             )
             repo.git.checkout('-q', '--detach', commit)
@@ -1841,26 +1845,29 @@ def _fetch_exact_commit(
     repo.git.fetch(*fetch_args, source, commit)
 
 
-def _fetch_commit_from_local_object_database(
+def _import_local_history_from_object_database(
     repo: 'git.Repo',
     source_repo: 'git.Repo',
-    commit: str,
+    commits: Iterable[str],
     clone_depth: int | None,
 ) -> None:
     """
-    Import an arbitrary locally present commit without using Git transport.
+    Import locally present commit histories without using Git transport.
 
-    The source repository already owns the required objects.  Treating that
-    object database as a fetch remote adds several avoidable failure surfaces:
-    ref advertisement, temporary refs, alternates-file syntax, ``file://`` URL
-    parsing, and Windows drive-letter handling.  Instead, enumerate exactly the
-    objects needed for the requested history slice, stream them through
-    ``pack-objects``, and feed the resulting pack directly to ``index-pack`` in
-    the destination repository.
+    The source repository already owns the required objects. Treating local
+    state as a fetch remote adds avoidable failure surfaces: ref advertisement,
+    temporary refs, URL/refspec parsing, alternates syntax, and platform path
+    rules. Instead, resolve each requested history slice in the source object
+    database, union the object set, and stream one pack directly into the
+    destination object database.
 
     This path has no shell, no remote, no URL, and no filesystem path embedded
-    in a Git protocol.  Every process boundary is a binary pipe.
+    in a Git protocol. Every process boundary is a binary pipe.
     """
+    commit_list = tuple(dict.fromkeys(commits))
+    if not commit_list:
+        return
+
     source_root_text = cast(str | None, source_repo.working_tree_dir)
     destination_root_text = cast(str | None, repo.working_tree_dir)
     if source_root_text is None or destination_root_text is None:
@@ -1868,11 +1875,31 @@ def _fetch_commit_from_local_object_database(
     source_root = Path(source_root_text).resolve()
     destination_root = Path(destination_root_text).resolve()
 
-    selected_commits, shallow_boundaries = _local_history_slice(
-        source_repo,
-        commit,
-        clone_depth,
-    )
+    if clone_depth is None:
+        selected_commits: tuple[str, ...] | None = None
+        shallow_boundaries: tuple[str, ...] = ()
+    else:
+        selected: list[str] = []
+        selected_seen: set[str] = set()
+        boundaries: list[str] = []
+        boundary_seen: set[str] = set()
+        for commit in commit_list:
+            commit_slice, commit_boundaries = _local_history_slice(
+                source_repo,
+                commit,
+                clone_depth,
+            )
+            assert commit_slice is not None
+            for oid in commit_slice:
+                if oid not in selected_seen:
+                    selected_seen.add(oid)
+                    selected.append(oid)
+            for oid in commit_boundaries:
+                if oid not in boundary_seen:
+                    boundary_seen.add(oid)
+                    boundaries.append(oid)
+        selected_commits = tuple(selected)
+        shallow_boundaries = tuple(boundaries)
 
     rev_args = [
         'git',
@@ -1882,7 +1909,7 @@ def _fetch_commit_from_local_object_database(
     ]
     rev_input: bytes | None
     if selected_commits is None:
-        rev_args.append(commit)
+        rev_args.extend(commit_list)
         rev_input = None
     else:
         rev_args.extend(['--no-walk', '--stdin'])
@@ -1942,9 +1969,13 @@ def _fetch_commit_from_local_object_database(
                 f'index-pack={index_proc.returncode} {index_error!r}'
             )
 
-    if not _repo_has_commit(repo, commit):
+    missing_commits = [
+        commit for commit in commit_list if not _repo_has_commit(repo, commit)
+    ]
+    if missing_commits:
         raise RuntimeError(
-            f'local Git object transfer completed without importing {commit}'
+            'local Git object transfer completed without importing commits: '
+            f'{missing_commits}'
         )
     if shallow_boundaries:
         _record_shallow_boundaries(repo, shallow_boundaries)

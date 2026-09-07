@@ -562,32 +562,28 @@ def _fresh_recursive_clone_validate(
     data: Mapping[str, Any],
     verification_run: pathlib.Path,
 ) -> dict[str, Any]:
-    """Clone the sandbox root and initialize the complete submodule graph."""
+    """Fresh-clone and compose the recursive graph with flat Git admin dirs.
+
+    Git's normal recursive-submodule layout nests administrative repositories as
+    ``.git/modules/<child>/modules/<grandchild>/...``. On Windows that path can
+    exceed the traditional path limit even when the working-tree paths are
+    reasonable. Verification does not need that storage layout; it needs proof
+    that every active remote fresh-clones at the translated gitlink and that the
+    composed checkout is clean.
+
+    Clone every graph node independently with ``--separate-git-dir`` into one
+    short, flat admin directory while placing worktrees at their real gitlink
+    paths. Parent submodule config is still initialized, so normal Git status and
+    archive-source discovery see the composed tree as initialized submodules.
+    """
     nodes = list(data['nodes'])
-    by_id = {node['repository']: node for node in nodes}
-    root_node = by_id[data['root_repository']]
-    fresh_parent = verification_run / 'fresh-recursive'
-    fresh = fresh_parent / root_node['repository']
-    fresh_parent.mkdir(parents=True)
 
-    _run(
-        [
-            'git',
-            '-c',
-            'protocol.file.allow=always',
-            'clone',
-            '--no-local',
-            '--branch',
-            root_node['branch'],
-            root_node['active_remote'],
-            fresh,
-        ]
-    )
+    # Keep verification path components deliberately short. More importantly,
+    # submodule depth no longer increases Git administrative path depth.
+    fresh = verification_run / 'w'
+    git_admin_root = verification_run / 'g'
+    git_admin_root.mkdir(parents=True)
 
-    # Initialize one level at a time. Before each checkout, replace the
-    # committed .gitmodules URL in local config with the corresponding sandbox
-    # bare remote. This handles absolute, SSH, and relative source URLs without
-    # modifying the committed successor tree or contacting the network.
     ordered_nodes = sorted(
         nodes,
         key=lambda node: (
@@ -600,22 +596,63 @@ def _fresh_recursive_clone_validate(
         ),
     )
     initialized: dict[str, Any] = {}
-    for node in ordered_nodes:
+    checkouts: dict[str, pathlib.Path] = {}
+    for index, node in enumerate(ordered_nodes):
         relpath = node['relpath']
         checkout = (
             fresh
             if relpath == '.'
             else fresh.joinpath(*pathlib.PurePosixPath(relpath).parts)
         )
-        probe = _run(
-            ['git', '-C', checkout, 'rev-parse', '--show-toplevel'],
-            check=False,
-        )
-        if probe.returncode != 0:
-            raise EpochSafetyError(
-                f'Recursive fresh clone did not initialize {node["repository"]}: '
-                f'{checkout}'
+
+        parent_repository = node.get('parent_repository')
+        if parent_repository is not None:
+            parent_checkout = checkouts[parent_repository]
+            parent_path = str(node['parent_path'])
+            occurrences = {
+                item['path']: item
+                for item in _parse_gitmodules(parent_checkout, 'HEAD')
+            }
+            occurrence = occurrences.get(parent_path)
+            if occurrence is None:
+                raise EpochSafetyError(
+                    f'Recursive fresh clone lost .gitmodules entry at '
+                    f'{parent_repository}:{parent_path}'
+                )
+            _git(parent_checkout, 'submodule', 'init', '--', parent_path)
+            _git(
+                parent_checkout,
+                'config',
+                f"submodule.{occurrence['name']}.url",
+                pathlib.Path(node['active_remote']).resolve().as_uri(),
             )
+
+        if checkout.exists():
+            if not checkout.is_dir() or any(checkout.iterdir()):
+                raise EpochSafetyError(
+                    f'Fresh recursive checkout path is not empty: {checkout}'
+                )
+            checkout.rmdir()
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        git_dir = git_admin_root / f'{index:03d}.git'
+        remote_uri = pathlib.Path(node['active_remote']).resolve().as_uri()
+        _run(
+            [
+                'git',
+                '-c',
+                'protocol.file.allow=always',
+                'clone',
+                '--no-local',
+                '--branch',
+                node['branch'],
+                '--separate-git-dir',
+                git_dir,
+                remote_uri,
+                checkout,
+            ]
+        )
+        checkouts[node['repository']] = checkout
+
         expected = _resolve_ref(
             pathlib.Path(node['repo']), f"refs/heads/{node['branch']}"
         )
@@ -646,47 +683,27 @@ def _fresh_recursive_clone_validate(
             'retired_tip_present': retired_present,
         }
 
-        if not node['children']:
-            continue
-        occurrences = {
-            item['path']: item for item in _parse_gitmodules(checkout, 'HEAD')
-        }
-        child_paths = [child['path'] for child in node['children']]
-        _git(checkout, 'submodule', 'init', '--', *child_paths)
+    # Prove that the independently fresh-cloned nodes compose to the exact
+    # recursive gitlink graph, then verify every repository is clean.
+    for node in ordered_nodes:
+        checkout = checkouts[node['repository']]
         for child in node['children']:
-            occurrence = occurrences.get(child['path'])
-            if occurrence is None:
+            actual_gitlink = _gitlink_oid(checkout, 'HEAD', child['path'])
+            child_head = initialized[child['repository']]['head']
+            if actual_gitlink != child_head:
                 raise EpochSafetyError(
-                    f'Recursive fresh clone lost .gitmodules entry at '
-                    f'{node["repository"]}:{child["path"]}'
+                    f'Recursive fresh clone gitlink mismatch at '
+                    f'{node["repository"]}:{child["path"]}: '
+                    f'{actual_gitlink} != {child_head}'
                 )
-            child_node = by_id[child['repository']]
-            _git(
-                checkout,
-                'config',
-                f"submodule.{occurrence['name']}.url",
-                pathlib.Path(child_node['active_remote']).resolve().as_uri(),
+        status = _git_stdout(checkout, 'status', '--porcelain')
+        if status.strip():
+            raise EpochSafetyError(
+                f'Recursive fresh clone is not clean for '
+                f'{node["repository"]}:\n{status}'
             )
-        _git(
-            checkout,
-            '-c',
-            'protocol.file.allow=always',
-            'submodule',
-            'update',
-            '--init',
-            '--',
-            *child_paths,
-        )
 
-    status = _git_stdout(fresh, 'status', '--porcelain')
-    if status.strip():
-        raise EpochSafetyError(
-            f'Recursive fresh clone is not clean after initialization:\n{status}'
-        )
-    git_dir = pathlib.Path(
-        _git_stdout(fresh, 'rev-parse', '--absolute-git-dir').strip()
-    )
-    git_bytes = _directory_size(git_dir)
+    git_bytes = _directory_size(git_admin_root)
     return {
         'path': str(fresh),
         'repositories': initialized,

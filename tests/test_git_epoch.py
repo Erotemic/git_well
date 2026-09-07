@@ -188,6 +188,19 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     assert _git(
         recursive_root / 'middle' / 'leaf', 'rev-parse', 'HEAD'
     ).returncode == 0
+
+    # Recursive verification must not use Git's nested .git/modules layout.
+    # Flat separate gitdirs keep administrative path depth constant on Windows.
+    git_markers = [
+        recursive_root / '.git',
+        recursive_root / 'middle' / '.git',
+        recursive_root / 'middle' / 'leaf' / '.git',
+    ]
+    assert all(marker.is_file() for marker in git_markers)
+    for marker in git_markers:
+        normalized = marker.read_text().replace('\\', '/')
+        assert '/modules/' not in normalized
+
     first_verification_run = pathlib.Path(
         result['verification']['verification_run']
     )
