@@ -53,7 +53,7 @@ class GitSyncCLI(kwconf.Config):
         help='Specify a custom commit message',
     )
     force: bool = kwconf.Value(
-        False, isflag=True, help='Force push and hard reset the remote.'
+        False, isflag=True, short_alias=['f'], help='Force push and hard reset the remote.'
     )
 
 

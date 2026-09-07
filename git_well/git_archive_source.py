@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import subprocess
+import tempfile
 import textwrap
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -59,6 +63,7 @@ _FORMAT_ALIASES = {
 }
 
 _ARCHIVE_INFO_FNAME = 'GIT_WELL_ARCHIVE_INFO.txt'
+_UNINITIALIZED_SUBMODULE_REASON = 'not initialized locally'
 
 # TODO: Re-enable repo-local archive_source defaults after kwconf /
 # legacy modal dispatch preserved omitted values distinctly from
@@ -90,6 +95,179 @@ class SubmoduleArchiveDecision:
     depth: int | None
     mode: str
     reason: str
+
+
+@dataclass(frozen=True)
+class BranchRefInventory:
+    """
+    Local and remote-tracking branch refs cached in one repository.
+    """
+
+    local_branches: tuple[str, ...]
+    remote_tracking_branches: tuple[str, ...]
+
+
+ArchiveSourceHook = Callable[['ArchiveSourceContext'], None]
+ArchiveSourceHookArg = ArchiveSourceHook | Iterable[ArchiveSourceHook] | None
+
+
+class ArchiveSourceHookError(RuntimeError):
+    """
+    Wrap an exception raised by a programmatic archive-source hook.
+    """
+
+    def __init__(
+        self,
+        phase: Literal['prepare', 'validate'],
+        hook: ArchiveSourceHook,
+        cause: Exception,
+        context: 'ArchiveSourceContext',
+    ) -> None:
+        self.phase = phase
+        self.hook = hook
+        self.hook_name = _hook_name(hook)
+        self.cause = cause
+        self.stage_dpath = context.stage_dpath
+        self.archive_root = context.archive_root
+        self.stage_retained = context.keep_stage
+        retained_suffix = (
+            f'; retained stage: {context.stage_dpath}'
+            if context.keep_stage
+            else ''
+        )
+        super().__init__(
+            f'archive_source {phase} hook {self.hook_name!r} failed: '
+            f'{cause}{retained_suffix}'
+        )
+
+
+@dataclass
+class ArchiveSourceContext:
+    """
+    Mutable staging context exposed to programmatic archive extensions.
+
+    Prepare hooks may add files below :attr:`archive_root` and register those
+    generated paths with :meth:`add_generated_excludes`. Validation hooks run
+    after git-well has written its own metadata and should inspect without
+    mutating the staged tree.
+    """
+
+    repo_root: Path
+    archive_path: Path
+    archive_format: ResolvedArchiveFormat
+    stage_dpath: Path
+    archive_root: Path
+    archive_root_name: str
+    repo_name: str
+    timestamp: str
+    head_sha: str
+    short_sha: str
+    normalized_depth: int | None
+    include_git_history: bool
+    clone_depth: int | None
+    branch_refs: BranchRefInventory | None
+    submodule_decisions: tuple[SubmoduleArchiveDecision, ...]
+    redact_local_paths: bool
+    all_branches: bool
+    keep_stage: bool
+    _log: '_Logger' = field(repr=False)
+    _generated_excludes: list[str] = field(
+        default_factory=lambda: [f'/{_ARCHIVE_INFO_FNAME}'], repr=False
+    )
+    _metadata_finalized: bool = field(default=False, init=False, repr=False)
+    _archive_written: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def depth(self) -> int | None:
+        """Normalized superproject depth; ``None`` means full history."""
+        return self.normalized_depth
+
+    @property
+    def manifest_path(self) -> Path:
+        """Path where git-well's archive information file is generated."""
+        return self.archive_root / _ARCHIVE_INFO_FNAME
+
+    def source_display_path(self) -> str:
+        """Return the source path using the configured redaction policy."""
+        if self.redact_local_paths:
+            return '(redacted by --redact-local-paths)'
+        return os.fspath(self.repo_root)
+
+    def output_display_path(self) -> str:
+        """Return the output path using the configured redaction policy."""
+        if self.redact_local_paths:
+            return '(redacted by --redact-local-paths)'
+        return os.fspath(self.archive_path)
+
+    def add_generated_excludes(self, paths: str | Iterable[str]) -> None:
+        """
+        Ignore generated archive-relative paths in history-bearing checkouts.
+
+        These rules only affect ``.git/info/exclude`` in the staged clone.
+        They do not hide modifications to tracked files.
+        """
+        if self._metadata_finalized:
+            raise RuntimeError(
+                'generated excludes cannot be added after metadata finalization'
+            )
+        if isinstance(paths, str):
+            paths = [paths]
+        for path in paths:
+            rule = _normalize_generated_exclude(path)
+            if rule not in self._generated_excludes:
+                self._generated_excludes.append(rule)
+
+    def finalize_metadata(self) -> Path:
+        """Write git-well metadata after all prepare hooks have run."""
+        if self._metadata_finalized:
+            return self.manifest_path
+        manifest = self.manifest_path
+        _assert_archive_info_path_available(manifest)
+        if self.include_git_history:
+            _append_generated_excludes(
+                self.archive_root, self._generated_excludes
+            )
+        _write_manifest(
+            manifest=manifest,
+            repo_root=self.repo_root,
+            archive_path=self.archive_path,
+            repo_name=self.repo_name,
+            prefix=self.archive_root_name,
+            timestamp=self.timestamp,
+            head_sha=self.head_sha,
+            short_sha=self.short_sha,
+            include_git_history=self.include_git_history,
+            clone_depth=self.clone_depth,
+            branch_refs=self.branch_refs,
+            submodule_decisions=self.submodule_decisions,
+            redact_local_paths=self.redact_local_paths,
+        )
+        self._metadata_finalized = True
+        return manifest
+
+    def write_archive(self) -> Path:
+        """Finalize metadata and serialize the staged archive exactly once."""
+        if self._archive_written:
+            raise RuntimeError('archive has already been written')
+        self.finalize_metadata()
+        _write_archive(
+            self.stage_dpath,
+            self.archive_root_name,
+            self.archive_path,
+            self.archive_format,
+        )
+        self._archive_written = True
+        self._log(f'[source-archive] wrote: {self.archive_path}')
+        if self.archive_format == 'zip':
+            self._log(
+                f'[source-archive] list contents: unzip -l {self.archive_path}'
+            )
+        else:
+            self._log(
+                f'[source-archive] list contents: tar -tf '
+                f'{self.archive_path} | less'
+            )
+        return self.archive_path
 
 
 _UNSET = object()
@@ -213,7 +391,8 @@ class ArchiveSourceCLI(kwconf.Config):
     and omits ``.git`` metadata.
 
     Local edits, untracked files, ignored files, and build outputs are excluded
-    in all modes. Submodules must already be initialized locally.
+    in all modes. Initialized submodules are included; uninitialized submodules
+    are omitted with a warning and recorded as pruned in the archive manifest.
     """
 
     __command__ = 'archive_source'
@@ -236,9 +415,21 @@ class ArchiveSourceCLI(kwconf.Config):
     )
     depth = kwconf.Value(
         'full',
+        short_alias=['d'],
         help=textwrap.dedent("""
             Git history depth: "full" for all current-HEAD history, a positive
             integer for shallow history, or 0 for source-only git archive mode.
+            """).strip(),
+    )
+    all_branches = kwconf.Value(
+        False,
+        isflag=True,
+        alias=['all-branches'],
+        help=textwrap.dedent("""
+            Include every local branch and every remote-tracking branch already
+            cached in the superproject repository. This never contacts configured
+            remotes; fetch contributor forks before archiving. Requires Git
+            history, so it cannot be combined with --depth 0.
             """).strip(),
     )
     submodule_depth = kwconf.Value(
@@ -271,7 +462,8 @@ class ArchiveSourceCLI(kwconf.Config):
         True,
         isflag=True,
         help=textwrap.dedent("""
-            Materialize initialized recursive submodule working trees. Pass
+            Materialize initialized recursive submodule working trees.
+            Uninitialized submodules are omitted with a warning. Pass
             --no-submodules to omit every submodule working tree from the
             archive while keeping superproject gitlinks and .gitmodules.
             """).strip(),
@@ -308,7 +500,12 @@ class ArchiveSourceCLI(kwconf.Config):
     #         When specified, the config is updated and no archive is created.
     #         """).strip(),
     # )
-    verbose = kwconf.Value(1, help='verbosity level')
+    verbose: int = kwconf.Value(
+        1,
+        isflag='counter',
+        short_alias=['v'],
+        help='Increase verbosity; repeat for more detail',
+    )
 
     @classmethod
     def main(
@@ -321,6 +518,7 @@ class ArchiveSourceCLI(kwconf.Config):
             repo_dpath=config.repo_dpath,
             output=config.output,
             depth=config.depth,
+            all_branches=bool(config.all_branches),
             submodule_depth=config.submodule_depth,
             exclude_submodule=config.exclude_submodule,
             no_submodules=not bool(config.submodules),
@@ -348,6 +546,11 @@ def archive_source(
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
     verbose: int = 1,
+    all_branches: bool = False,
+    prepare: ArchiveSourceHookArg = None,
+    validate: ArchiveSourceHookArg = None,
+    archive_root_name: str | None = None,
+    keep_stage: bool = False,
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -383,7 +586,8 @@ def archive_source(
 
         no_submodules:
             If true, omit all recursive submodule working trees from the
-            archive.
+            archive. When false, initialized submodules are included and
+            uninitialized submodules are omitted with a warning.
 
         format:
             Archive format. ``'auto'`` infers from the output extension when
@@ -397,16 +601,81 @@ def archive_source(
         verbose:
             Verbosity level.
 
+        all_branches:
+            If true, include every local branch and every remote-tracking
+            branch already cached in the superproject repository. No configured
+            remote is contacted. This cannot be combined with ``depth=0``.
+
+        prepare:
+            One callable, or an iterable of callables, invoked after committed
+            source and submodules are staged but before git-well metadata is
+            written. Prepare hooks may modify ``context.archive_root``.
+
+        validate:
+            One callable, or an iterable of callables, invoked after git-well
+            metadata is written and immediately before serialization.
+            Validation hooks should not mutate the staged tree.
+
+        archive_root_name:
+            Optional programmatic override for the top-level directory inside
+            the archive. This is intentionally not exposed by the CLI.
+
+        keep_stage:
+            If true, retain the temporary staging directory after success or
+            failure. Hook errors expose the retained path as ``stage_dpath``.
+
     Returns:
         The generated archive path.
 
     Notes:
         This function only archives committed/tracked source. Local edits,
         untracked files, ignored files, and build outputs are deliberately
-        excluded. Every archive contains ``GIT_WELL_ARCHIVE_INFO.txt`` with
-        the source/output paths, commits, history depths, and any intentional
-        pruning. Use ``redact_local_paths=True`` when those local paths should
-        not be included in the artifact.
+        excluded. Hook failures abort serialization and are wrapped in
+        :class:`ArchiveSourceHookError` with the hook phase and name.
+    """
+    prepare_hooks = _coerce_archive_hooks(prepare, phase='prepare')
+    validate_hooks = _coerce_archive_hooks(validate, phase='validate')
+    with stage_source_archive(
+        repo_dpath=repo_dpath,
+        output=output,
+        depth=depth,
+        submodule_depth=submodule_depth,
+        exclude_submodule=exclude_submodule,
+        no_submodules=no_submodules,
+        format=format,
+        redact_local_paths=redact_local_paths,
+        verbose=verbose,
+        all_branches=all_branches,
+        archive_root_name=archive_root_name,
+        keep_stage=keep_stage,
+    ) as context:
+        _run_archive_hooks('prepare', prepare_hooks, context)
+        context.finalize_metadata()
+        _run_archive_hooks('validate', validate_hooks, context)
+        return context.write_archive()
+
+
+@contextmanager
+def stage_source_archive(
+    repo_dpath: PathLike = '.',
+    output: PathLike | None = None,
+    depth: DepthArg = 'full',
+    submodule_depth: SubmoduleDepthSpecArg = None,
+    exclude_submodule: str | list[str] | None = None,
+    no_submodules: bool = False,
+    format: ArchiveFormatArg = 'auto',
+    redact_local_paths: bool = False,
+    verbose: int = 1,
+    all_branches: bool = False,
+    archive_root_name: str | None = None,
+    keep_stage: bool = False,
+) -> Iterator[ArchiveSourceContext]:
+    """
+    Stage committed source and yield a context before metadata/serialization.
+
+    The temporary staging tree is removed when the context exits unless
+    ``keep_stage=True``. Call :meth:`ArchiveSourceContext.write_archive` to
+    serialize when using this lower-level API directly.
     """
     repo = _coerce_repo(repo_dpath)
     _assert_has_head(repo)
@@ -418,33 +687,46 @@ def archive_source(
     import ubelt as ub
 
     timestamp = ub.timestamp()
-    prefix = f'{repo_name}-source-{timestamp}-{short_sha}'
+    default_root_name = f'{repo_name}-source-{timestamp}-{short_sha}'
+    if archive_root_name is None:
+        resolved_root_name = default_root_name
+    else:
+        resolved_root_name = _normalize_archive_root_name(archive_root_name)
 
     normalized_depth = _normalize_depth(depth)
     include_git_history = normalized_depth != 0
+    if all_branches and not include_git_history:
+        raise ValueError(
+            '--all-branches requires Git history; use --depth 1 or greater'
+        )
     clone_depth = None if normalized_depth in {0, None} else normalized_depth
+    branch_refs = _branch_ref_inventory(repo) if all_branches else None
     submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
     exclude_submodule_paths = _normalize_submodule_path_list(
         exclude_submodule
     )
 
     archive_format = _resolve_archive_format(output, format)
-    archive_path = _resolve_output(repo_root, output, prefix, archive_format)
+    archive_path = _resolve_output(
+        repo_root, output, resolved_root_name, archive_format
+    )
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     submodule_status = _submodule_status(repo)
-    submodule_decisions = _resolve_submodule_archive_decisions(
-        submodule_status,
-        policy=submodule_depth_policy,
-        inherited_depth=normalized_depth,
-        exclude_submodule=exclude_submodule_paths,
-        no_submodules=bool(no_submodules),
+    submodule_decisions = tuple(
+        _resolve_submodule_archive_decisions(
+            submodule_status,
+            policy=submodule_depth_policy,
+            inherited_depth=normalized_depth,
+            exclude_submodule=exclude_submodule_paths,
+            no_submodules=bool(no_submodules),
+        )
     )
 
     log = _Logger(verbose)
     log.path('[source-archive] repo: ', repo_root)
     log.path('[source-archive] output directory: ', archive_path.parent)
-    log(f'[source-archive] prefix: {prefix}')
+    log(f'[source-archive] prefix: {resolved_root_name}')
     log(f'[source-archive] archive format: {archive_format}')
     log(
         '[source-archive] git history: {}'.format(
@@ -454,6 +736,15 @@ def archive_source(
     if include_git_history:
         depth_label = 'full' if clone_depth is None else str(clone_depth)
         log(f'[source-archive] history depth: {depth_label}')
+        if all_branches:
+            assert branch_refs is not None
+            log(
+                '[source-archive] branches: all locally cached '
+                f'({len(branch_refs.local_branches)} local, '
+                f'{len(branch_refs.remote_tracking_branches)} remote-tracking)'
+            )
+        else:
+            log('[source-archive] branches: current HEAD history only')
     else:
         log('[source-archive] depth: 0 (source-only git archive mode)')
     for line in submodule_depth_policy.summary_lines():
@@ -479,7 +770,7 @@ def archive_source(
     try:
         stage = tmpdir / 'stage'
         stage.mkdir(parents=True, exist_ok=True)
-        archive_root = stage / prefix
+        archive_root = stage / resolved_root_name
 
         if include_git_history:
             log('[source-archive] cloning superproject')
@@ -489,28 +780,34 @@ def archive_source(
                 commit=head_sha,
                 label='superproject',
                 clone_depth=clone_depth,
+                branch_refs=branch_refs,
                 redact_local_paths=redact_local_paths,
                 log=log,
             )
         else:
             log('[source-archive] exporting superproject with git archive')
-            _extract_git_archive(repo, 'HEAD', stage, prefix)
+            _extract_git_archive(
+                repo, 'HEAD', stage, resolved_root_name
+            )
 
         for decision in submodule_decisions:
             info = decision.info
             path = info.path
             submodule_sha = info.sha
             if decision.omitted:
-                log(
-                    f'[source-archive] omitting submodule {path}: '
-                    f'{decision.reason}'
-                )
+                if decision.reason == _UNINITIALIZED_SUBMODULE_REASON:
+                    log.warning(
+                        f'[source-archive] WARNING: omitting submodule '
+                        f'{path}: {decision.reason}'
+                        + '; run: git submodule update --init --recursive '
+                        'to include it'
+                    )
+                else:
+                    log(
+                        f'[source-archive] omitting submodule {path}: '
+                        f'{decision.reason}'
+                    )
                 continue
-            if info.status == '-':
-                raise RuntimeError(
-                    f"submodule '{path}' is not initialized; run: "
-                    'git submodule update --init --recursive'
-                )
             src_dpath = repo_root / path
             if not src_dpath.exists():
                 raise RuntimeError(
@@ -539,47 +836,46 @@ def archive_source(
                     commit=submodule_sha,
                     label=f'submodule {path}',
                     clone_depth=sub_clone_depth,
+                    branch_refs=None,
                     redact_local_paths=redact_local_paths,
                     log=log,
                 )
             else:
                 (archive_root / path).mkdir(parents=True, exist_ok=True)
                 _extract_git_archive(
-                    sub_repo, submodule_sha, stage, f'{prefix}/{path}'
+                    sub_repo,
+                    submodule_sha,
+                    stage,
+                    f'{resolved_root_name}/{path}',
                 )
 
-        manifest = archive_root / _ARCHIVE_INFO_FNAME
-        _assert_archive_info_path_available(manifest)
-        if include_git_history:
-            _append_manifest_exclude(archive_root)
-
-        _write_manifest(
-            manifest=manifest,
+        context = ArchiveSourceContext(
             repo_root=repo_root,
             archive_path=archive_path,
+            archive_format=archive_format,
+            stage_dpath=stage,
+            archive_root=archive_root,
+            archive_root_name=resolved_root_name,
             repo_name=repo_name,
-            prefix=prefix,
             timestamp=timestamp,
             head_sha=head_sha,
             short_sha=short_sha,
+            normalized_depth=normalized_depth,
             include_git_history=include_git_history,
             clone_depth=clone_depth,
+            branch_refs=branch_refs,
             submodule_decisions=submodule_decisions,
             redact_local_paths=redact_local_paths,
+            all_branches=all_branches,
+            keep_stage=keep_stage,
+            _log=log,
         )
-
-        _write_archive(stage, prefix, archive_path, archive_format)
+        yield context
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    log(f'[source-archive] wrote: {archive_path}')
-    if archive_format == 'zip':
-        log(f'[source-archive] list contents: unzip -l {archive_path}')
-    elif archive_format == 'tar':
-        log(f'[source-archive] list contents: tar -tf {archive_path} | less')
-    else:
-        log(f'[source-archive] list contents: tar -tf {archive_path} | less')
-    return archive_path
+        if keep_stage:
+            log.path('[source-archive] retained stage: ', tmpdir)
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def build_source_archive(*args: Any, **kwargs: Any) -> Path:
@@ -679,6 +975,63 @@ def build_source_archive(*args: Any, **kwargs: Any) -> Path:
 #         _normalize_depth(values['depth'])
 #     if 'format' in values:
 #         _resolve_archive_format(None, cast(ArchiveFormatArg, values['format']))
+
+
+def _hook_name(hook: ArchiveSourceHook) -> str:
+    name = getattr(hook, '__qualname__', None)
+    if name is None:
+        name = getattr(hook, '__name__', None)
+    if name is None:
+        name = hook.__class__.__qualname__
+    return str(name)
+
+
+def _coerce_archive_hooks(
+    hooks: ArchiveSourceHookArg,
+    phase: Literal['prepare', 'validate'],
+) -> tuple[ArchiveSourceHook, ...]:
+    if hooks is None:
+        return ()
+    if callable(hooks):
+        # Callable objects may also satisfy Iterable, so make this branch's
+        # intended interpretation explicit to static type checkers.
+        return (cast(ArchiveSourceHook, hooks),)
+    iterable_hooks = cast(Iterable[ArchiveSourceHook], hooks)
+    try:
+        coerced = tuple(iterable_hooks)
+    except TypeError as ex:
+        raise TypeError(
+            f'{phase} hooks must be a callable or iterable of callables'
+        ) from ex
+    for hook in coerced:
+        if not callable(hook):
+            raise TypeError(
+                f'{phase} hooks must contain only callables; got {hook!r}'
+            )
+    return coerced
+
+
+def _run_archive_hooks(
+    phase: Literal['prepare', 'validate'],
+    hooks: Sequence[ArchiveSourceHook],
+    context: ArchiveSourceContext,
+) -> None:
+    for hook in hooks:
+        try:
+            hook(context)
+        except Exception as ex:
+            raise ArchiveSourceHookError(phase, hook, ex, context) from ex
+
+
+def _normalize_archive_root_name(name: str) -> str:
+    text = os.fspath(name)
+    if not text or text in {'.', '..'}:
+        raise ValueError('archive_root_name must be a non-empty basename')
+    if '\x00' in text or '/' in text or '\\' in text:
+        raise ValueError(
+            'archive_root_name must be a basename without path separators'
+        )
+    return text
 
 
 def _coerce_repo(repo_dpath: PathLike) -> 'git.Repo':
@@ -1005,6 +1358,17 @@ def _resolve_submodule_archive_decisions(
                 )
             )
             continue
+        if info.status == '-':
+            decisions.append(
+                SubmoduleArchiveDecision(
+                    info=info,
+                    omitted=True,
+                    depth=inherited_depth,
+                    mode='omitted',
+                    reason=_UNINITIALIZED_SUBMODULE_REASON,
+                )
+            )
+            continue
 
         depth = policy.resolve(info.path, inherited_depth)
         if depth == 0:
@@ -1245,11 +1609,37 @@ def _repo_has_commit(repo: 'git.Repo', commit: str) -> bool:
     return True
 
 
+def _branch_ref_inventory(repo: 'git.Repo') -> BranchRefInventory:
+    """Return branch-like refs already present in ``repo`` without fetching."""
+
+    def _names(namespace: str) -> tuple[str, ...]:
+        stdout = repo.git.for_each_ref('--format=%(refname:strip=2)', namespace)
+        return tuple(sorted(line for line in stdout.splitlines() if line))
+
+    return BranchRefInventory(
+        local_branches=_names('refs/heads'),
+        remote_tracking_branches=_names('refs/remotes'),
+    )
+
+
 def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
     options = ['--quiet', '--no-local', '--single-branch', '--no-checkout']
     if clone_depth is not None:
         options += ['--depth', str(clone_depth)]
     return options
+
+
+def _configure_archive_git_portability(repo: 'git.Repo') -> None:
+    """Make an archived Git checkout portable to deep Windows paths.
+
+    Git for Windows keeps long-path support disabled by default. Source archives
+    commonly gain a long extraction prefix before reaching
+    ``.git/objects/pack/pack-<hash>.pack``, so a repository that is valid while
+    staged can become unreadable after extraction even though its refs remain
+    accessible. Keep this repository-local: the archive carries the setting and
+    the user's global Git configuration is never changed.
+    """
+    repo.git.config('--local', 'core.longpaths', 'true')
 
 
 def _clone_committed_checkout(
@@ -1258,6 +1648,7 @@ def _clone_committed_checkout(
     commit: str,
     label: str,
     clone_depth: int | None,
+    branch_refs: BranchRefInventory | None,
     redact_local_paths: bool,
     log: '_Logger',
 ) -> None:
@@ -1280,15 +1671,21 @@ def _clone_committed_checkout(
     ]
     git.Git(str(src_root.parent)).execute(clone_command)
     cloned = git.Repo(dst)
-    _checkout_commit(cloned, commit, label, clone_depth, log)
+    _configure_archive_git_portability(cloned)
+    _checkout_commit(
+        cloned,
+        commit,
+        label,
+        clone_depth,
+        log,
+        source_repo=src,
+    )
 
-    if redact_local_paths:
-        for remote in list(cloned.remotes):
-            cloned.git.remote('remove', remote.name)
-
-    # The archive is for inspection, not local recovery. Expire the clone's
-    # fresh reflogs so they do not keep extra objects alive, then repack to make
-    # the archived .git directory reasonably small.
+    # Compact only the initial clone. Cached branch refs and any additional
+    # shallow boundaries are final archive state, so install them after Git
+    # maintenance. In particular, this prevents ``git gc`` / ``pack-refs``
+    # from changing the representation of refs that archive_source promises
+    # to preserve.
     try:
         cloned.git.reflog(
             'expire', '--expire=now', '--expire-unreachable=now', '--all'
@@ -1300,6 +1697,127 @@ def _clone_committed_checkout(
     except git.GitCommandError:
         pass
 
+    if branch_refs is not None:
+        _copy_cached_branch_refs(
+            src=src,
+            cloned=cloned,
+            clone_depth=clone_depth,
+            branch_refs=branch_refs,
+            log=log,
+        )
+
+    if redact_local_paths:
+        _remove_remote_configs_preserving_refs(cloned)
+
+    if branch_refs is not None:
+        _verify_cached_branch_refs(
+            src=src,
+            cloned=cloned,
+            clone_depth=clone_depth,
+            branch_refs=branch_refs,
+        )
+
+
+def _copy_cached_branch_refs(
+    src: 'git.Repo',
+    cloned: 'git.Repo',
+    clone_depth: int | None,
+    branch_refs: BranchRefInventory,
+    log: '_Logger',
+) -> None:
+    """Copy cached branch refs by importing local objects, never by fetching."""
+    src_root = Path(cast(str, src.working_tree_dir)).resolve()
+
+    # The initial clone creates synthetic ``origin/*`` refs for the local
+    # source repository. Remove that generated remote before copying the
+    # source repository's actual cached remote-tracking refs into place.
+    if 'origin' in [remote.name for remote in cloned.remotes]:
+        cloned.git.remote('remove', 'origin')
+
+    # Local cached refs are local state, so keep them entirely out of Git's
+    # transport layer. This uses the same direct object-database import as
+    # unadvertised submodule commits; no URL/refspec parsing is involved.
+    source_to_dest = [
+        (f'refs/heads/{name}', f'refs/heads/{name}')
+        for name in branch_refs.local_branches
+    ]
+    source_to_dest.extend(
+        (f'refs/remotes/{name}', f'refs/remotes/{name}')
+        for name in branch_refs.remote_tracking_branches
+    )
+    ref_targets = [
+        (dest_ref, src.git.rev_parse('--verify', source_ref).strip())
+        for source_ref, dest_ref in source_to_dest
+    ]
+    if ref_targets:
+        _import_local_history_from_object_database(
+            repo=cloned,
+            source_repo=src,
+            commits=(oid for _dest_ref, oid in ref_targets),
+            clone_depth=clone_depth,
+        )
+        for dest_ref, oid in ref_targets:
+            cloned.git.update_ref(dest_ref, oid)
+
+    cloned.git.remote('add', 'origin', str(src_root))
+    log(
+        '[source-archive] copied locally cached branch refs: '
+        f'{len(branch_refs.local_branches)} local, '
+        f'{len(branch_refs.remote_tracking_branches)} remote-tracking'
+    )
+
+
+def _verify_cached_branch_refs(
+    src: 'git.Repo',
+    cloned: 'git.Repo',
+    clone_depth: int | None,
+    branch_refs: BranchRefInventory,
+) -> None:
+    """Verify the exact cached-ref contract before archive serialization."""
+    import git
+
+    source_to_dest = [
+        (f'refs/heads/{name}', f'refs/heads/{name}')
+        for name in branch_refs.local_branches
+    ]
+    source_to_dest.extend(
+        (f'refs/remotes/{name}', f'refs/remotes/{name}')
+        for name in branch_refs.remote_tracking_branches
+    )
+    for source_ref, dest_ref in source_to_dest:
+        expected = src.git.rev_parse('--verify', source_ref).strip()
+        try:
+            actual = cloned.git.rev_parse('--verify', dest_ref).strip()
+        except git.GitCommandError as ex:
+            raise RuntimeError(
+                f'archive checkout lost cached ref {dest_ref}'
+            ) from ex
+        if actual != expected:
+            raise RuntimeError(
+                f'archive checkout cached ref mismatch for {dest_ref}: '
+                f'{actual} != {expected}'
+            )
+        if clone_depth is not None:
+            try:
+                cloned.git.rev_list('--count', dest_ref)
+            except git.GitCommandError as ex:
+                raise RuntimeError(
+                    f'archive checkout cannot traverse shallow ref {dest_ref}'
+                ) from ex
+
+
+def _remove_remote_configs_preserving_refs(repo: 'git.Repo') -> None:
+    """Remove local fetch paths without deleting remote-tracking refs."""
+    import git
+
+    for remote in list(repo.remotes):
+        try:
+            repo.git.config('--remove-section', f'remote.{remote.name}')
+        except git.GitCommandError:
+            pass
+    git_dir = Path(repo.git_dir)
+    (git_dir / 'FETCH_HEAD').unlink(missing_ok=True)
+
 
 def _checkout_commit(
     repo: 'git.Repo',
@@ -1307,6 +1825,7 @@ def _checkout_commit(
     label: str,
     clone_depth: int | None,
     log: '_Logger',
+    source_repo: 'git.Repo',
 ) -> None:
     import git
 
@@ -1315,19 +1834,319 @@ def _checkout_commit(
         return
     except git.GitCommandError:
         log(
-            f'[source-archive] checkout of {label} failed after clone; fetching exact commit'
+            f'[source-archive] checkout of {label} failed after clone; '
+            'recovering exact commit'
         )
 
-    if clone_depth is not None:
+    recovery_errors: list[str] = []
+    source_has_commit = _repo_has_commit(source_repo, commit)
+
+    if source_has_commit:
         try:
-            repo.git.fetch(
-                '--quiet', '--depth', str(clone_depth), 'origin', commit
+            log(
+                f'[source-archive] recovering {label} commit {commit[:12]} '
+                'from local object database'
             )
+            _import_local_history_from_object_database(
+                repo=repo,
+                source_repo=source_repo,
+                commits=(commit,),
+                clone_depth=clone_depth,
+            )
+            repo.git.checkout('-q', '--detach', commit)
+            return
+        except (git.GitCommandError, RuntimeError):
+            recovery_errors.append('local object database recovery failed')
+
+    remote_names = []
+    for remote_name, remote_url in _source_remote_urls(source_repo):
+        remote_names.append(remote_name)
+        try:
+            log(
+                f'[source-archive] recovering {label} commit {commit[:12]} '
+                f'from source remote {remote_name}'
+            )
+            _fetch_exact_commit(
+                repo=repo,
+                source=remote_url,
+                commit=commit,
+                clone_depth=clone_depth,
+            )
+            repo.git.checkout('-q', '--detach', commit)
+            return
         except git.GitCommandError:
-            repo.git.fetch('--quiet', 'origin', commit)
+            recovery_errors.append(
+                f'source remote {remote_name} did not provide the commit'
+            )
+
+    source_head = source_repo.head.commit.hexsha
+    tried = ', '.join(remote_names) if remote_names else '(none configured)'
+    local_state = 'present but recovery failed' if source_has_commit else 'absent'
+    details = '\n'.join(f'  - {item}' for item in recovery_errors)
+    if details:
+        details = '\nRecovery failures:\n' + details
+    raise RuntimeError(
+        f'cannot materialize {label} commit {commit}; source checkout HEAD is '
+        f'{source_head}. Required commit in local object database: '
+        f'{local_state}. Configured source remotes tried: {tried}. The '
+        'committed gitlink cannot be reconstructed; publish the referenced '
+        'commit, update the superproject gitlink, or explicitly exclude the '
+        f'submodule from the archive.{details}'
+    )
+
+
+def _fetch_exact_commit(
+    repo: 'git.Repo',
+    source: str,
+    commit: str,
+    clone_depth: int | None,
+) -> None:
+    """Fetch one exact commit from a source that is willing to advertise it."""
+    fetch_args = ['--quiet', '--no-auto-maintenance']
+    if clone_depth is not None:
+        fetch_args += ['--depth', str(clone_depth)]
+    repo.git.fetch(*fetch_args, source, commit)
+
+
+def _import_local_history_from_object_database(
+    repo: 'git.Repo',
+    source_repo: 'git.Repo',
+    commits: Iterable[str],
+    clone_depth: int | None,
+) -> None:
+    """
+    Import locally present commit histories without using Git transport.
+
+    The source repository already owns the required objects. Treating local
+    state as a fetch remote adds avoidable failure surfaces: ref advertisement,
+    temporary refs, URL/refspec parsing, alternates syntax, and platform path
+    rules. Instead, resolve each requested history slice in the source object
+    database, union the object set, and stream one pack directly into the
+    destination object database.
+
+    This path has no shell, no remote, no URL, and no filesystem path embedded
+    in a Git protocol. Every process boundary is a binary pipe.
+    """
+    commit_list = tuple(dict.fromkeys(commits))
+    if not commit_list:
+        return
+
+    source_root_text = cast(str | None, source_repo.working_tree_dir)
+    destination_root_text = cast(str | None, repo.working_tree_dir)
+    if source_root_text is None or destination_root_text is None:
+        raise RuntimeError('local object recovery requires working-tree repositories')
+    source_root = Path(source_root_text).resolve()
+    destination_root = Path(destination_root_text).resolve()
+
+    if clone_depth is None:
+        selected_commits: tuple[str, ...] | None = None
+        shallow_boundaries: tuple[str, ...] = ()
     else:
-        repo.git.fetch('--quiet', 'origin', commit)
-    repo.git.checkout('-q', '--detach', commit)
+        selected: list[str] = []
+        selected_seen: set[str] = set()
+        boundaries: list[str] = []
+        boundary_seen: set[str] = set()
+        for commit in commit_list:
+            commit_slice, commit_boundaries = _local_history_slice(
+                source_repo,
+                commit,
+                clone_depth,
+            )
+            assert commit_slice is not None
+            for oid in commit_slice:
+                if oid not in selected_seen:
+                    selected_seen.add(oid)
+                    selected.append(oid)
+            for oid in commit_boundaries:
+                if oid not in boundary_seen:
+                    boundary_seen.add(oid)
+                    boundaries.append(oid)
+        selected_commits = tuple(selected)
+        shallow_boundaries = tuple(boundaries)
+
+    rev_args = [
+        'git',
+        'rev-list',
+        '--objects',
+        '--no-object-names',
+    ]
+    rev_input: bytes | None
+    if selected_commits is None:
+        rev_args.extend(commit_list)
+        rev_input = None
+    else:
+        rev_args.extend(['--no-walk', '--stdin'])
+        rev_input = ('\n'.join(selected_commits) + '\n').encode()
+
+    with tempfile.TemporaryFile() as rev_stderr_file, tempfile.TemporaryFile() as pack_stderr_file:
+        rev_proc = subprocess.Popen(
+            rev_args,
+            cwd=source_root,
+            stdin=subprocess.PIPE if rev_input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=rev_stderr_file,
+        )
+        assert rev_proc.stdout is not None
+        pack_proc = subprocess.Popen(
+            ['git', 'pack-objects', '--stdout'],
+            cwd=source_root,
+            stdin=rev_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=pack_stderr_file,
+        )
+        rev_proc.stdout.close()
+        assert pack_proc.stdout is not None
+        index_proc = subprocess.Popen(
+            ['git', 'index-pack', '--stdin'],
+            cwd=destination_root,
+            stdin=pack_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        pack_proc.stdout.close()
+
+        if rev_input is not None:
+            assert rev_proc.stdin is not None
+            try:
+                rev_proc.stdin.write(rev_input)
+            except BrokenPipeError:
+                # Preserve the real rev-list diagnostic below.
+                pass
+            finally:
+                rev_proc.stdin.close()
+
+        _index_stdout, index_stderr = index_proc.communicate()
+        pack_returncode = pack_proc.wait()
+        rev_returncode = rev_proc.wait()
+
+        if rev_returncode or pack_returncode or index_proc.returncode:
+            rev_stderr_file.seek(0)
+            pack_stderr_file.seek(0)
+            rev_stderr = rev_stderr_file.read().decode(errors='replace').strip()
+            pack_stderr = pack_stderr_file.read().decode(errors='replace').strip()
+            index_error = (index_stderr or b'').decode(errors='replace').strip()
+            raise RuntimeError(
+                'local Git object transfer failed: '
+                f'rev-list={rev_returncode} {rev_stderr!r}; '
+                f'pack-objects={pack_returncode} {pack_stderr!r}; '
+                f'index-pack={index_proc.returncode} {index_error!r}'
+            )
+
+    missing_commits = [
+        commit for commit in commit_list if not _repo_has_commit(repo, commit)
+    ]
+    if missing_commits:
+        raise RuntimeError(
+            'local Git object transfer completed without importing commits: '
+            f'{missing_commits}'
+        )
+    if shallow_boundaries:
+        _record_shallow_boundaries(repo, shallow_boundaries)
+
+
+def _local_history_slice(
+    source_repo: 'git.Repo',
+    commit: str,
+    clone_depth: int | None,
+) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """Resolve exact commit generations for local object import.
+
+    ``None`` means full reachable history.  A finite depth is computed by
+    parent generations rather than by command-output count, so merge histories
+    retain the same depth interpretation as a shallow clone.
+    """
+    if clone_depth is None:
+        return None, ()
+    if clone_depth <= 0:
+        raise ValueError(f'clone_depth must be positive or None, got {clone_depth!r}')
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+    parent_map: dict[str, tuple[str, ...]] = {}
+    frontier = [commit]
+    for _generation in range(clone_depth):
+        current: list[str] = []
+        for oid in frontier:
+            if oid not in selected_set:
+                selected_set.add(oid)
+                selected.append(oid)
+                current.append(oid)
+        if not current:
+            break
+
+        source_root = cast(str | None, source_repo.working_tree_dir)
+        if source_root is None:
+            raise RuntimeError('local history slicing requires a working tree')
+        parent_input = ('\n'.join(current) + '\n').encode('ascii')
+        parent_proc = subprocess.run(
+            ['git', 'rev-list', '--parents', '--no-walk', '--stdin'],
+            cwd=source_root,
+            input=parent_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if parent_proc.returncode:
+            error = parent_proc.stderr.decode(errors='replace').strip()
+            raise RuntimeError(
+                f'could not resolve local commit parents: {error}'
+            )
+        text = parent_proc.stdout.decode()
+        next_frontier: list[str] = []
+        for line in text.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            oid, *parents = parts
+            parent_map[oid] = tuple(parents)
+            next_frontier.extend(parents)
+        missing = [oid for oid in current if oid not in parent_map]
+        if missing:
+            raise RuntimeError(
+                f'could not resolve parent metadata for local commits: {missing}'
+            )
+        frontier = next_frontier
+
+    boundaries = tuple(
+        oid
+        for oid in selected
+        if any(parent not in selected_set for parent in parent_map.get(oid, ()))
+    )
+    return tuple(selected), boundaries
+
+
+def _record_shallow_boundaries(repo: 'git.Repo', commits: Iterable[str]) -> None:
+    """Merge imported shallow roots into the destination's shallow file."""
+    raw = repo.git.rev_parse('--git-path', 'shallow').strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        working_tree = cast(str | None, repo.working_tree_dir)
+        if working_tree is None:
+            raise RuntimeError('cannot resolve shallow file for a bare repository')
+        path = Path(working_tree) / path
+    existing = set(path.read_text().splitlines()) if path.exists() else set()
+    existing.update(commits)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(('\n'.join(sorted(existing)) + '\n').encode())
+
+
+def _source_remote_urls(repo: 'git.Repo') -> list[tuple[str, str]]:
+    """Return unique configured fetch URLs from the source repository."""
+    import git
+
+    pairs: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for remote in repo.remotes:
+        try:
+            stdout = repo.git.remote('get-url', '--all', remote.name)
+        except git.GitCommandError:
+            continue
+        for url in stdout.splitlines():
+            url = url.strip()
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                pairs.append((remote.name, url))
+    return pairs
 
 
 def _extract_git_archive(
@@ -1359,16 +2178,37 @@ def _safe_extractall(tar: 'tarfile.TarFile', dst: Path) -> None:
         tar.extractall(path=str(dst))
 
 
-def _append_manifest_exclude(repo_dpath: PathLike) -> None:
+def _normalize_generated_exclude(path: str) -> str:
+    text = os.fspath(path).replace('\\', '/')
+    if not text or '\x00' in text or '\n' in text or '\r' in text:
+        raise ValueError(f'invalid generated exclude path: {path!r}')
+    directory_rule = text.endswith('/')
+    text = text.strip('/')
+    pure = PurePosixPath(text)
+    if not text or any(part in {'.', '..'} for part in pure.parts):
+        raise ValueError(
+            'generated excludes must be archive-root-relative paths without '
+            f'traversal: {path!r}'
+        )
+    normalized = '/' + pure.as_posix()
+    if directory_rule:
+        normalized += '/'
+    return normalized
+
+
+def _append_generated_excludes(
+    repo_dpath: PathLike, rules: Iterable[str]
+) -> None:
     info = Path(repo_dpath) / '.git' / 'info'
     if info.exists():
         exclude = info / 'exclude'
-        rule = f'/{_ARCHIVE_INFO_FNAME}'
         existing = exclude.read_text() if exclude.exists() else ''
-        if rule not in existing.splitlines():
+        existing_rules = set(existing.splitlines())
+        missing = [rule for rule in rules if rule not in existing_rules]
+        if missing:
             block = (
                 '\n# Added by git-well archive_source for generated metadata.\n'
-                f'{rule}\n'
+                + ''.join(f'{rule}\n' for rule in missing)
             )
             with exclude.open('a') as file:
                 file.write(block)
@@ -1405,7 +2245,8 @@ def _write_manifest(
     short_sha: str,
     include_git_history: bool,
     clone_depth: int | None,
-    submodule_decisions: list[SubmoduleArchiveDecision],
+    branch_refs: BranchRefInventory | None,
+    submodule_decisions: Sequence[SubmoduleArchiveDecision],
     redact_local_paths: bool,
 ) -> None:
     from git_well import __version__
@@ -1461,12 +2302,36 @@ def _write_manifest(
         f'Superproject commit: {head_sha}',
         f'Superproject short commit: {short_sha}',
         f'Superproject history: {superproject_history}',
+        'Superproject branches: '
+        + (
+            'all locally cached local and remote-tracking branches'
+            if branch_refs is not None
+            else 'current HEAD history only'
+        ),
         '',
         f'Content pruning: {"yes" if pruning_details else "none"}',
     ]
     if pruning_details:
         lines.append('Pruning details:')
         lines.extend(f'- {detail}' for detail in pruning_details)
+    if branch_refs is not None:
+        lines += [
+            '',
+            'Remote network access during archive: none',
+            '',
+            'Local branches:',
+        ]
+        if branch_refs.local_branches:
+            lines.extend(f'- {name}' for name in branch_refs.local_branches)
+        else:
+            lines.append('(none)')
+        lines += ['', 'Remote-tracking branches:']
+        if branch_refs.remote_tracking_branches:
+            lines.extend(
+                f'- {name}' for name in branch_refs.remote_tracking_branches
+            )
+        else:
+            lines.append('(none)')
 
     lines += ['', 'Submodules:']
     if submodule_decisions:
@@ -1551,6 +2416,11 @@ class _Logger:
     def __call__(self, msg: str) -> None:
         if self.verbose:
             print(msg)
+
+    def warning(self, msg: str) -> None:
+        import sys
+
+        print(msg, file=sys.stderr)
 
     def path(self, prefix: str, path: PathLike, suffix: str = '') -> None:
         if self.verbose:

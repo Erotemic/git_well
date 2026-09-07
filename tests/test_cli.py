@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 
@@ -178,6 +179,7 @@ def test_archive_source_cli_options():
             '--exclude-submodule',
             'external/big-data',
             '--no-submodules',
+            '--all-branches',
             '--redact-local-paths',
         ],
         strict=True,
@@ -185,6 +187,7 @@ def test_archive_source_cli_options():
     assert str(config.submodule_depth) == '{"*": 0, special/submod: 100}'
     assert config.exclude_submodule == ['external/big-data']
     assert config.submodules is False
+    assert config.all_branches is True
     assert config.redact_local_paths is True
 
 
@@ -295,6 +298,485 @@ def test_archive_source_with_history(tmp_path):
     info_text = _tar_manifest_text(archive)
     assert 'Superproject history: full' in info_text
     assert 'Content pruning: none' in info_text
+
+
+def test_archive_source_programmatic_hooks(tmp_path):
+    """Prepare hooks enrich the tree before validation and serialization."""
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_hooks'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    events = []
+    observed = {}
+
+    def prepare_first(context):
+        events.append('prepare-first')
+        observed['stage'] = context.stage_dpath
+        assert context.depth == 0
+        assert context.include_git_history is False
+        (context.archive_root / 'generated.txt').write_text('generated\n')
+
+    def prepare_second(context):
+        events.append('prepare-second')
+        assert (context.archive_root / 'generated.txt').exists()
+
+    def validate(context):
+        events.append('validate')
+        assert context.manifest_path.exists()
+        assert (context.archive_root / 'generated.txt').exists()
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'hooked-source.tar.gz',
+        depth=0,
+        prepare=[prepare_first, prepare_second],
+        validate=validate,
+        archive_root_name='custom-source-root',
+        verbose=0,
+    )
+
+    assert events == ['prepare-first', 'prepare-second', 'validate']
+    assert not observed['stage'].exists()
+    with tarfile.open(archive, 'r:gz') as tar:
+        names = set(tar.getnames())
+    assert 'custom-source-root/generated.txt' in names
+    assert 'custom-source-root/GIT_WELL_ARCHIVE_INFO.txt' in names
+
+
+def test_archive_source_hook_generated_excludes(tmp_path):
+    """Generated hook payloads can keep staged Git checkouts clean."""
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_hook_excludes'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    def prepare(context):
+        generated = context.archive_root / '.agent' / 'index.json'
+        generated.parent.mkdir()
+        generated.write_text('{}\n')
+        context.add_generated_excludes('.agent/')
+
+    def validate(context):
+        status = ub.cmd(
+            ['git', 'status', '--short'],
+            cwd=context.archive_root,
+            check=True,
+        )
+        assert _stdout_text(status).strip() == ''
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'hook-excludes.tar.gz',
+        prepare=prepare,
+        validate=validate,
+        verbose=0,
+    )
+
+    extract = tmp_path / 'hook-excludes-extract'
+    with tarfile.open(archive, 'r:gz') as tar:
+        try:
+            tar.extractall(extract, filter='fully_trusted')
+        except TypeError:
+            tar.extractall(extract)
+    unpacked = next(extract.iterdir())
+    exclude_text = (unpacked / '.git' / 'info' / 'exclude').read_text()
+    assert exclude_text.count('/GIT_WELL_ARCHIVE_INFO.txt') == 1
+    assert exclude_text.count('/.agent/') == 1
+    assert (unpacked / '.agent' / 'index.json').exists()
+
+
+def test_archive_source_hook_failure_aborts_and_cleans(tmp_path):
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import (
+        ArchiveSourceHookError,
+        archive_source,
+    )
+
+    repo = tmp_path / 'demo_hook_failure'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    output = tmp_path / 'should-not-exist.tar.gz'
+    observed = {}
+
+    def broken_prepare(context):
+        observed['stage'] = context.stage_dpath
+        raise ValueError('deliberate failure')
+
+    with pytest.raises(ArchiveSourceHookError) as exc_info:
+        archive_source(
+            repo_dpath=repo,
+            output=output,
+            depth=0,
+            prepare=broken_prepare,
+            verbose=0,
+        )
+
+    error = exc_info.value
+    assert error.phase == 'prepare'
+    assert error.hook is broken_prepare
+    assert error.hook_name.endswith('broken_prepare')
+    assert isinstance(error.__cause__, ValueError)
+    assert error.stage_dpath == observed['stage']
+    assert error.stage_retained is False
+    assert not output.exists()
+    assert not observed['stage'].exists()
+
+
+def test_archive_source_hook_failure_can_retain_stage(tmp_path):
+    import shutil
+
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import (
+        ArchiveSourceHookError,
+        archive_source,
+    )
+
+    repo = tmp_path / 'demo_hook_retained_failure'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    def broken_validate(context):
+        raise ValueError('inspect retained stage')
+
+    try:
+        with pytest.raises(ArchiveSourceHookError) as exc_info:
+            archive_source(
+                repo_dpath=repo,
+                output=tmp_path / 'retained-failure.tar.gz',
+                depth=0,
+                validate=broken_validate,
+                keep_stage=True,
+                verbose=0,
+            )
+        error = exc_info.value
+        assert error.phase == 'validate'
+        assert error.stage_retained is True
+        assert error.stage_dpath.exists()
+        assert error.archive_root.exists()
+        assert error.archive_root.joinpath(
+            'GIT_WELL_ARCHIVE_INFO.txt'
+        ).exists()
+    finally:
+        if 'error' in locals():
+            shutil.rmtree(error.stage_dpath.parent, ignore_errors=True)
+
+
+def test_stage_source_archive_direct_api(tmp_path):
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import stage_source_archive
+
+    repo = tmp_path / 'demo_direct_stage'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    output = tmp_path / 'direct-stage.tar.gz'
+    with stage_source_archive(
+        repo_dpath=repo,
+        output=output,
+        depth=0,
+        archive_root_name='direct-root',
+        verbose=0,
+    ) as context:
+        stage = context.stage_dpath
+        assert context.archive_root == stage / 'direct-root'
+        (context.archive_root / 'direct.txt').write_text('direct\n')
+        assert context.write_archive() == output
+
+    assert not stage.exists()
+    with tarfile.open(output, 'r:gz') as tar:
+        names = set(tar.getnames())
+    assert 'direct-root/direct.txt' in names
+
+
+def test_archive_source_all_branches_preserves_cached_refs(tmp_path):
+    """Archive locally fetched contributor refs without contacting remotes."""
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+    default_branch = _stdout_text(
+        ub.cmd(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+        )
+    ).strip()
+    head_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=repo, check=True)
+    ).strip()
+
+    ub.cmd(['git', 'checkout', '-b', 'local-review'], cwd=repo, check=True)
+    (repo / 'local-review.txt').write_text('local branch\n')
+    ub.cmd(['git', 'add', 'local-review.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'local review'], cwd=repo, check=True)
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+
+    contributor = tmp_path / 'contributor.git'
+    ub.cmd(['git', 'init', '--bare', str(contributor)], check=True)
+    ub.cmd(
+        ['git', 'remote', 'add', 'contributor', str(contributor)],
+        cwd=repo,
+        check=True,
+    )
+    ub.cmd(['git', 'checkout', '-b', 'temporary-pr'], cwd=repo, check=True)
+    (repo / 'contributor.txt').write_text('pull request branch\n')
+    ub.cmd(['git', 'add', 'contributor.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'contributor change'], cwd=repo, check=True)
+    ub.cmd(
+        ['git', 'push', 'contributor', 'HEAD:refs/heads/pr/topic'],
+        cwd=repo,
+        check=True,
+    )
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+    ub.cmd(['git', 'branch', '-D', 'temporary-pr'], cwd=repo, check=True)
+    ub.cmd(['git', 'fetch', 'contributor'], cwd=repo, check=True)
+    ub.cmd(
+        [
+            'git',
+            'update-ref',
+            'refs/remotes/origin/review-copy',
+            'refs/remotes/contributor/pr/topic',
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    # A broken configured URL proves archive_source only copies locally cached
+    # refs and does not contact the contributor remote.
+    ub.cmd(
+        ['git', 'remote', 'set-url', 'contributor', str(tmp_path / 'missing')],
+        cwd=repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches.tar.gz',
+        all_branches=True,
+        verbose=0,
+    )
+    unpacked = _extract_tar_root(archive, tmp_path / 'all-branches-extract')
+
+    refs_info = ub.cmd(
+        [
+            'git',
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/heads',
+            'refs/remotes',
+        ],
+        cwd=unpacked,
+        check=True,
+    )
+    refs = set(_stdout_text(refs_info).splitlines())
+    assert f'refs/heads/{default_branch}' in refs
+    assert 'refs/heads/local-review' in refs
+    assert 'refs/heads/temporary-pr' not in refs
+    assert 'refs/remotes/contributor/pr/topic' in refs
+    assert 'refs/remotes/origin/review-copy' in refs
+
+    archived_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=unpacked, check=True)
+    ).strip()
+    assert archived_head == head_sha
+    symbolic_head = ub.cmd(
+        ['git', 'symbolic-ref', '-q', 'HEAD'], cwd=unpacked, check=False
+    )
+    assert symbolic_head.returncode != 0
+    contributor_text = _stdout_text(
+        ub.cmd(
+            ['git', 'show', 'contributor/pr/topic:contributor.txt'],
+            cwd=unpacked,
+            check=True,
+        )
+    )
+    assert contributor_text == 'pull request branch\n'
+
+    info_text = _tar_manifest_text(archive)
+    assert 'Superproject branches: all locally cached' in info_text
+    assert 'Remote network access during archive: none' in info_text
+    assert '- local-review' in info_text
+    assert '- contributor/pr/topic' in info_text
+
+    redacted_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches-redacted.tar.gz',
+        all_branches=True,
+        redact_local_paths=True,
+        verbose=0,
+    )
+    redacted = _extract_tar_root(
+        redacted_archive, tmp_path / 'all-branches-redacted-extract'
+    )
+    redacted_refs_info = ub.cmd(
+        [
+            'git',
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/remotes',
+        ],
+        cwd=redacted,
+        check=True,
+    )
+    redacted_refs = set(_stdout_text(redacted_refs_info).splitlines())
+    assert 'refs/remotes/contributor/pr/topic' in redacted_refs
+    assert 'refs/remotes/origin/review-copy' in redacted_refs
+    remotes = _stdout_text(
+        ub.cmd(['git', 'remote'], cwd=redacted, check=True)
+    ).strip()
+    assert remotes == ''
+    assert str(repo.resolve()) not in (redacted / '.git' / 'config').read_text()
+    assert not (redacted / '.git' / 'FETCH_HEAD').exists()
+
+
+def test_archive_source_all_branches_shallow_depth(tmp_path):
+    """Apply --depth independently from every included branch tip."""
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches_shallow'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+    default_branch = _stdout_text(
+        ub.cmd(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            cwd=repo,
+            check=True,
+        )
+    ).strip()
+    ub.cmd(['git', 'checkout', '-b', 'topic'], cwd=repo, check=True)
+    for index in range(3):
+        (repo / 'topic.txt').write_text(f'{index}\n')
+        ub.cmd(['git', 'add', 'topic.txt'], cwd=repo, check=True)
+        ub.cmd(['git', 'commit', '-m', f'topic {index}'], cwd=repo, check=True)
+    topic_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'topic'], cwd=repo, check=True)
+    ).strip()
+    ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'all-branches-shallow.tar.gz',
+        depth=1,
+        all_branches=True,
+        verbose=0,
+    )
+    # On Windows, exercise a packed-object path beyond the traditional
+    # MAX_PATH boundary without making the repository directory itself too
+    # long for Python 3.10's CreateProcess ``cwd`` handling. Git must be able
+    # to start in the checkout and then use the archive-local long-path config
+    # while opening deeper object paths.
+    if os.name == 'nt':
+        import tarfile
+
+        with tarfile.open(archive, 'r:gz') as tar:
+            root_names = {
+                name.split('/', 1)[0] for name in tar.getnames() if name
+            }
+        assert len(root_names) == 1
+        archive_root_name = next(iter(root_names))
+        target_unpack_len = 220
+        fixed_len = len(str(tmp_path.resolve())) + 2 + len(archive_root_name)
+        padding_len = max(1, target_unpack_len - fixed_len)
+        extract_dpath = tmp_path / ('x' * padding_len)
+    else:
+        extract_dpath = tmp_path / 'all-branches-shallow-extract'
+
+    unpacked = _extract_tar_root(archive, extract_dpath)
+    longpaths = _stdout_text(
+        ub.cmd(
+            ['git', 'config', '--local', '--get', 'core.longpaths'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert longpaths == 'true'
+    if os.name == 'nt':
+        unpacked_text = str(unpacked.resolve())
+        representative_pack = str(
+            unpacked
+            / '.git'
+            / 'objects'
+            / 'pack'
+            / ('pack-' + ('0' * 40) + '.pack')
+        )
+        assert len(unpacked_text) < 240
+        assert len(representative_pack) > 260
+    archived_topic = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', '--verify', 'refs/heads/topic'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert archived_topic == topic_head
+    count = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-list', '--count', 'refs/heads/topic'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert count == '1'
+
+
+def test_archive_source_all_branches_rejects_source_only(tmp_path):
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_all_branches_source_only'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+
+    with pytest.raises(ValueError, match='--all-branches requires Git history'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'invalid.tar.gz',
+            depth=0,
+            all_branches=True,
+            verbose=0,
+        )
 
 
 def test_archive_source_info_paths_status_and_redaction(tmp_path):
@@ -467,6 +949,17 @@ def _make_repo_with_submodules(tmp_path, submodules):
             cwd=super_repo,
             check=True,
         )
+        sub_checkout = super_repo / path
+        ub.cmd(
+            ['git', 'config', 'user.email', 'test@example.com'],
+            cwd=sub_checkout,
+            check=True,
+        )
+        ub.cmd(
+            ['git', 'config', 'user.name', 'Test User'],
+            cwd=sub_checkout,
+            check=True,
+        )
     _commit_all(super_repo, 'add submodules')
     return super_repo
 
@@ -559,6 +1052,204 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
     assert 'path: external/lib' in manifest_text
     assert 'history: source-only (depth 0)' in manifest_text
     assert 'Content pruning: yes' in manifest_text
+
+
+def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'local_recovery_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib': sub_repo}
+    )
+    sub_checkout = super_repo / 'external/lib'
+    committed_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_checkout, check=True)
+    ).strip()
+
+    ub.cmd(
+        ['git', 'checkout', '--orphan', 'replacement'],
+        cwd=sub_checkout,
+        check=True,
+    )
+    ub.cmd(['git', 'rm', '-rf', '.'], cwd=sub_checkout, check=True)
+    (sub_checkout / 'replacement.txt').write_text('replacement\n')
+    _commit_all(sub_checkout, 'replacement history')
+    replacement_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_checkout, check=True)
+    ).strip()
+
+    for ref in ['refs/heads/master', 'refs/remotes/origin/master']:
+        ub.cmd(
+            ['git', 'update-ref', '-d', ref],
+            cwd=sub_checkout,
+            check=False,
+        )
+    ub.cmd(['git', 'remote', 'remove', 'origin'], cwd=sub_checkout, check=True)
+
+    assert committed_sha != replacement_sha
+    ub.cmd(
+        ['git', 'cat-file', '-e', f'{committed_sha}^{{commit}}'],
+        cwd=sub_checkout,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'local-recovery.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+
+    extracted_root = _extract_tar_root(archive, tmp_path / 'local-extracted')
+    archived_submodule = extracted_root / 'external/lib'
+    archived_sha = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_sha == committed_sha
+    assert (archived_submodule / 'tracked.txt').read_text() == 'submodule\n'
+    archived_count = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-list', '--count', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_count == '1'
+
+
+def test_archive_source_recovers_submodule_commit_from_source_remote(tmp_path):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    remote_work = _make_submodule_repo(tmp_path, 'remote_recovery_work')
+    committed_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=remote_work, check=True)
+    ).strip()
+    ub.cmd(['git', 'branch', 'archive-required', committed_sha], cwd=remote_work, check=True)
+    (remote_work / 'tracked.txt').write_text('new tip\n')
+    _commit_all(remote_work, 'advance default branch')
+
+    remote_bare = tmp_path / 'remote_recovery.git'
+    ub.cmd(['git', 'clone', '--bare', str(remote_work), str(remote_bare)], check=True)
+
+    super_repo = tmp_path / 'remote_super'
+    _init_demo_repo(super_repo)
+    (super_repo / 'root.txt').write_text('root\n')
+    _commit_all(super_repo, 'initial superproject content')
+    (super_repo / '.gitmodules').write_text(
+        '[submodule "external/lib"]\n'
+        '\tpath = external/lib\n'
+        f'\turl = {remote_bare.as_uri()}\n'
+    )
+    (super_repo / 'external').mkdir()
+    ub.cmd(
+        [
+            'git',
+            'clone',
+            '--depth',
+            '1',
+            remote_bare.as_uri(),
+            'lib',
+        ],
+        cwd=super_repo / 'external',
+        check=True,
+    )
+    ub.cmd(['git', 'add', '.gitmodules'], cwd=super_repo, check=True)
+    ub.cmd(
+        [
+            'git',
+            'update-index',
+            '--add',
+            '--cacheinfo',
+            f'160000,{committed_sha},external/lib',
+        ],
+        cwd=super_repo,
+        check=True,
+    )
+    ub.cmd(
+        ['git', 'commit', '-m', 'record older submodule commit'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    local_submodule = super_repo / 'external/lib'
+    missing = ub.cmd(
+        ['git', 'cat-file', '-e', f'{committed_sha}^{{commit}}'],
+        cwd=local_submodule,
+        check=False,
+    )
+    assert missing.returncode != 0
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'remote-recovery.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+
+    extracted_root = _extract_tar_root(archive, tmp_path / 'remote-extracted')
+    archived_submodule = extracted_root / 'external/lib'
+    archived_sha = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=archived_submodule,
+            check=True,
+        )
+    ).strip()
+    assert archived_sha == committed_sha
+    assert (archived_submodule / 'tracked.txt').read_text() == 'submodule\n'
+
+
+def test_archive_source_warns_and_omits_uninitialized_submodule(
+    tmp_path, capsys
+):
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'uninitialized_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/uninitialized': sub_repo}
+    )
+    ub.cmd(
+        ['git', 'submodule', 'deinit', '-f', 'external/uninitialized'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'uninitialized-submodule.tar.gz',
+        depth=1,
+        verbose=0,
+    )
+
+    captured = capsys.readouterr()
+    assert '[source-archive] WARNING: omitting submodule' in captured.err
+    assert 'external/uninitialized: not initialized locally' in captured.err
+    assert 'git submodule update --init --recursive' in captured.err
+
+    names = _tar_names(archive)
+    assert not any(
+        name.endswith('/external/uninitialized/tracked.txt')
+        for name in names
+    )
+
+    manifest_text = _tar_manifest_text(archive)
+    assert 'Content pruning: yes' in manifest_text
+    assert 'path: external/uninitialized' in manifest_text
+    assert 'status: omitted' in manifest_text
+    assert 'history: omitted' in manifest_text
+    assert 'reason: not initialized locally' in manifest_text
 
 
 def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
@@ -815,3 +1506,32 @@ def test_archive_source_no_submodules(tmp_path):
     assert 'Content pruning: yes' in manifest_text
     assert 'path: external/lib' in manifest_text
     assert 'reason: omitted by --no-submodules' in manifest_text
+
+
+def test_standard_short_aliases_and_verbose_counters(capsys):
+    from git_well import __version__
+    from git_well.git_archive_source import ArchiveSourceCLI
+    from git_well.git_branch_cleanup import CleanDevBranchConfig
+    from git_well.git_squash import GitSquashCLI
+    from git_well.git_squash_streaks import SquashStreakCLI
+    from git_well.git_sync import GitSyncCLI
+    from git_well.git_track_upstream import TrackUpstreamCLI
+    from git_well.git_url_components import GitUrlComponentsCLI
+    from git_well.main import GitWellModalCLI
+    from git_well.patchdir.git_patchdir_apply import GitApplyPatchCLI
+
+    assert GitSyncCLI.cli(argv=['example.com', '-f']).force is True
+    assert GitSyncCLI.cli(argv=['example.com', '-n']).dry is True
+    assert TrackUpstreamCLI.cli(argv=['-f']).force is True
+    assert CleanDevBranchConfig.cli(argv=['-y']).yes is True
+    assert GitApplyPatchCLI.cli(argv=['-n']).dry is True
+
+    assert GitUrlComponentsCLI.cli(argv=['-vv']).verbose == 2
+    assert ArchiveSourceCLI.cli(argv=['-vv']).verbose == 3
+    assert GitSquashCLI.cli(argv=['-vv']).verbose == 3
+    assert SquashStreakCLI.cli(argv=['-vv']).verbose == 3
+
+    modal = GitWellModalCLI(version=__version__)
+    assert modal.main(argv=['-V']) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == __version__

@@ -95,6 +95,239 @@ The tools in this module are derived from:
 
 
 
+Archiving pull-request review state
+-----------------------------------
+
+``git archive-source`` normally archives the committed checkout and the
+history reachable from the current ``HEAD``. When reviewing a pull request
+from a contributor fork, use ``--all-branches`` to also preserve every local
+branch and every remote-tracking branch that has already been fetched into the
+superproject repository:
+
+.. code:: bash
+
+   git remote add contributor git@github.com:contributor/project.git
+   git fetch contributor
+   git archive-source --all-branches
+
+The archive operation itself does not contact ``origin``, ``contributor``, or
+any other configured remote. It copies the locally cached ``refs/heads/*`` and
+``refs/remotes/*`` state, so the unpacked archive can run commands such as
+``git branch --all``, ``git log contributor/topic``, and
+``git diff main...contributor/topic`` even if the original fork is no longer
+reachable. The archived working tree remains detached at the exact original
+``HEAD`` commit. ``--all-branches`` is opt-in, applies to the superproject,
+honors positive ``--depth`` values from each included branch tip, and cannot
+be combined with source-only ``--depth 0`` archives.
+
+Repository-specific archivers can extend the same staging machinery through
+the Python API. Prepare hooks may add generated payloads to the committed
+checkout, while validation hooks run after git-well writes its metadata and
+immediately before serialization:
+
+.. code:: python
+
+   from git_well.git_archive_source import archive_source
+
+   def prepare(context):
+       report = context.archive_root / 'PROJECT_ARCHIVE_REPORT.txt'
+       report.write_text('project-specific report\n')
+       context.add_generated_excludes('PROJECT_ARCHIVE_REPORT.txt')
+
+   def validate(context):
+       assert context.manifest_path.exists()
+
+   archive_source(
+       repo_dpath='.',
+       depth=100,
+       prepare=prepare,
+       validate=validate,
+   )
+
+For workflows that need direct control, ``stage_source_archive()`` exposes the
+same context manager before metadata finalization and archive writing. These
+extension points are programmatic only; the command-line interface does not
+execute arbitrary hooks.
+
+
+Bounded active history with Git epochs
+--------------------------------------
+
+``git epoch`` periodically moves an exact retired Git epoch into a separate
+history-store repository and replaces the active branch with a new root commit
+that represents the same checkout. Ordinary clones then receive only the
+current epoch, while the archived commits keep their original object IDs,
+merge topology, tags, trees, and blobs.
+
+Initialize a repository without changing its active refs:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store ../ambition-history.git \
+       --config-only
+
+For a remote history store, also write a committed clone-visible locator before
+planning the first rollover. The history-store ID is stable even if the archive
+URL later moves:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store git@github.com:Erotemic/ambition-history.git \
+       --history-store-id ambition-history \
+       --public-history-url https://github.com/Erotemic/ambition-history.git \
+       --public-history-browse-url https://github.com/Erotemic/ambition-history \
+       --config-only
+   git add .git-epoch.yaml
+   git commit -m "Record Git epoch history location"
+
+A checkpoint using a remote history store refuses to proceed until this file is
+committed and agrees with the local repository/store identity.
+
+For managed submodules, initialize the child repositories as well and classify
+each superproject occurrence before a recursive checkpoint:
+
+.. code:: bash
+
+   git epoch configure-submodule renderer epoch --repository renderer
+   git epoch configure-submodule third_party/upstream external
+
+Before touching production remotes, the same workflow can be rehearsed against
+disposable local bare remotes. ``sandbox create`` clones the current checked-out
+state, removes non-sandbox remotes from those clones, and records the original
+URLs only as metadata. ``sandbox publish`` rechecks containment immediately
+before rewriting refs:
+
+.. code:: bash
+
+   SANDBOX_DPATH=$(mktemp -d "${TMPDIR:-/tmp}/git-well-epoch-sandbox.XXXXXX")
+   git epoch sandbox create --recursive --all-submodules=epoch \
+       --output "$SANDBOX_DPATH"
+   git epoch sandbox run "$SANDBOX_DPATH" --bundle
+
+The staged ``sandbox plan``, ``sandbox apply``, ``sandbox publish``, and
+``sandbox verify`` commands expose the same phases when the rehearsal should be
+inspected between steps. Verification fresh-clones every repository using only
+sandbox remotes and composes those clones at the translated gitlinks. Git admin
+directories are kept flat and separate from the recursive worktree, avoiding
+platform path growth while still checking the combined parent/submodule tree.
+
+Use ``git epoch stats`` to inspect the physical local history store and each
+archived epoch. The report separates shared-store bytes from standalone bundle
+bytes because epochs can share Git objects. In a sandbox, ``sandbox stats`` also
+reports active bare-remote sizes and the recursive fresh-clone size; add
+``--source-archive`` to build and measure the same full-history ``tar.gz`` shape
+used by ``archive_source``:
+
+.. code:: bash
+
+   git epoch sandbox stats "$SANDBOX_DPATH"
+   git epoch sandbox stats "$SANDBOX_DPATH" --source-archive
+
+Run ``git epoch gc`` from a managed sandbox worktree when you also want to
+measure repacking savings. It reports before/after file bytes and allocated
+filesystem bytes, then deep-verifies the archive after packing.
+
+A checkpoint can be split into an inspectable, resumable preparation and a
+separate publication step. Keep the plan outside the worktree so writing it
+does not make the checkpoint immediately dirty:
+
+.. code:: bash
+
+   CUTOVER_DPATH="$HOME/ambition-epoch-cutover"
+   mkdir -p "$CUTOVER_DPATH"
+   PLAN="$CUTOVER_DPATH/checkpoint.yaml"
+
+   git epoch plan --recursive --bundle -o "$PLAN"
+   git epoch apply "$PLAN"
+   git epoch inspect
+   git epoch publish --plan "$PLAN"
+
+``apply``, ``publish``, and deep verification print elapsed-time progress to
+stderr by default while keeping their YAML result on stdout. Pass ``--quiet``
+when scripting without progress output. Archive refs are pushed per repository
+in one atomic batch, and deep verification fetches each repository's archived
+refs in one batch before one ``git fsck``.
+
+``apply`` archives and verifies the retiring epoch before any active branch is
+rewritten. Until ``publish`` succeeds, manifest entries are marked
+``prepared``. Use ``git epoch abort --plan "$PLAN"`` to discard a prepared
+transaction before any successor branch has been adopted.
+
+After publication, verify the archive and reconstruct archaeology checkouts as
+needed:
+
+.. code:: bash
+
+   git epoch verify --deep
+   git epoch reconstruct --recursive -o ../ambition-history-view
+
+Publication also maintains a human-facing ``main`` branch in the history store
+and mirrors committed archived branches/tags under ``archive/...`` refs. The
+canonical machine authorities remain ``refs/meta/main`` and ``refs/epochs/...``.
+For a history store created by an older git-epoch version, backfill those
+browsing views idempotently with:
+
+.. code:: bash
+
+   git epoch history-sync
+
+A normal clone of the history repository can then browse archived branches
+without custom refspecs. ``main`` contains a generated ``README.md`` and
+``archive-index.yaml`` explaining the store and mapping the canonical refs to
+the browsing refs.
+
+Once publication and verification are complete, an existing active checkout may
+still contain unreachable retired objects through its reflog. ``compact``
+validates the published lineage, expires only unreachable reflog entries, runs
+``git gc --prune=now``, and reports before/after Git-directory sizes:
+
+.. code:: bash
+
+   git epoch compact --recursive
+
+Reconstruction fetches the exact archived commits and creates local
+``refs/replace`` objects that connect each successor root to its recorded
+predecessor. The archived commit objects themselves are not rewritten.
+
+A successor root records immutable lineage and the logical history-store ID,
+not a machine-local archive path. ``.git-epoch.yaml`` supplies the movable public
+locator. A fresh clone can therefore explain its split history immediately:
+
+.. code:: bash
+
+   git epoch status
+   git epoch inspect
+
+``status`` does not contact the public archive when local attachment is absent.
+``inspect`` and ``reconstruct`` may use the committed public locator read-only.
+To create machine-local management state, validate and attach the archive:
+
+.. code:: bash
+
+   git epoch attach
+
+Maintainers may override the public fetch URL with a writable/local endpoint
+while keeping the same logical store identity:
+
+.. code:: bash
+
+   git epoch attach --history-store git@github.com:Erotemic/ambition-history.git
+
+Attachment verifies the public locator, successor-root trailers, archive
+manifest, successor commit/tree, and predecessor commit/tree before writing
+``.git/epoch/config.yaml``.
+
+Version one intentionally requires SHA-1 repositories and a clean single
+worktree. By default checkpoint planning refuses extra active branches because
+they would keep the retired epoch reachable. Maintainers can explicitly use
+``--retire-extra-branches`` to archive those branch tips under their original
+names and delete the auxiliary active refs atomically during publication. See
+``docs/planning/git_epoch.md`` for the data model, safety invariants, recursive
+submodule semantics, and deferred scope.
+
+
 Tracking large files with IPFS
 ------------------------------
 
