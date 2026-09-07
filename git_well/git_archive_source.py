@@ -1667,6 +1667,22 @@ def _clone_committed_checkout(
         source_repo=src,
     )
 
+    # Compact only the initial clone. Cached branch refs and any additional
+    # shallow boundaries are final archive state, so install them after Git
+    # maintenance. In particular, this prevents ``git gc`` / ``pack-refs``
+    # from changing the representation of refs that archive_source promises
+    # to preserve.
+    try:
+        cloned.git.reflog(
+            'expire', '--expire=now', '--expire-unreachable=now', '--all'
+        )
+    except git.GitCommandError:
+        pass
+    try:
+        cloned.git.gc('--prune=now', '--quiet')
+    except git.GitCommandError:
+        pass
+
     if branch_refs is not None:
         _copy_cached_branch_refs(
             src=src,
@@ -1679,19 +1695,13 @@ def _clone_committed_checkout(
     if redact_local_paths:
         _remove_remote_configs_preserving_refs(cloned)
 
-    # The archive is for inspection, not local recovery. Expire the clone's
-    # fresh reflogs so they do not keep extra objects alive, then repack to make
-    # the archived .git directory reasonably small.
-    try:
-        cloned.git.reflog(
-            'expire', '--expire=now', '--expire-unreachable=now', '--all'
+    if branch_refs is not None:
+        _verify_cached_branch_refs(
+            src=src,
+            cloned=cloned,
+            clone_depth=clone_depth,
+            branch_refs=branch_refs,
         )
-    except git.GitCommandError:
-        pass
-    try:
-        cloned.git.gc('--prune=now', '--quiet')
-    except git.GitCommandError:
-        pass
 
 
 def _copy_cached_branch_refs(
@@ -1741,6 +1751,45 @@ def _copy_cached_branch_refs(
         f'{len(branch_refs.local_branches)} local, '
         f'{len(branch_refs.remote_tracking_branches)} remote-tracking'
     )
+
+
+def _verify_cached_branch_refs(
+    src: 'git.Repo',
+    cloned: 'git.Repo',
+    clone_depth: int | None,
+    branch_refs: BranchRefInventory,
+) -> None:
+    """Verify the exact cached-ref contract before archive serialization."""
+    import git
+
+    source_to_dest = [
+        (f'refs/heads/{name}', f'refs/heads/{name}')
+        for name in branch_refs.local_branches
+    ]
+    source_to_dest.extend(
+        (f'refs/remotes/{name}', f'refs/remotes/{name}')
+        for name in branch_refs.remote_tracking_branches
+    )
+    for source_ref, dest_ref in source_to_dest:
+        expected = src.git.rev_parse('--verify', source_ref).strip()
+        try:
+            actual = cloned.git.rev_parse('--verify', dest_ref).strip()
+        except git.GitCommandError as ex:
+            raise RuntimeError(
+                f'archive checkout lost cached ref {dest_ref}'
+            ) from ex
+        if actual != expected:
+            raise RuntimeError(
+                f'archive checkout cached ref mismatch for {dest_ref}: '
+                f'{actual} != {expected}'
+            )
+        if clone_depth is not None:
+            try:
+                cloned.git.rev_list('--count', dest_ref)
+            except git.GitCommandError as ex:
+                raise RuntimeError(
+                    f'archive checkout cannot traverse shallow ref {dest_ref}'
+                ) from ex
 
 
 def _remove_remote_configs_preserving_refs(repo: 'git.Repo') -> None:

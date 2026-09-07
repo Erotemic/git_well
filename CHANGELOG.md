@@ -30,6 +30,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Make the Git epoch subprocess boundary encode all string stdin as bytes before invoking Git, so line-oriented plumbing cannot acquire CRLF terminators on Windows regardless of the caller.
 * Keep Git epoch batched local ref publication compatible with Git for Windows by using the portable `update-ref --stdin` batch form.
 * Materialize cached archive-source branch refs by direct local object import and local ref creation, removing Git transport/refspec parsing from local branch preservation on every platform.
+* Finalize cached archive-source refs after clone maintenance and verify their exact OIDs and shallow traversal before serialization, so maintenance cannot invalidate the archive ref contract.
 * Recover unadvertised local archive-source commits by streaming Git objects directly from the source object database instead of constructing an alternates-backed temporary fetch remote.
 * Make sandbox verification generation-scoped so a locked pack file from an earlier Windows verification run cannot block a later run.
 * Compose recursive sandbox verification from independent fresh clones with flat separate Git admin directories, preventing nested `.git/modules/...` path growth on Windows.

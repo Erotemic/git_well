@@ -685,6 +685,9 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
         (repo / 'topic.txt').write_text(f'{index}\n')
         ub.cmd(['git', 'add', 'topic.txt'], cwd=repo, check=True)
         ub.cmd(['git', 'commit', '-m', f'topic {index}'], cwd=repo, check=True)
+    topic_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'topic'], cwd=repo, check=True)
+    ).strip()
     ub.cmd(['git', 'checkout', default_branch], cwd=repo, check=True)
 
     archive = archive_source(
@@ -697,9 +700,17 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
     unpacked = _extract_tar_root(
         archive, tmp_path / 'all-branches-shallow-extract'
     )
+    archived_topic = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', '--verify', 'refs/heads/topic'],
+            cwd=unpacked,
+            check=True,
+        )
+    ).strip()
+    assert archived_topic == topic_head
     count = _stdout_text(
         ub.cmd(
-            ['git', 'rev-list', '--count', 'topic'],
+            ['git', 'rev-list', '--count', 'refs/heads/topic'],
             cwd=unpacked,
             check=True,
         )
