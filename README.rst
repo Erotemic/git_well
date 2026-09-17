@@ -149,6 +149,49 @@ same context manager before metadata finalization and archive writing. These
 extension points are programmatic only; the command-line interface does not
 execute arbitrary hooks.
 
+Incremental source archives
+---------------------------
+
+History-bearing source archives can also be used as bases for small incremental
+updates. First create a normal full archive, then make one or more descendant
+commits and request a patch against the closest compatible full archive recorded
+by git-well:
+
+.. code:: bash
+
+   git-well archive_source . -o project-base.tar.gz
+   # make and commit changes
+   git-well archive_source . --patch auto -o project-update.tar.gz
+
+Patch mode requires the superproject ``.git`` directory. Source-only
+``--depth 0`` archives are not supported as bases or targets. The initial patch
+implementation intentionally supports the clear descendant-history case only:
+the base and target must use the same superproject history depth and the same
+``--all-branches`` policy. ``patch=auto`` chooses the compatible recorded full
+archive whose HEAD is closest to the target HEAD. An explicit full archive path
+may be passed instead of ``auto``.
+
+Repository-specific Python wrappers use the same mechanism. Prepare and
+validation hooks still see a complete target staging tree; git-well computes the
+incremental transport only after validation, so generated payloads are included
+without requiring patch-specific hooks:
+
+.. code:: python
+
+   archive_source(
+       repo_dpath='.',
+       depth=100,
+       patch='auto',
+       prepare=prepare,
+       validate=validate,
+   )
+
+Git bundles transport new repository objects while a residual filesystem overlay
+transports generated hook payloads and other non-Git differences. Patch archives
+contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact base archive SHA-256. The
+Python helper ``git_well.archive_source_patch.apply_source_patch`` verifies that
+identity before applying a patch.
+
 
 Bounded active history with Git epochs
 --------------------------------------

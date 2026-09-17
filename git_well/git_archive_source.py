@@ -257,6 +257,26 @@ class ArchiveSourceContext:
             self.archive_format,
         )
         self._archive_written = True
+        if self.include_git_history:
+            try:
+                from git_well.archive_source_patch import register_full_archive
+
+                register_full_archive(
+                    repo_root=self.repo_root,
+                    archive_path=self.archive_path,
+                    head_sha=self.head_sha,
+                    archive_root_name=self.archive_root_name,
+                    include_git_history=True,
+                    normalized_depth=self.normalized_depth,
+                    all_branches=self.all_branches,
+                    timestamp=self.timestamp,
+                    archive_format=self.archive_format,
+                )
+            except Exception as ex:
+                self._log.warning(
+                    '[source-archive] WARNING: could not record archive for future '
+                    f'patch=auto selection: {ex}'
+                )
         self._log(f'[source-archive] wrote: {self.archive_path}')
         if self.archive_format == 'zip':
             self._log(
@@ -410,7 +430,8 @@ class ArchiveSourceCLI(kwconf.Config):
             Exact archive path to write. Relative paths are interpreted
             relative to the repository root. If unspecified, the archive is
             written to the repository root as
-            <repo>-source-<timestamp>-<short-sha>.<format-extension>.
+            <repo>-source-<timestamp>-<short-sha>.<format-extension>. Patch
+            mode appends ``-patch`` to that generated archive root name.
             """).strip(),
     )
     depth = kwconf.Value(
@@ -477,6 +498,18 @@ class ArchiveSourceCLI(kwconf.Config):
             auto cannot infer from --output, it falls back to tar.gz.
             """).strip(),
     )
+    patch = kwconf.Value(
+        None,
+        parser=str,
+        help=textwrap.dedent("""
+            Create an incremental source patch against a prior full Git-bearing
+            source archive. Use "auto" to select the closest compatible full
+            archive previously written by git-well, or pass an explicit base
+            archive path. Patch mode requires superproject Git history and v1
+            only supports descendant updates with the same superproject history
+            and --all-branches policy.
+            """).strip(),
+    )
     redact_local_paths = kwconf.Value(
         False,
         isflag=True,
@@ -523,6 +556,7 @@ class ArchiveSourceCLI(kwconf.Config):
             exclude_submodule=config.exclude_submodule,
             no_submodules=not bool(config.submodules),
             format=config.format,
+            patch=config.patch,
             redact_local_paths=bool(config.redact_local_paths),
             verbose=config.verbose,
         )
@@ -551,6 +585,7 @@ def archive_source(
     validate: ArchiveSourceHookArg = None,
     archive_root_name: str | None = None,
     keep_stage: bool = False,
+    patch: PathLike | None = None,
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -563,7 +598,8 @@ def archive_source(
             Exact archive path to write. Relative paths are interpreted relative
             to the repository root. If unspecified, the archive is written to
             the repository root as
-            ``<repo>-source-<timestamp>-<short sha>.<format-extension>``.
+            ``<repo>-source-<timestamp>-<short sha>.<format-extension>``. Patch
+            mode appends ``-patch`` to the generated archive root name.
 
         depth:
             ``'full'`` or ``None`` includes full current-HEAD history. A
@@ -592,6 +628,14 @@ def archive_source(
         format:
             Archive format. ``'auto'`` infers from the output extension when
             possible and otherwise defaults to ``'tar.gz'``.
+
+        patch:
+            If omitted, write a normal full source archive. ``'auto'`` creates
+            an incremental source patch against the closest compatible full
+            archive recorded for this repository. Any other value is treated as
+            an explicit base archive path. Patch mode requires superproject Git
+            history and currently supports descendant updates only. Prepare and
+            validate hooks still operate on the complete target staging tree.
 
         redact_local_paths:
             If true, redact absolute source/output paths from the generated
@@ -633,6 +677,12 @@ def archive_source(
         excluded. Hook failures abort serialization and are wrapped in
         :class:`ArchiveSourceHookError` with the hook phase and name.
     """
+    if patch is not None and _normalize_depth(depth) == 0:
+        from git_well.archive_source_patch import SourcePatchError
+
+        raise SourcePatchError(
+            'archive_source patch mode requires Git history; depth=0 is not supported'
+        )
     prepare_hooks = _coerce_archive_hooks(prepare, phase='prepare')
     validate_hooks = _coerce_archive_hooks(validate, phase='validate')
     with stage_source_archive(
@@ -649,10 +699,22 @@ def archive_source(
         archive_root_name=archive_root_name,
         keep_stage=keep_stage,
     ) as context:
+        if patch is not None and output is None:
+            extension = _FORMAT_TO_EXTENSION[context.archive_format]
+            context.archive_path = (
+                context.repo_root
+                / f'{context.archive_root_name}-patch{extension}'
+            ).resolve()
         _run_archive_hooks('prepare', prepare_hooks, context)
         context.finalize_metadata()
         _run_archive_hooks('validate', validate_hooks, context)
-        return context.write_archive()
+        if patch is None:
+            return context.write_archive()
+        from git_well.archive_source_patch import build_source_patch
+
+        return build_source_patch(
+            context=context, patch=patch, write_archive=_write_archive
+        )
 
 
 @contextmanager

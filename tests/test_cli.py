@@ -170,6 +170,9 @@ def test_archive_source_cli_options():
     assert str(config.format) == 'zip'
     assert config.output == 'foo.any'
 
+    config = ArchiveSourceCLI.cli(argv=['--patch', 'auto'], strict=True)
+    assert config.patch == 'auto'
+
     config = ArchiveSourceCLI.cli(
         argv=[
             '--depth',
@@ -349,6 +352,210 @@ def test_archive_source_programmatic_hooks(tmp_path):
         names = set(tar.getnames())
     assert 'custom-source-root/generated.txt' in names
     assert 'custom-source-root/GIT_WELL_ARCHIVE_INFO.txt' in names
+
+
+def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
+    import json
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.archive_source_patch import apply_source_patch
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_patch_explicit'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'base-source.tar.gz',
+        verbose=0,
+    )
+    (repo / 'tracked.txt').write_text('base\ntarget\n')
+    (repo / 'new.txt').write_text('new\n')
+    ub.cmd(['git', 'add', '.'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'target'], cwd=repo, check=True)
+    target_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=repo, check=True)
+    ).strip()
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'incremental-source.tar.gz',
+        patch=base_archive,
+        verbose=0,
+    )
+    with tarfile.open(patch_archive, 'r:gz') as tar:
+        manifest_member = next(
+            member
+            for member in tar.getmembers()
+            if member.name.endswith('/GIT_WELL_SOURCE_PATCH.json')
+        )
+        manifest_file = tar.extractfile(manifest_member)
+        assert manifest_file is not None
+        manifest = json.load(manifest_file)
+    assert manifest['base']['archive_name'] == base_archive.name
+    assert manifest['target']['head_sha'] == target_head
+
+    applied = apply_source_patch(
+        base_archive, patch_archive, tmp_path / 'applied-patch'
+    )
+    applied_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=applied, check=True)
+    ).strip()
+    assert applied_head == target_head
+    assert (applied / 'tracked.txt').read_text() == 'base\ntarget\n'
+    assert (applied / 'new.txt').read_text() == 'new\n'
+    status = ub.cmd(['git', 'status', '--short'], cwd=applied, check=True)
+    assert _stdout_text(status).strip() == ''
+
+
+def test_archive_source_patch_auto_chooses_closest_full_base(tmp_path):
+    import json
+    import tarfile
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_patch_auto'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('one\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'one'], cwd=repo, check=True)
+    archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'one-source.tar.gz',
+        verbose=0,
+    )
+
+    (repo / 'tracked.txt').write_text('two\n')
+    ub.cmd(['git', 'commit', '-am', 'two'], cwd=repo, check=True)
+    second_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=repo, check=True)
+    ).strip()
+    second_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'two-source.tar.gz',
+        verbose=0,
+    )
+
+    (repo / 'tracked.txt').write_text('three\n')
+    ub.cmd(['git', 'commit', '-am', 'three'], cwd=repo, check=True)
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'auto-patch.tar.gz',
+        patch='auto',
+        verbose=0,
+    )
+
+    with tarfile.open(patch_archive, 'r:gz') as tar:
+        member = next(
+            member
+            for member in tar.getmembers()
+            if member.name.endswith('/GIT_WELL_SOURCE_PATCH.json')
+        )
+        file = tar.extractfile(member)
+        assert file is not None
+        manifest = json.load(file)
+    assert manifest['base']['head_sha'] == second_head
+    assert manifest['base']['archive_name'] == second_archive.name
+
+
+def test_archive_source_patch_rejects_source_only(tmp_path):
+    import pytest
+    import ubelt as ub
+
+    from git_well.archive_source_patch import SourcePatchError
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_patch_source_only'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    with pytest.raises(SourcePatchError, match='requires Git history'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'invalid-patch.tar.gz',
+            depth=0,
+            patch='auto',
+            verbose=0,
+        )
+
+
+def test_archive_source_patch_programmatic_hooks_roundtrip(tmp_path):
+    import ubelt as ub
+
+    from git_well.archive_source_patch import apply_source_patch
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'demo_patch_hooks'
+    _init_demo_repo(repo)
+    (repo / 'tracked.txt').write_text('base\n')
+    ub.cmd(['git', 'add', 'tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'base'], cwd=repo, check=True)
+
+    events = []
+
+    def prepare(context):
+        events.append(('prepare', context.head_sha))
+        generated = context.archive_root / '.agent' / 'generation.txt'
+        generated.parent.mkdir(exist_ok=True)
+        generated.write_text(context.head_sha + '\n')
+        context.add_generated_excludes('.agent/')
+
+    def validate(context):
+        events.append(('validate', context.head_sha))
+        assert context.manifest_path.exists()
+        generated = context.archive_root / '.agent' / 'generation.txt'
+        assert generated.read_text() == context.head_sha + '\n'
+        status = ub.cmd(
+            ['git', 'status', '--short'], cwd=context.archive_root, check=True
+        )
+        assert _stdout_text(status).strip() == ''
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'hook-base.tar.gz',
+        prepare=prepare,
+        validate=validate,
+        archive_root_name='ambition-like-source',
+        verbose=0,
+    )
+
+    (repo / 'tracked.txt').write_text('target\n')
+    ub.cmd(['git', 'commit', '-am', 'target'], cwd=repo, check=True)
+    target_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=repo, check=True)
+    ).strip()
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        patch=base_archive,
+        prepare=prepare,
+        validate=validate,
+        archive_root_name='ambition-like-source',
+        verbose=0,
+    )
+    assert patch_archive.name == 'ambition-like-source-patch.tar.gz'
+
+    assert [phase for phase, _head in events] == [
+        'prepare',
+        'validate',
+        'prepare',
+        'validate',
+    ]
+    applied = apply_source_patch(
+        base_archive, patch_archive, tmp_path / 'hook-applied'
+    )
+    assert (applied / '.agent' / 'generation.txt').read_text() == target_head + '\n'
+    assert (applied / 'tracked.txt').read_text() == 'target\n'
+    status = ub.cmd(['git', 'status', '--short'], cwd=applied, check=True)
+    assert _stdout_text(status).strip() == ''
 
 
 def test_archive_source_hook_generated_excludes(tmp_path):
@@ -1052,6 +1259,48 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
     assert 'path: external/lib' in manifest_text
     assert 'history: source-only (depth 0)' in manifest_text
     assert 'Content pruning: yes' in manifest_text
+
+
+def test_archive_source_patch_source_only_submodule_roundtrip(tmp_path):
+    import ubelt as ub
+
+    from git_well.archive_source_patch import apply_source_patch
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'patch_source_only_sub')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib': sub_repo}
+    )
+    base_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'patch-source-only-base.tar.gz',
+        submodule_depth=0,
+        verbose=0,
+    )
+
+    (sub_repo / 'tracked.txt').write_text('updated submodule\n')
+    _commit_all(sub_repo, 'update source-only submodule')
+    target_sub_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_repo, check=True)
+    ).strip()
+    sub_checkout = super_repo / 'external/lib'
+    ub.cmd(['git', 'fetch', str(sub_repo)], cwd=sub_checkout, check=True)
+    ub.cmd(['git', 'checkout', target_sub_sha], cwd=sub_checkout, check=True)
+    _commit_all(super_repo, 'advance source-only submodule')
+
+    patch_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'patch-source-only-update.tar.gz',
+        submodule_depth=0,
+        patch=base_archive,
+        verbose=0,
+    )
+    applied = apply_source_patch(
+        base_archive, patch_archive, tmp_path / 'patch-source-only-applied'
+    )
+    applied_sub = applied / 'external/lib'
+    assert (applied_sub / 'tracked.txt').read_text() == 'updated submodule\n'
+    assert not (applied_sub / '.git').exists()
 
 
 def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
