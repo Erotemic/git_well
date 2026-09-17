@@ -188,9 +188,20 @@ without requiring patch-specific hooks:
 
 Git bundles transport new repository objects while a residual filesystem overlay
 transports generated hook payloads and other non-Git differences. Patch archives
-contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact base archive SHA-256. The
-Python helper ``git_well.archive_source_patch.apply_source_patch`` verifies that
-identity before applying a patch.
+contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact base archive SHA-256 and a
+standalone ``APPLY_SOURCE_PATCH.py``. The standalone applier uses only the Python
+standard library plus the ``git`` executable, so a recipient does not need
+git-well installed. Extract the patch archive and run the script beside its
+manifest:
+
+.. code:: bash
+
+   python APPLY_SOURCE_PATCH.py /path/to/project-base.tar.gz /path/to/output
+
+The script verifies the exact base archive, applies superproject and submodule Git
+bundles plus residual deletions/overlays, verifies the resulting repository HEADs,
+and prints the reconstructed target source root. Installed callers use the same
+implementation through ``git_well.archive_source_patch.apply_source_patch``.
 
 
 Bounded active history with Git epochs

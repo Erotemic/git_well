@@ -8,7 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-* Add incremental `archive_source --patch auto|BASE` archives for Git-bearing descendant updates, with registry-based automatic base selection, Git-bundle object transport, residual generated-file overlays, exact base SHA-256 verification, and support for programmatic prepare/validate wrappers.
+* Add incremental `archive_source --patch auto|BASE` archives for Git-bearing descendant updates, with registry-based automatic base selection, Git-bundle object transport, residual generated-file overlays, exact base SHA-256 verification, a dependency-free embedded `APPLY_SOURCE_PATCH.py`, and support for programmatic prepare/validate wrappers.
 * Add `git epoch` / `git-epoch` for verifiable bounded-history checkpoints, exact archival epochs, recursive submodule rollover, reconstruction, and resumable prepare/publish transactions.
 * Add `git epoch sandbox` to rehearse epoch rollover against contained local worktrees, bare publication remotes, and a local history store before touching production remotes.
 * Add `git epoch stats` and `git epoch sandbox stats` to report shared history-store size, per-epoch reachable/exclusive object sizes, standalone bundle sizes, active-history size, recursive fresh-clone size, and optional `archive_source` package size.

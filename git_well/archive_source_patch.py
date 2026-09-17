@@ -21,9 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
+from git_well.source_patch_apply import SourcePatchError, apply_source_patch
+
 PathLike = str | os.PathLike[str]
 _PATCH_MANIFEST_FNAME = 'GIT_WELL_SOURCE_PATCH.json'
 _PATCH_README_FNAME = 'README.txt'
+_PATCH_APPLY_FNAME = 'APPLY_SOURCE_PATCH.py'
 _REGISTRY_SCHEMA = 1
 _PATCH_SCHEMA = 1
 
@@ -47,10 +50,6 @@ class _Entry:
     mode: int
     digest: str | None = None
     link_target: str | None = None
-
-
-class SourcePatchError(RuntimeError):
-    """Raised when an incremental source patch cannot be constructed/applied."""
 
 
 def _run(
@@ -700,19 +699,16 @@ def _patch_root_name(repo_name: str, base_short: str, target_short: str) -> str:
     )
 
 
-def _read_patch_manifest(patch_root: Path) -> dict[str, Any]:
-    path = patch_root / _PATCH_MANIFEST_FNAME
-    try:
-        data = json.loads(path.read_text(encoding='utf8'))
-    except (OSError, json.JSONDecodeError) as ex:
-        raise SourcePatchError(f'invalid source patch manifest: {path}') from ex
-    if data.get('schema_version') != _PATCH_SCHEMA:
-        raise SourcePatchError(
-            f'unsupported source patch schema: {data.get("schema_version")!r}'
-        )
-    if data.get('kind') != 'git-well-source-patch':
-        raise SourcePatchError('archive is not a git-well source patch')
-    return data
+
+def _write_standalone_apply_script(patch_root: Path) -> None:
+    """Copy the dependency-free applier used by git-well into the patch."""
+    from git_well import source_patch_apply
+
+    source_path = Path(source_patch_apply.__file__).resolve()
+    source = source_path.read_text(encoding='utf8')
+    target = patch_root / _PATCH_APPLY_FNAME
+    target.write_text(source, encoding='utf8')
+    target.chmod(0o755)
 
 
 def _write_patch_readme(patch_root: Path, manifest: dict[str, Any]) -> None:
@@ -722,13 +718,42 @@ def _write_patch_readme(patch_root: Path, manifest: dict[str, Any]) -> None:
         'git-well incremental source patch',
         '=================================',
         '',
-        'This is not a standalone source archive.',
+        'This is not a standalone source archive. It requires the exact full',
+        'base archive named below.',
+        '',
+        f'Required base archive: {base["archive_name"]}',
         f'Required base archive SHA-256: {base["archive_sha256"]}',
         f'Base commit: {base["head_sha"]}',
         f'Target commit: {target["head_sha"]}',
         '',
-        'Apply with git_well.archive_source_patch.apply_source_patch(), or use',
-        'the manifest in GIT_WELL_SOURCE_PATCH.json for equivalent tooling.',
+        'Standalone application (git-well is NOT required)',
+        '-------------------------------------------------',
+        '',
+        'Requirements:',
+        '  - Python 3.10 or newer',
+        '  - git on PATH',
+        '',
+        '1. Extract this patch archive.',
+        '2. From the extracted patch directory, run:',
+        '',
+        f'   python {_PATCH_APPLY_FNAME} /path/to/{base["archive_name"]} /path/to/output',
+        '',
+        'The output directory must be empty or not yet exist. The script verifies',
+        'the exact base SHA-256 and every Git repository HEAD before and after',
+        'application, including Git-bearing submodules represented by this patch.',
+        'It prints the reconstructed target source root on success.',
+        '',
+        'Installed git-well API',
+        '----------------------',
+        '',
+        'The same application implementation is available as:',
+        '',
+        '   git_well.archive_source_patch.apply_source_patch(',
+        '       base_archive, patch_archive, output_directory)',
+        '',
+        'Do not manually merge overlay/ into the base archive. Use the script or',
+        'the API so base identity, Git bundles, deletions, and submodules are all',
+        'handled and verified together.',
         '',
     ]
     (patch_root / _PATCH_README_FNAME).write_text('\n'.join(lines), encoding='utf8')
@@ -893,10 +918,12 @@ def build_source_patch(
             'deletions_file': 'deletions.json',
             'overlay_root': 'overlay',
             'overlay_entry_count': len(overlay_paths),
+            'apply_script': _PATCH_APPLY_FNAME,
         }
         (patch_root / _PATCH_MANIFEST_FNAME).write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf8'
         )
+        _write_standalone_apply_script(patch_root)
         _write_patch_readme(patch_root, manifest)
 
         # Apply the residual to the reconstructed base and prove that the patch
@@ -923,104 +950,5 @@ def build_source_patch(
             f'{base.path.name} ({base.short_sha[:12]})'
         )
         return context.archive_path
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
-
-
-def _find_patch_root(extract_root: Path) -> Path:
-    candidates = [
-        path
-        for path in extract_root.iterdir()
-        if path.is_dir() and (path / _PATCH_MANIFEST_FNAME).is_file()
-    ]
-    if len(candidates) != 1:
-        raise SourcePatchError(
-            'source patch archive must contain exactly one top-level patch root'
-        )
-    return candidates[0]
-
-
-def apply_source_patch(
-    base_archive: PathLike,
-    patch_archive: PathLike,
-    output_dpath: PathLike,
-) -> Path:
-    """Extract ``base_archive`` and apply ``patch_archive`` into ``output_dpath``."""
-    base_archive = Path(base_archive).expanduser().resolve()
-    patch_archive = Path(patch_archive).expanduser().resolve()
-    output_dpath = Path(output_dpath).expanduser().resolve()
-    if output_dpath.exists() and not output_dpath.is_dir():
-        raise SourcePatchError(f'patch output path is not a directory: {output_dpath}')
-    if output_dpath.exists() and any(output_dpath.iterdir()):
-        raise SourcePatchError(f'patch output directory is not empty: {output_dpath}')
-    output_dpath.mkdir(parents=True, exist_ok=True)
-
-    work = Path(tempfile.mkdtemp(prefix='git-well-apply-source-patch.'))
-    try:
-        patch_extract = work / 'patch'
-        _extract_archive(patch_archive, patch_extract)
-        patch_root = _find_patch_root(patch_extract)
-        manifest = _read_patch_manifest(patch_root)
-        expected_sha = manifest['base']['archive_sha256']
-        actual_sha = _sha256_file(base_archive)
-        if actual_sha != expected_sha:
-            raise SourcePatchError(
-                'source patch base SHA-256 mismatch; expected '
-                f'{expected_sha}, got {actual_sha}'
-            )
-
-        _extract_archive(base_archive, output_dpath)
-        base_root = output_dpath / manifest['base']['root_name']
-        if not base_root.is_dir():
-            raise SourcePatchError('base archive root is missing after extraction')
-        target_root = output_dpath / manifest['target']['root_name']
-        if target_root != base_root:
-            if target_root.exists():
-                raise SourcePatchError(f'target archive root already exists: {target_root}')
-            base_root.rename(target_root)
-
-        for item in manifest['git_repositories']:
-            relpath = item['path']
-            repo = target_root if relpath == '.' else _safe_target(target_root, relpath)
-            if not (repo / '.git').is_dir():
-                raise SourcePatchError(
-                    f'patch expects a Git-bearing repository at {relpath!r}'
-                )
-            current_head = _repo_head(repo)
-            if current_head != item['base_head']:
-                raise SourcePatchError(
-                    f'patch base HEAD mismatch at {relpath!r}: expected '
-                    f'{item["base_head"]}, got {current_head}'
-                )
-            bundle = (
-                patch_root / item['bundle'] if item.get('bundle') is not None else None
-            )
-            _apply_git_delta(repo, bundle, item['target_head'])
-
-        deletions_path = patch_root / manifest['deletions_file']
-        deletions = json.loads(deletions_path.read_text(encoding='utf8'))
-        if not isinstance(deletions, list) or not all(
-            isinstance(item, str) for item in deletions
-        ):
-            raise SourcePatchError('invalid source patch deletion manifest')
-        _apply_deletions(target_root, deletions)
-        _apply_overlay(patch_root / manifest['overlay_root'], target_root)
-        if _repo_head(target_root) != manifest['target']['head_sha']:
-            raise SourcePatchError('applied source patch did not reach target HEAD')
-        for item in manifest['git_repositories']:
-            relpath = item['path']
-            repo = (
-                target_root
-                if relpath == '.'
-                else _safe_target(target_root, relpath)
-            )
-            if _repo_head(repo) != item['target_head']:
-                raise SourcePatchError(
-                    f'applied source patch HEAD mismatch at {relpath!r}'
-                )
-        return target_root
-    except Exception:
-        shutil.rmtree(output_dpath, ignore_errors=True)
-        raise
     finally:
         shutil.rmtree(work, ignore_errors=True)

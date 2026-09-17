@@ -399,6 +399,43 @@ def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
         manifest = json.load(manifest_file)
     assert manifest['base']['archive_name'] == base_archive.name
     assert manifest['target']['head_sha'] == target_head
+    assert manifest['apply_script'] == 'APPLY_SOURCE_PATCH.py'
+
+    # The patch must be self-applicable by an agent that has Python + Git but
+    # no installed git-well. Run the exact embedded script under isolated mode
+    # so the development checkout cannot satisfy accidental git_well imports.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from git_well import source_patch_apply
+
+    patch_extract = tmp_path / 'standalone-patch-extract'
+    patch_root = _extract_tar_root(patch_archive, patch_extract)
+    apply_script = patch_root / 'APPLY_SOURCE_PATCH.py'
+    assert apply_script.read_bytes() == Path(source_patch_apply.__file__).read_bytes()
+    standalone_output = tmp_path / 'standalone-applied-patch'
+    proc = subprocess.run(
+        [
+            sys.executable,
+            '-I',
+            str(apply_script),
+            str(base_archive),
+            str(standalone_output),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    standalone_root = Path(proc.stdout.strip())
+    assert standalone_root.is_dir()
+    standalone_head = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=standalone_root, check=True)
+    ).strip()
+    assert standalone_head == target_head
+    assert (standalone_root / 'tracked.txt').read_text() == 'base\ntarget\n'
+    assert (standalone_root / 'new.txt').read_text() == 'new\n'
 
     applied = apply_source_patch(
         base_archive, patch_archive, tmp_path / 'applied-patch'
@@ -1259,6 +1296,95 @@ def test_archive_source_submodule_depth_zero_source_only(tmp_path):
     assert 'path: external/lib' in manifest_text
     assert 'history: source-only (depth 0)' in manifest_text
     assert 'Content pruning: yes' in manifest_text
+
+
+def test_archive_source_patch_git_submodule_bundle_standalone_roundtrip(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(tmp_path, 'patch_git_sub')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib': sub_repo}
+    )
+    base_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'patch-git-sub-base.tar.gz',
+        submodule_depth=10,
+        verbose=0,
+    )
+
+    (sub_repo / 'tracked.txt').write_text('updated git submodule\n')
+    _commit_all(sub_repo, 'update git-bearing submodule')
+    target_sub_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_repo, check=True)
+    ).strip()
+    sub_checkout = super_repo / 'external/lib'
+    ub.cmd(['git', 'fetch', str(sub_repo)], cwd=sub_checkout, check=True)
+    ub.cmd(['git', 'checkout', target_sub_sha], cwd=sub_checkout, check=True)
+    _commit_all(super_repo, 'advance git-bearing submodule')
+    target_super_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=super_repo, check=True)
+    ).strip()
+
+    patch_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'patch-git-sub-update.tar.gz',
+        submodule_depth=10,
+        patch=base_archive,
+        verbose=0,
+    )
+
+    extract = tmp_path / 'patch-git-sub-extract'
+    patch_root = _extract_tar_root(patch_archive, extract)
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    sub_entry = next(
+        item for item in manifest['git_repositories']
+        if item['path'] == 'external/lib'
+    )
+    assert sub_entry['target_head'] == target_sub_sha
+    assert sub_entry['bundle'] is not None
+    assert (patch_root / sub_entry['bundle']).is_file()
+
+    output = tmp_path / 'patch-git-sub-standalone-applied'
+    proc = subprocess.run(
+        [
+            sys.executable,
+            '-I',
+            str(patch_root / 'APPLY_SOURCE_PATCH.py'),
+            str(base_archive),
+            str(output),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    applied = Path(proc.stdout.strip())
+    applied_super_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=applied, check=True)
+    ).strip()
+    applied_sub_sha = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=applied / 'external/lib',
+            check=True,
+        )
+    ).strip()
+    assert applied_super_sha == target_super_sha
+    assert applied_sub_sha == target_sub_sha
+    assert (
+        applied / 'external/lib/tracked.txt'
+    ).read_text() == 'updated git submodule\n'
+    status = ub.cmd(['git', 'status', '--short'], cwd=applied, check=True)
+    assert _stdout_text(status).strip() == ''
 
 
 def test_archive_source_patch_source_only_submodule_roundtrip(tmp_path):
