@@ -19,7 +19,10 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
+
+if TYPE_CHECKING:  # pragma: no cover
+    from git_well.git_archive_source import ResolvedArchiveFormat
 
 from git_well.source_patch_apply import SourcePatchError, apply_source_patch
 
@@ -642,14 +645,30 @@ def _apply_deletions(root: Path, deletions: Iterable[str]) -> None:
         _remove_path(_safe_target(root, relpath))
 
 
-def _apply_overlay(overlay_root: Path, target_root: Path) -> None:
+def _apply_overlay(
+    overlay_root: Path,
+    target_root: Path,
+    *,
+    paths: Iterable[str] | None = None,
+) -> None:
     if not overlay_root.exists():
         return
     entries = _tree_entries(overlay_root, excluded=())
-    for relpath in sorted(entries, key=lambda value: (value.count('/'), value)):
+    if paths is None:
+        relpaths = list(entries)
+    else:
+        relpaths = list(paths)
+    for relpath in sorted(
+        relpaths, key=lambda value: (value.count('/'), value)
+    ):
+        entry = entries.get(relpath)
+        if entry is None:
+            raise SourcePatchError(
+                f'patch overlay entry is missing: {relpath!r}'
+            )
         src = _safe_target(overlay_root, relpath)
         dst = _safe_target(target_root, relpath)
-        _copy_entry(src, dst, entries[relpath])
+        _copy_entry(src, dst, entry)
 
 
 def _verify_non_object_tree(
@@ -763,7 +782,7 @@ def build_source_patch(
     *,
     context: Any,
     patch: PathLike,
-    write_archive: Callable[[Path, str, Path, str], None],
+    write_archive: Callable[[Path, str, Path, ResolvedArchiveFormat], None],
 ) -> Path:
     """Build an incremental archive from a fully prepared/validated context."""
     if not context.include_git_history:
@@ -918,6 +937,7 @@ def build_source_patch(
             'deletions_file': 'deletions.json',
             'overlay_root': 'overlay',
             'overlay_entry_count': len(overlay_paths),
+            'overlay_paths': overlay_paths,
             'apply_script': _PATCH_APPLY_FNAME,
         }
         (patch_root / _PATCH_MANIFEST_FNAME).write_text(
@@ -929,7 +949,11 @@ def build_source_patch(
         # Apply the residual to the reconstructed base and prove that the patch
         # reaches the prepared target before emitting an artifact.
         _apply_deletions(reconstructed_root, deletions)
-        _apply_overlay(patch_root / 'overlay', reconstructed_root)
+        _apply_overlay(
+            patch_root / 'overlay',
+            reconstructed_root,
+            paths=overlay_paths,
+        )
         _verify_non_object_tree(
             actual=reconstructed_root,
             expected=context.archive_root,

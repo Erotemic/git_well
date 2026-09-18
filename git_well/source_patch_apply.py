@@ -257,14 +257,30 @@ def _apply_deletions(root: Path, deletions: Iterable[str]) -> None:
         _remove_path(_safe_target(root, relpath))
 
 
-def _apply_overlay(overlay_root: Path, target_root: Path) -> None:
+def _apply_overlay(
+    overlay_root: Path,
+    target_root: Path,
+    *,
+    paths: Iterable[str] | None = None,
+) -> None:
     if not overlay_root.exists():
         return
     entries = _tree_entries(overlay_root, excluded=())
-    for relpath in sorted(entries, key=lambda value: (value.count('/'), value)):
+    if paths is None:
+        relpaths = list(entries)
+    else:
+        relpaths = list(paths)
+    for relpath in sorted(
+        relpaths, key=lambda value: (value.count('/'), value)
+    ):
+        entry = entries.get(relpath)
+        if entry is None:
+            raise SourcePatchError(
+                f'patch overlay entry is missing: {relpath!r}'
+            )
         src = _safe_target(overlay_root, relpath)
         dst = _safe_target(target_root, relpath)
-        _copy_entry(src, dst, entries[relpath])
+        _copy_entry(src, dst, entry)
 
 
 def _read_patch_manifest(patch_root: Path) -> dict:
@@ -368,7 +384,23 @@ def apply_extracted_source_patch(
         ):
             raise SourcePatchError('invalid source patch deletion manifest')
         _apply_deletions(target_root, deletions)
-        _apply_overlay(patch_root / manifest['overlay_root'], target_root)
+        overlay_paths = manifest.get('overlay_paths')
+        if overlay_paths is not None and (
+            not isinstance(overlay_paths, list)
+            or not all(isinstance(item, str) for item in overlay_paths)
+        ):
+            raise SourcePatchError('invalid source patch overlay path manifest')
+        if overlay_paths is not None and len(overlay_paths) != manifest.get(
+            'overlay_entry_count'
+        ):
+            raise SourcePatchError(
+                'source patch overlay entry count does not match manifest'
+            )
+        _apply_overlay(
+            patch_root / manifest['overlay_root'],
+            target_root,
+            paths=overlay_paths,
+        )
 
         if _repo_head(target_root) != manifest['target']['head_sha']:
             raise SourcePatchError('applied source patch did not reach target HEAD')

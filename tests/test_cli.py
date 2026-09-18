@@ -394,6 +394,31 @@ def test_archive_source_programmatic_hooks(tmp_path):
     assert 'custom-source-root/GIT_WELL_ARCHIVE_INFO.txt' in names
 
 
+def test_source_patch_overlay_preserves_implicit_parent_mode(tmp_path):
+    import stat
+
+    from git_well.source_patch_apply import _apply_overlay
+
+    overlay_root = tmp_path / 'overlay'
+    target_root = tmp_path / 'target'
+    overlay_parent = overlay_root / 'nested'
+    target_parent = target_root / 'nested'
+    overlay_parent.mkdir(parents=True)
+    target_parent.mkdir(parents=True)
+    overlay_parent.chmod(0o755)
+    target_parent.chmod(0o700)
+    (overlay_parent / 'updated.txt').write_text('updated\n')
+
+    _apply_overlay(
+        overlay_root,
+        target_root,
+        paths=['nested/updated.txt'],
+    )
+
+    assert (target_parent / 'updated.txt').read_text() == 'updated\n'
+    assert stat.S_IMODE(target_parent.stat().st_mode) == 0o700
+
+
 def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
     import json
     import tarfile
