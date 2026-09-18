@@ -96,6 +96,46 @@ def test_archive_source_depth_zero_source_only(tmp_path):
     assert not any('/.git/' in name for name in names)
 
 
+def test_archive_source_default_name_preserves_symlinked_repo_basename(
+    tmp_path, monkeypatch
+):
+    """Default archive names should reflect the logical shell path."""
+    import tarfile
+
+    import pytest
+    import ubelt as ub
+
+    from git_well.git_archive_source import archive_source
+
+    repo = tmp_path / 'physical_repo_name'
+    _init_demo_repo(repo)
+    nested = repo / 'nested'
+    nested.mkdir()
+    (nested / 'tracked.txt').write_text('tracked\n')
+    ub.cmd(['git', 'add', 'nested/tracked.txt'], cwd=repo, check=True)
+    ub.cmd(['git', 'commit', '-m', 'initial'], cwd=repo, check=True)
+
+    alias = tmp_path / 'logical_repo_name'
+    try:
+        alias.symlink_to(repo, target_is_directory=True)
+    except OSError as ex:
+        pytest.skip(f'symlinks are unavailable: {ex}')
+
+    logical_cwd = alias / 'nested'
+    monkeypatch.chdir(logical_cwd)
+    monkeypatch.setenv('PWD', os.fspath(logical_cwd))
+
+    archive = archive_source(depth=0, verbose=0)
+
+    assert archive.parent == repo.resolve()
+    assert archive.name.startswith('logical_repo_name-source-')
+    with tarfile.open(archive, 'r:gz') as tar:
+        root_names = {name.split('/', 1)[0] for name in tar.getnames()}
+    assert len(root_names) == 1
+    archive_root = root_names.pop()
+    assert archive_root.startswith('logical_repo_name-source-')
+
+
 def test_archive_source_auto_zip(tmp_path):
     """
     Build a source-only zip archive by inferring the format from the extension.

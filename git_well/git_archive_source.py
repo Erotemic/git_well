@@ -743,7 +743,8 @@ def stage_source_archive(
     _assert_has_head(repo)
 
     repo_root = Path(cast(str, repo.working_tree_dir)).resolve()
-    repo_name = repo_root.name
+    logical_repo_root = _logical_repo_root(repo_dpath, repo_root)
+    repo_name = logical_repo_root.name
     head_sha = repo.head.commit.hexsha
     short_sha = repo.git.rev_parse('--short=12', 'HEAD').strip()
     import ubelt as ub
@@ -1107,6 +1108,44 @@ def _coerce_repo(repo_dpath: PathLike) -> 'git.Repo':
     if repo.working_tree_dir is None:
         raise RuntimeError(f'not a non-bare Git working tree: {path}')
     return repo
+
+
+def _logical_cwd() -> Path:
+    """Return the shell's working directory without dereferencing symlinks."""
+    physical_cwd = Path.cwd()
+    pwd = os.environ.get('PWD')
+    if pwd:
+        logical_cwd = Path(pwd).expanduser()
+        if logical_cwd.is_absolute():
+            try:
+                if logical_cwd.resolve() == physical_cwd:
+                    return logical_cwd
+            except OSError:
+                pass
+    return physical_cwd
+
+
+def _logical_repo_root(repo_dpath: PathLike, repo_root: Path) -> Path:
+    """
+    Recover the lexical repository root used to enter the working tree.
+
+    GitPython reports ``working_tree_dir`` as a canonical path, which is right
+    for repository operations but loses a symlink basename chosen by the user.
+    Walk upward from the unresolved invocation path and return the first path
+    that resolves to the canonical repository root.
+    """
+    invocation_path = Path(repo_dpath).expanduser()
+    if not invocation_path.is_absolute():
+        invocation_path = _logical_cwd() / invocation_path
+    invocation_path = Path(os.path.normpath(os.fspath(invocation_path)))
+
+    for candidate in (invocation_path, *invocation_path.parents):
+        try:
+            if candidate.resolve() == repo_root:
+                return candidate
+        except OSError:
+            continue
+    return repo_root
 
 
 def _assert_has_head(repo: 'git.Repo') -> None:
