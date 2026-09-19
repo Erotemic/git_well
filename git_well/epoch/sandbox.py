@@ -269,17 +269,15 @@ def _normalize_clone_branch(
         else:
             branch = 'epoch-active'
 
-    _git(clone, 'checkout', '--detach', target)
+    _git(clone, 'checkout', '-B', branch, target)
+    branch_ref = f'refs/heads/{branch}'
     heads = _git_stdout(
         clone, 'for-each-ref', '--format=%(refname)', 'refs/heads/'
     ).splitlines()
-    for ref in heads:
-        if ref:
-            _git(clone, 'update-ref', '-d', ref)
-    branch_ref = f'refs/heads/{branch}'
-    _git(clone, 'update-ref', branch_ref, target)
-    _git(clone, 'symbolic-ref', 'HEAD', branch_ref)
-    _git(clone, 'reset', '--hard', target)
+    stale_heads = [ref for ref in heads if ref and ref != branch_ref]
+    if stale_heads:
+        commands = ''.join(f'delete {ref}\n' for ref in stale_heads)
+        _git(clone, 'update-ref', '--stdin', input=commands)
     return branch
 
 
@@ -307,32 +305,24 @@ def _clone_node(
     _git(clone, 'config', '--local', 'user.name', name)
     _git(clone, 'config', '--local', 'user.email', email)
 
-    # A sandbox clone must not retain a network-capable publication remote.
-    # The source URL remains in sandbox.yaml for inspection only.
-    for remote_name in _git_stdout(clone, 'remote').splitlines():
-        if remote_name:
-            _git(clone, 'remote', 'remove', remote_name)
-
+    # ``git clone`` creates only ``origin``; retarget that existing remote so
+    # the sandbox never retains the source publication destination.
     active_remote = active_root / f"{node['repository']}.git"
     if active_remote.exists():
         raise EpochSafetyError(
             f'Duplicate sandbox repository id {node["repository"]!r}: '
             f'{active_remote} already exists'
         )
-    _run(['git', 'init', '--bare', active_remote])
-    _run(
-        [
-            'git',
-            '--git-dir',
-            active_remote,
-            'symbolic-ref',
-            'HEAD',
-            f'refs/heads/{branch}',
-        ]
+    _run(['git', 'init', '--bare', f'--initial-branch={branch}', active_remote])
+    _git(clone, 'remote', 'set-url', 'origin', active_remote)
+    _git(
+        clone,
+        'push',
+        '-u',
+        'origin',
+        f'HEAD:refs/heads/{branch}',
+        '--tags',
     )
-    _git(clone, 'remote', 'add', 'origin', active_remote)
-    _git(clone, 'push', '-u', 'origin', f'HEAD:refs/heads/{branch}')
-    _git(clone, 'push', 'origin', '--tags')
 
     node['repo'] = str(clone.resolve())
     node['branch'] = branch
@@ -445,16 +435,24 @@ def assert_sandbox_contained(data: Mapping[str, Any]) -> dict[str, Any]:
             violations.append(f'{node["repository"]} worktree: {repo}')
         if not _is_within(remote, root):
             violations.append(f'{node["repository"]} active remote: {remote}')
-        origin_proc = _git(repo, 'remote', 'get-url', 'origin', check=False)
-        if origin_proc.returncode:
+        remote_proc = _git(repo, 'remote', '-v', check=False)
+        remote_urls: dict[str, str] = {}
+        if remote_proc.returncode == 0:
+            for line in remote_proc.stdout.splitlines():
+                if '\t' not in line or not line.endswith(' (fetch)'):
+                    continue
+                name, rest = line.split('\t', 1)
+                remote_urls[name] = rest[:-len(' (fetch)')]
+        origin = remote_urls.get('origin')
+        if origin is None:
             violations.append(f'{node["repository"]}: missing origin')
         else:
-            actual = pathlib.Path(origin_proc.stdout.strip()).expanduser().resolve()
+            actual = pathlib.Path(origin).expanduser().resolve()
             if actual != remote or not _is_within(actual, root):
                 violations.append(
                     f'{node["repository"]} origin: {actual} (expected {remote})'
                 )
-        remotes = [r for r in _git_stdout(repo, 'remote').splitlines() if r]
+        remotes = sorted(remote_urls)
         if remotes != ['origin']:
             violations.append(
                 f'{node["repository"]}: sandbox remotes are {remotes}, expected [origin]'

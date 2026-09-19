@@ -23,14 +23,21 @@ def test_cli_main_help():
 
     sub_clis = getattr(modal, 'sub_clis', None)
     if sub_clis is None:
-        sub_commands = [d['command'] for d in modal._subconfig_metadata]
+        # Older kwconf versions do not expose the child classes. Keep the
+        # modal-dispatch fallback for those versions.
+        for item in modal._subconfig_metadata:
+            try:
+                modal.run(argv=[item['command'], '--help'])
+            except SystemExit:
+                ...
     else:
-        sub_commands = [c.__command__ for c in sub_clis]
-    for command in sub_commands:
-        try:
-            modal.run(argv=[command, '--help'])
-        except SystemExit:
-            ...
+        # Calling the child directly avoids rebuilding the complete modal
+        # parser once for every command while still exercising every CLI help.
+        for cli in sub_clis:
+            try:
+                cli.main(argv=['--help'])
+            except SystemExit:
+                ...
 
 
 def test_archive_source_help_mentions_git_archive(capsys):
@@ -50,17 +57,33 @@ def test_archive_source_help_mentions_git_archive(capsys):
     assert 'initialized submodules' in captured.out
 
 
+def _demo_git_dir(repo):
+    marker = repo / '.git'
+    if marker.is_dir():
+        return marker
+    text = marker.read_text().strip()
+    prefix = 'gitdir:'
+    assert text.lower().startswith(prefix)
+    git_dir = marker.parent / text[len(prefix):].strip()
+    return git_dir.resolve()
+
+
+def _configure_demo_identity(repo):
+    config = _demo_git_dir(repo) / 'config'
+    with config.open('a') as file:
+        file.write(
+            '\n[user]\n'
+            '\tname = Test User\n'
+            '\temail = test@example.com\n'
+        )
+
+
 def _init_demo_repo(repo):
     import ubelt as ub
 
     repo.mkdir()
     ub.cmd(['git', 'init'], cwd=repo, check=True)
-    ub.cmd(
-        ['git', 'config', 'user.email', 'test@example.com'],
-        cwd=repo,
-        check=True,
-    )
-    ub.cmd(['git', 'config', 'user.name', 'Test User'], cwd=repo, check=True)
+    _configure_demo_identity(repo)
 
 
 def test_archive_source_depth_zero_source_only(tmp_path):
@@ -1259,16 +1282,7 @@ def _make_repo_with_submodules(tmp_path, submodules):
             check=True,
         )
         sub_checkout = super_repo / path
-        ub.cmd(
-            ['git', 'config', 'user.email', 'test@example.com'],
-            cwd=sub_checkout,
-            check=True,
-        )
-        ub.cmd(
-            ['git', 'config', 'user.name', 'Test User'],
-            cwd=sub_checkout,
-            check=True,
-        )
+        _configure_demo_identity(sub_checkout)
     _commit_all(super_repo, 'add submodules')
     return super_repo
 

@@ -13,6 +13,8 @@ import shlex
 import subprocess
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -210,13 +212,45 @@ def _git_stdout(
     return stdout
 
 
+def _worktree_git_dir(repo: pathlib.Path) -> pathlib.Path | None:
+    """Resolve ordinary and linked-worktree ``.git`` markers without Git."""
+    if os.environ.get('GIT_DIR') or os.environ.get('GIT_WORK_TREE'):
+        return None
+    marker = repo / '.git'
+    if marker.is_dir():
+        return marker.resolve()
+    if marker.is_file():
+        try:
+            first_line = marker.read_text().splitlines()[0]
+        except (OSError, IndexError, UnicodeError):
+            return None
+        prefix = 'gitdir:'
+        if first_line.lower().startswith(prefix):
+            raw = first_line[len(prefix):].strip()
+            git_dir = pathlib.Path(raw)
+            if not git_dir.is_absolute():
+                git_dir = marker.parent / git_dir
+            git_dir = git_dir.resolve()
+            if git_dir.is_dir():
+                return git_dir
+    return None
+
+
 def _repo_root(path: str | os.PathLike[str]) -> pathlib.Path:
     path = pathlib.Path(path).expanduser().resolve()
+    start = path if path.is_dir() else path.parent
+    for candidate in (start, *start.parents):
+        if _worktree_git_dir(candidate) is not None:
+            return candidate
     proc = _run(['git', '-C', path, 'rev-parse', '--show-toplevel'])
     return pathlib.Path(proc.stdout.strip()).resolve()
 
 
 def _git_dir(repo: pathlib.Path) -> pathlib.Path:
+    repo = pathlib.Path(repo).expanduser().resolve()
+    git_dir = _worktree_git_dir(repo)
+    if git_dir is not None:
+        return git_dir
     raw = _git_stdout(repo, 'rev-parse', '--absolute-git-dir').strip()
     return pathlib.Path(raw).resolve()
 
@@ -277,18 +311,17 @@ def _assert_clean(
         raise EpochSafetyError(
             f'Repository must be clean before epoch planning/apply: {repo}\n{dirty}'
         )
+    git_dir = _git_dir(repo)
     for marker in [
         'MERGE_HEAD',
         'CHERRY_PICK_HEAD',
         'REVERT_HEAD',
         'REBASE_HEAD',
     ]:
-        proc = _git(repo, 'rev-parse', '-q', '--verify', marker, check=False)
-        if proc.returncode == 0:
+        if (git_dir / marker).exists():
             raise EpochSafetyError(
                 f'Repository has an in-progress operation ({marker}): {repo}'
             )
-    git_dir = _git_dir(repo)
     if (git_dir / 'rebase-merge').exists() or (git_dir / 'rebase-apply').exists():
         raise EpochSafetyError(f'Repository has an in-progress rebase: {repo}')
 
@@ -520,6 +553,14 @@ def _looks_like_local_path(spec: str) -> bool:
     if re.match(r'^[^/@:]+@[^:]+:', spec):
         return False
     return True
+
+
+def _file_url_path(spec: str) -> pathlib.Path | None:
+    parsed = urllib.parse.urlparse(spec)
+    if parsed.scheme != 'file' or parsed.netloc not in {'', 'localhost'}:
+        return None
+    raw = urllib.parse.unquote(parsed.path)
+    return pathlib.Path(urllib.request.url2pathname(raw)).resolve()
 
 
 def _default_repository_id(repo: pathlib.Path) -> str:
@@ -968,9 +1009,21 @@ class HistoryStore:
                 )
 
     def ls_refs(self, pattern: str | None = None) -> dict[str, str]:
-        args = ['git', 'ls-remote', self.spec]
-        if pattern is not None:
-            args.append(pattern)
+        inspection_path = self.local_path if self.is_local else _file_url_path(self.spec)
+        if inspection_path is not None:
+            args = [
+                'git',
+                '--git-dir',
+                inspection_path,
+                'for-each-ref',
+                '--format=%(objectname)%09%(refname)',
+            ]
+            if pattern is not None:
+                args.append(pattern)
+        else:
+            args = ['git', 'ls-remote', self.spec]
+            if pattern is not None:
+                args.append(pattern)
         proc = _run(args, check=False)
         if proc.returncode:
             raise EpochError(
