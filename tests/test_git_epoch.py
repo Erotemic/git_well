@@ -122,6 +122,11 @@ def _push(repo: pathlib.Path):
     _git(repo, 'push', '-u', 'origin', 'main')
 
 
+def _local_git_url(path: pathlib.Path) -> str:
+    """Return a cross-platform URL for a local Git transport."""
+    return path.resolve().as_uri()
+
+
 def _tree(repo: pathlib.Path, commit: str):
     return _git(repo, 'rev-parse', f'{commit}^{{tree}}').stdout.strip()
 
@@ -229,7 +234,7 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', leaf_remote, 'leaf',
+            'submodule', 'add', _local_git_url(leaf_remote), 'leaf',
         ],
         cwd=middle_seed,
     )
@@ -241,7 +246,7 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', middle_remote, 'middle',
+            'submodule', 'add', _local_git_url(middle_remote), 'middle',
         ],
         cwd=root,
     )
@@ -296,7 +301,7 @@ def test_sandbox_reports_gitlink_mismatch_before_generic_dirty_error(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', child_remote, 'child',
+            'submodule', 'add', _local_git_url(child_remote), 'child',
         ],
         cwd=root,
     )
@@ -334,7 +339,7 @@ def test_sandbox_reports_dirty_child_at_child_repository(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', child_remote, 'child',
+            'submodule', 'add', _local_git_url(child_remote), 'child',
         ],
         cwd=root,
     )
@@ -370,7 +375,7 @@ def test_sandbox_reports_uninitialized_submodule_worktree(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', child_remote, 'child',
+            'submodule', 'add', _local_git_url(child_remote), 'child',
         ],
         cwd=root,
     )
@@ -402,7 +407,7 @@ def test_sandbox_defaults_unconfigured_submodules_to_external(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', child_remote, 'child',
+            'submodule', 'add', _local_git_url(child_remote), 'child',
         ],
         cwd=root,
     )
@@ -662,7 +667,7 @@ def test_recursive_epoch_submodule_checkpoint(tmp_path):
             'protocol.file.allow=always',
             'submodule',
             'add',
-            child_remote,
+            _local_git_url(child_remote),
             'child',
         ],
         cwd=parent,
@@ -775,7 +780,7 @@ def test_nonrecursive_parent_checkpoint_keeps_epoch_child_gitlink(tmp_path):
             'protocol.file.allow=always',
             'submodule',
             'add',
-            child_remote,
+            _local_git_url(child_remote),
             'child',
         ],
         cwd=parent,
@@ -1213,7 +1218,7 @@ def test_recursive_mixed_submodule_policies_translate_only_epoch(tmp_path):
                 'protocol.file.allow=always',
                 'submodule',
                 'add',
-                remote,
+                _local_git_url(remote),
                 name,
             ],
             cwd=parent,
@@ -1278,7 +1283,7 @@ def test_nested_recursive_checkpoint_supports_detached_submodule_heads(tmp_path)
             'protocol.file.allow=always',
             'submodule',
             'add',
-            leaf_remote,
+            _local_git_url(leaf_remote),
             'leaf',
         ],
         cwd=middle_seed,
@@ -1296,7 +1301,7 @@ def test_nested_recursive_checkpoint_supports_detached_submodule_heads(tmp_path)
             'protocol.file.allow=always',
             'submodule',
             'add',
-            middle_remote,
+            _local_git_url(middle_remote),
             'middle',
         ],
         cwd=root,
@@ -1538,7 +1543,7 @@ def test_public_locator_reconstructs_detached_recursive_submodule(tmp_path):
     _run(
         [
             'git', '-c', 'protocol.file.allow=always',
-            'submodule', 'add', child_remote, 'child',
+            'submodule', 'add', _local_git_url(child_remote), 'child',
         ],
         cwd=parent,
     )

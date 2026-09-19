@@ -3484,7 +3484,7 @@ def _fresh_clone_validate(
     if remote and _default_remote_url(repo, remote):
         source = _default_remote_url(repo, remote)
     else:
-        source = f'file://{repo}'
+        source = repo.resolve().as_uri()
     assert source is not None
     with tempfile.TemporaryDirectory(prefix='git-epoch-clone-') as tmp:
         clone = pathlib.Path(tmp) / 'clone'
@@ -4196,7 +4196,7 @@ def reconstruct(
         output_path = pathlib.Path(output).expanduser().resolve()
     if output_path.exists():
         raise EpochError(f'Reconstruction destination already exists: {output_path}')
-    active_source = config.get('active_url') or f'file://{source_repo}'
+    active_source = config.get('active_url') or source_repo.resolve().as_uri()
     _run(
         [
             'git',

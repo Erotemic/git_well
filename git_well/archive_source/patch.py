@@ -499,9 +499,10 @@ def _write_standalone_apply_script(patch_root: Path) -> None:
     from . import patch_apply
 
     source_path = Path(patch_apply.__file__).resolve()
-    source = source_path.read_text(encoding='utf8')
     target = patch_root / _PATCH_APPLY_FNAME
-    target.write_text(source, encoding='utf8')
+    # This file is part of the patch transport protocol: copy bytes rather than
+    # round-tripping through text mode, which rewrites LF to CRLF on Windows.
+    target.write_bytes(source_path.read_bytes())
     target.chmod(0o755)
 
 

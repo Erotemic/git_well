@@ -430,6 +430,7 @@ def test_source_patch_overlay_preserves_implicit_parent_mode(tmp_path):
     target_parent.mkdir(parents=True)
     overlay_parent.chmod(0o755)
     target_parent.chmod(0o700)
+    target_parent_mode = stat.S_IMODE(target_parent.stat().st_mode)
     (overlay_parent / 'updated.txt').write_text('updated\n')
 
     _apply_overlay(
@@ -439,7 +440,11 @@ def test_source_patch_overlay_preserves_implicit_parent_mode(tmp_path):
     )
 
     assert (target_parent / 'updated.txt').read_text() == 'updated\n'
-    assert stat.S_IMODE(target_parent.stat().st_mode) == 0o700
+    # Windows only exposes a limited chmod model. The invariant is that an
+    # implicit parent is not touched, not that Windows can represent 0o700.
+    assert stat.S_IMODE(target_parent.stat().st_mode) == target_parent_mode
+    if os.name != 'nt':
+        assert target_parent_mode == 0o700
 
 
 def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
@@ -1275,7 +1280,7 @@ def _make_repo_with_submodules(tmp_path, submodules):
                 'protocol.file.allow=always',
                 'submodule',
                 'add',
-                str(src),
+                src.resolve().as_uri(),
                 path,
             ],
             cwd=super_repo,
@@ -1723,7 +1728,7 @@ def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
             'protocol.file.allow=always',
             'submodule',
             'add',
-            str(sub_repo),
+            sub_repo.resolve().as_uri(),
             'external/staged-only',
         ],
         cwd=super_repo,

@@ -20,6 +20,7 @@ from ._common import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
+    import git
     import tarfile
     import zipfile
 
