@@ -24,6 +24,8 @@ from .core import (
     _resolve_ref,
     _run,
     _tree_oid,
+    _worktree_git_dir,
+    _yaml_load_text,
     _write_yaml,
     apply_plan,
     build_plan,
@@ -42,8 +44,7 @@ SANDBOX_MANIFEST = 'sandbox.yaml'
 
 
 def _is_within(path: pathlib.Path, root: pathlib.Path) -> bool:
-    path = path.resolve()
-    root = root.resolve()
+    # Callers normalize both operands before containment checks.
     try:
         path.relative_to(root)
     except ValueError:
@@ -101,16 +102,8 @@ def _discover_source_graph(
         for occurrence in _parse_gitmodules(repo):
             path = occurrence['path']
             source_child_path = repo / path
-            probe = _run(
-                ['git', '-C', source_child_path, 'rev-parse', '--show-toplevel'],
-                check=False,
-            )
-            child_repo = (
-                pathlib.Path(probe.stdout.strip()).resolve()
-                if probe.returncode == 0 and probe.stdout.strip()
-                else None
-            )
-            if child_repo != source_child_path.resolve():
+            child_repo = source_child_path.resolve()
+            if _worktree_git_dir(child_repo) is None:
                 problems.append(
                     '\n'.join(
                         [
@@ -393,12 +386,10 @@ def _sandbox_manifest_path(path: str | os.PathLike[str]) -> pathlib.Path:
 
 
 def load_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
-    import yaml
-
     manifest_path = _sandbox_manifest_path(path)
     if not manifest_path.exists():
         raise EpochError(f'No Git epoch sandbox manifest: {manifest_path}')
-    data = yaml.safe_load(manifest_path.read_text()) or {}
+    data = _yaml_load_text(manifest_path.read_text())
     if data.get('format_version') != SANDBOX_FORMAT_VERSION:
         raise EpochError(
             f'Unsupported sandbox format: {data.get("format_version")!r}'
@@ -677,6 +668,7 @@ def _fresh_recursive_clone_validate(
                 )
         initialized[node['repository']] = {
             'relpath': relpath,
+            'checkout': str(checkout),
             'head': actual,
             'retired_tip_present': retired_present,
         }
@@ -805,9 +797,6 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
     verification_run = pathlib.Path(
         tempfile.mkdtemp(prefix='run-', dir=verification_root)
     )
-    fresh_root = verification_run / 'fresh'
-    fresh_root.mkdir(parents=True)
-
     results: dict[str, Any] = {}
     for node in nodes:
         if not node.get('managed'):
@@ -863,34 +852,15 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
                 f'{remote_tip} != {new}'
             )
 
-        fresh = fresh_root / node['repository']
-        _run(
-            [
-                'git',
-                'clone',
-                '--no-local',
-                '--branch',
-                branch,
-                node['active_remote'],
-                fresh,
-            ]
-        )
-        fresh_head = _resolve_ref(fresh, 'HEAD')
-        if fresh_head != new:
-            raise EpochSafetyError(
-                f'Fresh sandbox clone mismatch for {node["repository"]}'
-            )
-        retired = _git(fresh, 'cat-file', '-e', f'{old}^{{commit}}', check=False)
-        if retired.returncode == 0:
-            raise EpochSafetyError(
-                f'Retired tip leaked into fresh clone for {node["repository"]}: {old}'
-            )
+        # Deep archive verification is independent of clone transport.  The
+        # recursive fresh-clone pass below independently clones every graph node,
+        # checks the active tip, proves retired tips are absent, composes gitlinks,
+        # and verifies clean worktrees.  Do not clone every managed repository a
+        # second time here.
         deep = verify(repo, deep=True)
         results[node['repository']] = {
             'old_tip': old,
             'new_tip': new,
-            'fresh_clone': str(fresh),
-            'retired_tip_present': False,
             'deep_verified': all(
                 item.get('verified', False)
                 for item in deep.get('deep', {}).get('boundaries', [])
@@ -900,6 +870,12 @@ def verify_sandbox(path: str | os.PathLike[str]) -> dict[str, Any]:
         node['new_tree'] = _tree_oid(repo, new)
 
     recursive_fresh = _fresh_recursive_clone_validate(data, verification_run)
+    recursive_repositories = recursive_fresh['repositories']
+    for repository_id, result in results.items():
+        fresh_result = recursive_repositories[repository_id]
+        result['fresh_clone'] = fresh_result['checkout']
+        result['retired_tip_present'] = fresh_result['retired_tip_present']
+
     data['state'] = 'verified'
     data['verification'] = results
     data['recursive_fresh_clone'] = recursive_fresh
@@ -1037,7 +1013,11 @@ def run_sandbox(
         prepared = {'status': 'skipped', 'reason': f'already-{state}'}
 
     if state == 'prepared':
-        published = publish_sandbox(sandbox_root, fresh_clone=True)
+        # run_sandbox always performs verify_sandbox immediately below.  That
+        # recursive verifier independently fresh-clones every graph node, so
+        # asking publish_plan for its ordinary fresh-clone pass would duplicate
+        # the same transport/survival checks.
+        published = publish_sandbox(sandbox_root, fresh_clone=False)
         state = 'published'
     elif state in {'published', 'verified'}:
         published = {'status': 'skipped', 'reason': f'already-{state}'}

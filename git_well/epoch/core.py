@@ -22,6 +22,13 @@ from typing import Any
 import yaml
 
 
+# PyYAML's safe_* helpers always select the pure-Python loader/dumper.  Prefer
+# LibYAML when the optional C extension is installed while retaining the same
+# safe schema and a portable fallback.
+_YAML_SAFE_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
+_YAML_SAFE_DUMPER = getattr(yaml, 'CSafeDumper', yaml.SafeDumper)
+
+
 FORMAT_VERSION = 1
 CONFIG_RELATIVE_PATH = pathlib.Path('epoch') / 'config.yaml'
 TRANSACTION_RELATIVE_PATH = pathlib.Path('epoch') / 'transactions'
@@ -95,11 +102,16 @@ def _isoformat(value: datetime_mod.datetime | None = None) -> str:
 
 
 def _yaml_dump(data: Any) -> str:
-    return yaml.safe_dump(data, sort_keys=False, width=100)
+    return yaml.dump(
+        data,
+        Dumper=_YAML_SAFE_DUMPER,
+        sort_keys=False,
+        width=100,
+    )
 
 
 def _yaml_load_text(text: str) -> dict[str, Any]:
-    data = yaml.safe_load(text)
+    data = yaml.load(text, Loader=_YAML_SAFE_LOADER)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -139,8 +151,13 @@ def _run(
     subprocess_input = input.encode('utf-8') if string_input else input
     subprocess_text = False if string_input else requested_text
 
-    final_env = os.environ.copy()
+    # Passing env=None lets subprocess inherit the process environment without
+    # rebuilding a several-hundred-entry mapping for every Git invocation.
+    # Materialize a merged environment only for the small minority of callers
+    # that actually override variables.
+    final_env = None
     if env:
+        final_env = os.environ.copy()
         final_env.update({str(k): str(v) for k, v in env.items()})
     proc = subprocess.run(
         argv,
@@ -335,7 +352,77 @@ def _assert_one_worktree(repo: pathlib.Path) -> None:
         )
 
 
+def _read_loose_or_packed_ref(git_dir: pathlib.Path, ref: str) -> str | None:
+    """Resolve a full ref from ordinary files, falling back for other backends."""
+    common_dir = git_dir
+    commondir_path = git_dir / 'commondir'
+    if commondir_path.is_file():
+        with contextlib.suppress(OSError, UnicodeError):
+            raw = commondir_path.read_text().strip()
+            candidate = pathlib.Path(raw)
+            if not candidate.is_absolute():
+                candidate = git_dir / candidate
+            common_dir = candidate.resolve()
+
+    # Linked worktrees keep HEAD/worktree-local refs in git_dir and shared
+    # branches/tags in common_dir.  Loose refs override packed refs.
+    search_dirs = (git_dir,) if common_dir == git_dir else (git_dir, common_dir)
+    for base in search_dirs:
+        path = base / ref
+        if not path.is_file():
+            continue
+        with contextlib.suppress(OSError, UnicodeError):
+            value = path.read_text().strip()
+            if value.startswith('ref: '):
+                return _read_loose_or_packed_ref(git_dir, value[5:].strip())
+            if re.fullmatch(r'[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64}', value):
+                return value.lower()
+
+    packed = common_dir / 'packed-refs'
+    if packed.is_file():
+        with contextlib.suppress(OSError, UnicodeError):
+            for line in packed.read_text().splitlines():
+                if not line or line[0] in '#^':
+                    continue
+                oid, sep, name = line.partition(' ')
+                if sep and name == ref and re.fullmatch(
+                    r'[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64}', oid
+                ):
+                    return oid.lower()
+    return None
+
+
 def _resolve_ref(repo: pathlib.Path, ref: str) -> str:
+    # Every internal caller currently asks for HEAD or a fully-qualified ref.
+    # Those are cheap to resolve directly for the common files/packed-refs
+    # backend.  Fall back to Git for reftable, environment-overridden layouts,
+    # or any future revision expression.
+    if not (os.environ.get('GIT_DIR') or os.environ.get('GIT_WORK_TREE')):
+        repo_path = pathlib.Path(repo)
+        git_dir = _worktree_git_dir(repo_path)
+        if git_dir is None:
+            bare = repo_path.expanduser().resolve()
+            if (bare / 'HEAD').is_file() and (bare / 'objects').is_dir():
+                git_dir = bare
+        if git_dir is not None:
+            if ref == 'HEAD':
+                head = git_dir / 'HEAD'
+                with contextlib.suppress(OSError, UnicodeError):
+                    value = head.read_text().strip()
+                    if value.startswith('ref: '):
+                        resolved = _read_loose_or_packed_ref(
+                            git_dir, value[5:].strip()
+                        )
+                        if resolved is not None:
+                            return resolved
+                    elif re.fullmatch(
+                        r'[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64}', value
+                    ):
+                        return value.lower()
+            elif ref.startswith('refs/'):
+                resolved = _read_loose_or_packed_ref(git_dir, ref)
+                if resolved is not None:
+                    return resolved
     return _git_stdout(repo, 'rev-parse', '--verify', ref).strip()
 
 
@@ -381,6 +468,16 @@ def _local_tags(repo: pathlib.Path) -> dict[str, str]:
 
 
 def _current_branch(repo: pathlib.Path) -> str | None:
+    if not (os.environ.get('GIT_DIR') or os.environ.get('GIT_WORK_TREE')):
+        git_dir = _worktree_git_dir(pathlib.Path(repo))
+        if git_dir is not None:
+            with contextlib.suppress(OSError, UnicodeError):
+                value = (git_dir / 'HEAD').read_text().strip()
+                prefix = 'ref: refs/heads/'
+                if value.startswith(prefix):
+                    return value[len(prefix):]
+                if re.fullmatch(r'[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64}', value):
+                    return None
     proc = _git(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
     if proc.returncode:
         return None
@@ -502,11 +599,50 @@ def _gitlink_oid(repo: pathlib.Path, commit: str, path: str) -> str:
 
 
 def _discover_submodules(repo: pathlib.Path, commit: str = 'HEAD') -> list[dict[str, Any]]:
+    items = _parse_gitmodules(repo, commit)
+    if not items:
+        return []
+
+    # Resolve every direct gitlink in one tree walk instead of one Git process
+    # per submodule.  -z keeps path parsing byte-safe for whitespace.
+    proc = _git(
+        repo,
+        'ls-tree',
+        '-z',
+        commit,
+        '--',
+        *(item['path'] for item in items),
+        text=False,
+    )
+    raw = proc.stdout
+    assert isinstance(raw, bytes)
+    gitlinks: dict[str, str] = {}
+    for record in raw.split(b'\0'):
+        if not record:
+            continue
+        meta, sep, raw_path = record.partition(b'\t')
+        if not sep:
+            raise EpochError('Unable to parse NUL-delimited git ls-tree output')
+        parts = meta.decode('ascii').split(' ', 2)
+        if len(parts) != 3:
+            raise EpochError(f'Unexpected git ls-tree record: {meta!r}')
+        mode, kind, oid = parts
+        path = os.fsdecode(raw_path)
+        if mode != '160000' or kind != 'commit':
+            raise EpochError(
+                f'Expected gitlink at {path!r}; got mode={mode}, type={kind}'
+            )
+        gitlinks[path] = oid
+
     occurrences = []
-    for item in _parse_gitmodules(repo, commit):
-        item = dict(item)
-        item['commit'] = _gitlink_oid(repo, commit, item['path'])
-        item['worktree'] = str((repo / item['path']).resolve())
+    for source_item in items:
+        item = dict(source_item)
+        path = item['path']
+        oid = gitlinks.get(path)
+        if oid is None:
+            raise EpochError(f'No tree entry for submodule path {path!r} at {commit}')
+        item['commit'] = oid
+        item['worktree'] = str((repo / path).resolve())
         occurrences.append(item)
     return occurrences
 
@@ -2362,10 +2498,14 @@ def _write_transaction_files(
     plan: Mapping[str, Any],
     entry: Mapping[str, Any],
     state: Mapping[str, Any],
+    *,
+    plan_text: str | None = None,
 ) -> None:
     tx_dir = _transaction_dir(entry, plan['transaction_id'])
     tx_dir.mkdir(parents=True, exist_ok=True)
-    _write_yaml(tx_dir / 'plan.yaml', plan)
+    if plan_text is None:
+        plan_text = _yaml_dump(plan)
+    (tx_dir / 'plan.yaml').write_text(plan_text)
     old_refs = {item['source']: item['oid'] for item in entry['refs']}
     new_refs = {entry['branch_ref']: entry['successor_root']}
     _write_yaml(tx_dir / 'old-refs.yaml', old_refs)
@@ -2947,6 +3087,7 @@ def apply_plan(
     else:
         plan = load_plan(plan_or_path)
     repositories = plan['repositories']
+    plan_text = _yaml_dump(plan)
     _emit_progress(
         progress,
         f'apply transaction {plan["transaction_id"]}: '
@@ -2971,14 +3112,14 @@ def apply_plan(
             'started_at': _isoformat(),
             'phases': {},
         }
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
 
         def repo_progress(message: str, *, _label: str = label) -> None:
             _emit_progress(progress, f'{_label}: {message}')
 
         verification = _archive_entry(entry, progress=repo_progress)
         state['phases']['archive'] = 'verified'
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
         _emit_progress(progress, f'{label}: materializing successor root')
         _materialize_successor(entry)
         boundary = verify_boundary(entry)
@@ -2987,7 +3128,7 @@ def apply_plan(
         _write_transaction_verification(plan, entry, verification)
         state['status'] = 'prepared'
         state['prepared_at'] = _isoformat()
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
         bundle = verification.get('bundle')
         bundle_note = ''
         if bundle:
@@ -3016,7 +3157,7 @@ def apply_plan(
         if visibility is not None:
             public_visibility[entry['repository']] = visibility
             state.setdefault('phases', {})['public_archive'] = 'verified'
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
     result = {
         'transaction_id': plan['transaction_id'],
         'status': 'prepared',
@@ -3427,6 +3568,7 @@ def publish_plan(
     else:
         plan = load_plan(plan_or_path)
     repositories = plan['repositories']
+    plan_text = _yaml_dump(plan)
     clone_results = {}
     _emit_progress(
         progress,
@@ -3459,7 +3601,7 @@ def publish_plan(
         _archive_refs_verified(entry)
         verify_boundary(entry)
         state['status'] = 'publishing'
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
         _emit_progress(progress, f'{label}: atomically updating active remote refs')
         _publish_remote(entry)
         _emit_progress(progress, f'{label}: updating local refs and checkout')
@@ -3492,7 +3634,7 @@ def publish_plan(
             )
         state['status'] = 'published'
         state['published_at'] = _isoformat()
-        _write_transaction_files(plan, entry, state)
+        _write_transaction_files(plan, entry, state, plan_text=plan_text)
         _emit_progress(
             progress,
             f'{label}: published in {_elapsed_text(repo_start)}',

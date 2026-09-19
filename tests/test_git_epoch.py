@@ -126,6 +126,33 @@ def _tree(repo: pathlib.Path, commit: str):
     return _git(repo, 'rev-parse', f'{commit}^{{tree}}').stdout.strip()
 
 
+def test_internal_ref_fast_path_handles_git_storage_variants(tmp_path):
+    from git_well.epoch import core as epoch_core
+
+    repo = _init_repo(tmp_path / 'repo')
+    tip = _commit(repo, 'A')
+    assert epoch_core._resolve_ref(repo, 'HEAD') == tip
+    assert epoch_core._resolve_ref(repo, 'refs/heads/main') == tip
+    assert epoch_core._current_branch(repo) == 'main'
+
+    _git(repo, 'pack-refs', '--all', '--prune')
+    assert epoch_core._resolve_ref(repo, 'refs/heads/main') == tip
+
+    linked = tmp_path / 'linked'
+    _git(repo, 'worktree', 'add', '-b', 'linked-branch', linked, tip)
+    assert epoch_core._resolve_ref(linked, 'HEAD') == tip
+    assert epoch_core._resolve_ref(linked, 'refs/heads/linked-branch') == tip
+    assert epoch_core._current_branch(linked) == 'linked-branch'
+
+    _git(linked, 'checkout', '--detach')
+    assert epoch_core._resolve_ref(linked, 'HEAD') == tip
+    assert epoch_core._current_branch(linked) is None
+
+    bare = tmp_path / 'bare.git'
+    _run(['git', 'clone', '--bare', repo, bare])
+    assert epoch_core._resolve_ref(bare, 'refs/heads/main') == tip
+
+
 def _manifest(repo: pathlib.Path):
     return inspect_manifest(repo)['manifest']
 
@@ -158,7 +185,7 @@ def test_sandbox_single_repo_rehearsal_is_contained(tmp_path):
     assert planned['status'] == 'planned'
     prepared = apply_sandbox(sandbox_dpath)
     assert prepared['status'] == 'prepared'
-    published = publish_sandbox(sandbox_dpath)
+    published = publish_sandbox(sandbox_dpath, fresh_clone=False)
     assert published['status'] == 'published'
     verified = verify_sandbox(sandbox_dpath)
     assert verified['status'] == 'verified'
@@ -174,9 +201,24 @@ def test_sandbox_single_repo_rehearsal_is_contained(tmp_path):
     ).stdout.strip() == source_remote_before
     assert _git(source, 'rev-parse', 'HEAD').stdout.strip() == source_head_before
 
+    # A completed sandbox may be run again.  Exercise the idempotent resume
+    # contract on the single-repository fixture rather than paying for a second
+    # three-repository recursive verification in the nested-submodule test.
+    first_verification_run = pathlib.Path(verified['verification_run'])
+    rerun = run_sandbox(sandbox_dpath, bundle=False)
+    assert rerun['planned']['status'] == 'skipped'
+    assert rerun['prepared']['status'] == 'skipped'
+    assert rerun['published']['status'] == 'skipped'
+    assert rerun['verification']['status'] == 'verified'
+    second_verification_run = pathlib.Path(
+        rerun['verification']['verification_run']
+    )
+    assert second_verification_run != first_verification_run
+    assert first_verification_run.exists()
+    assert second_verification_run.exists()
 
-def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path='/tmp/foo'):
-    tmp_path = pathlib.Path(tmp_path)
+
+def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path):
     leaf_remote = tmp_path / 'leaf-source.git'
     leaf_seed = _init_repo(tmp_path / 'leaf-seed', leaf_remote)
     _commit(leaf_seed, 'leaf-A')
@@ -243,23 +285,6 @@ def test_sandbox_recursive_rehearsal_translates_nested_gitlinks(tmp_path='/tmp/f
     for marker in git_markers:
         normalized = marker.read_text().replace('\\', '/')
         assert '/modules/' not in normalized
-
-    first_verification_run = pathlib.Path(
-        result['verification']['verification_run']
-    )
-
-    rerun = run_sandbox(sandbox_dpath, bundle=False)
-    assert rerun['planned']['status'] == 'skipped'
-    assert rerun['prepared']['status'] == 'skipped'
-    assert rerun['published']['status'] == 'skipped'
-    assert rerun['verification']['status'] == 'verified'
-    second_verification_run = pathlib.Path(
-        rerun['verification']['verification_run']
-    )
-    assert second_verification_run != first_verification_run
-    assert first_verification_run.exists()
-    assert second_verification_run.exists()
-
 
 def test_sandbox_reports_gitlink_mismatch_before_generic_dirty_error(tmp_path):
     child_remote = tmp_path / 'child-source.git'
@@ -461,7 +486,7 @@ def test_epoch_stats_report_store_epoch_bundle_and_sandbox_sizes(
     created = create_sandbox(source, output=sandbox_dpath)
     plan_sandbox(sandbox_dpath, bundle=True)
     apply_sandbox(sandbox_dpath)
-    publish_sandbox(sandbox_dpath)
+    publish_sandbox(sandbox_dpath, fresh_clone=False)
     verified = verify_sandbox(sandbox_dpath)
     assert verified['recursive_fresh_clone']['repositories_initialized'] == 1
 

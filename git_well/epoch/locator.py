@@ -8,18 +8,24 @@ from typing import Any
 import yaml
 
 
+_YAML_SAFE_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
+_YAML_SAFE_DUMPER = getattr(yaml, 'CSafeDumper', yaml.SafeDumper)
+
+
 PUBLIC_LOCATOR_FILENAME = '.git-epoch.yaml'
 PUBLIC_LOCATOR_FORMAT_VERSION = 1
 
 
 def _yaml_dump(data: Any) -> str:
-    return yaml.safe_dump(data, sort_keys=False, width=100)
+    return yaml.dump(
+        data, Dumper=_YAML_SAFE_DUMPER, sort_keys=False, width=100
+    )
 
 
 def _yaml_load_text(text: str) -> dict[str, Any]:
     from .core import EpochError
 
-    data = yaml.safe_load(text)
+    data = yaml.load(text, Loader=_YAML_SAFE_LOADER)
     if data is None:
         return {}
     if not isinstance(data, dict):
