@@ -127,7 +127,7 @@ immediately before serialization:
 
 .. code:: python
 
-   from git_well.git_archive_source import archive_source
+   from git_well.archive_source import archive_source
 
    def prepare(context):
        report = context.archive_root / 'PROJECT_ARCHIVE_REPORT.txt'
@@ -201,7 +201,7 @@ manifest:
 The script verifies the exact base archive, applies superproject and submodule Git
 bundles plus residual deletions/overlays, verifies the resulting repository HEADs,
 and prints the reconstructed target source root. Installed callers use the same
-implementation through ``git_well.archive_source_patch.apply_source_patch``.
+implementation through ``git_well.archive_source.apply_source_patch``.
 
 
 Bounded active history with Git epochs

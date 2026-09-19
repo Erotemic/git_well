@@ -766,7 +766,7 @@ def sandbox_stats(
                 'Recorded recursive fresh clone no longer exists. Run '
                 '`git epoch sandbox verify <sandbox>` again.'
             )
-        from git_well.git_archive_source import archive_source
+        from git_well.archive_source import archive_source
 
         package_root = sandbox_root / 'verification' / 'source-archives'
         package_root.mkdir(parents=True, exist_ok=True)

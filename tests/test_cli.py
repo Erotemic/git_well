@@ -72,7 +72,7 @@ def test_archive_source_depth_zero_source_only(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo'
     _init_demo_repo(repo)
@@ -105,7 +105,7 @@ def test_archive_source_default_name_preserves_symlinked_repo_basename(
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'physical_repo_name'
     _init_demo_repo(repo)
@@ -144,7 +144,7 @@ def test_archive_source_auto_zip(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_zip'
     _init_demo_repo(repo)
@@ -174,7 +174,7 @@ def test_archive_source_auto_unknown_extension_falls_back_to_tar_gz(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_auto_fallback'
     _init_demo_repo(repo)
@@ -309,7 +309,7 @@ def test_archive_source_with_history(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_history'
     _init_demo_repo(repo)
@@ -349,7 +349,7 @@ def test_archive_source_programmatic_hooks(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_hooks'
     _init_demo_repo(repo)
@@ -397,7 +397,7 @@ def test_archive_source_programmatic_hooks(tmp_path):
 def test_source_patch_overlay_preserves_implicit_parent_mode(tmp_path):
     import stat
 
-    from git_well.source_patch_apply import _apply_overlay
+    from git_well.archive_source.patch_apply import _apply_overlay
 
     overlay_root = tmp_path / 'overlay'
     target_root = tmp_path / 'target'
@@ -425,8 +425,8 @@ def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
 
     import ubelt as ub
 
-    from git_well.archive_source_patch import apply_source_patch
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_patch_explicit'
     _init_demo_repo(repo)
@@ -473,12 +473,12 @@ def test_archive_source_patch_explicit_base_roundtrip(tmp_path):
     import sys
     from pathlib import Path
 
-    from git_well import source_patch_apply
+    from git_well.archive_source import patch_apply
 
     patch_extract = tmp_path / 'standalone-patch-extract'
     patch_root = _extract_tar_root(patch_archive, patch_extract)
     apply_script = patch_root / 'APPLY_SOURCE_PATCH.py'
-    assert apply_script.read_bytes() == Path(source_patch_apply.__file__).read_bytes()
+    assert apply_script.read_bytes() == Path(patch_apply.__file__).read_bytes()
     standalone_output = tmp_path / 'standalone-applied-patch'
     proc = subprocess.run(
         [
@@ -521,7 +521,7 @@ def test_archive_source_patch_auto_chooses_closest_full_base(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_patch_auto'
     _init_demo_repo(repo)
@@ -571,8 +571,8 @@ def test_archive_source_patch_rejects_source_only(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.archive_source_patch import SourcePatchError
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import SourcePatchError
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_patch_source_only'
     _init_demo_repo(repo)
@@ -593,8 +593,8 @@ def test_archive_source_patch_rejects_source_only(tmp_path):
 def test_archive_source_patch_programmatic_hooks_roundtrip(tmp_path):
     import ubelt as ub
 
-    from git_well.archive_source_patch import apply_source_patch
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_patch_hooks'
     _init_demo_repo(repo)
@@ -666,7 +666,7 @@ def test_archive_source_hook_generated_excludes(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_hook_excludes'
     _init_demo_repo(repo)
@@ -713,7 +713,7 @@ def test_archive_source_hook_failure_aborts_and_cleans(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import (
+    from git_well.archive_source import (
         ArchiveSourceHookError,
         archive_source,
     )
@@ -757,7 +757,7 @@ def test_archive_source_hook_failure_can_retain_stage(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import (
+    from git_well.archive_source import (
         ArchiveSourceHookError,
         archive_source,
     )
@@ -799,7 +799,7 @@ def test_stage_source_archive_direct_api(tmp_path):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import stage_source_archive
+    from git_well.archive_source import stage_source_archive
 
     repo = tmp_path / 'demo_direct_stage'
     _init_demo_repo(repo)
@@ -830,7 +830,7 @@ def test_archive_source_all_branches_preserves_cached_refs(tmp_path):
     """Archive locally fetched contributor refs without contacting remotes."""
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_all_branches'
     _init_demo_repo(repo)
@@ -976,7 +976,7 @@ def test_archive_source_all_branches_shallow_depth(tmp_path):
     """Apply --depth independently from every included branch tip."""
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_all_branches_shallow'
     _init_demo_repo(repo)
@@ -1070,7 +1070,7 @@ def test_archive_source_all_branches_rejects_source_only(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_all_branches_source_only'
     _init_demo_repo(repo)
@@ -1091,7 +1091,7 @@ def test_archive_source_all_branches_rejects_source_only(tmp_path):
 def test_archive_source_info_paths_status_and_redaction(tmp_path):
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_info'
     _init_demo_repo(repo)
@@ -1151,7 +1151,7 @@ def test_archive_source_info_path_collision_is_safe(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     repo = tmp_path / 'demo_collision'
     target = tmp_path / 'outside-target.txt'
@@ -1182,7 +1182,7 @@ def test_archive_source_prints_output_directory(tmp_path, monkeypatch):
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     linked_paths = []
 
@@ -1312,7 +1312,7 @@ def _extract_tar_root(archive, dst):
 def test_archive_source_submodule_depth_spec_resolution():
     import pytest
 
-    from git_well.git_archive_source import (
+    from git_well.archive_source._policy import (
         _depth_label,
         _parse_submodule_depth_spec,
     )
@@ -1337,7 +1337,7 @@ def test_archive_source_submodule_depth_spec_resolution():
 
 
 def test_archive_source_submodule_depth_zero_source_only(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'lib_src')
     super_repo = _make_repo_with_submodules(
@@ -1371,7 +1371,7 @@ def test_archive_source_patch_git_submodule_bundle_standalone_roundtrip(tmp_path
 
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'patch_git_sub')
     super_repo = _make_repo_with_submodules(
@@ -1455,8 +1455,8 @@ def test_archive_source_patch_git_submodule_bundle_standalone_roundtrip(tmp_path
 def test_archive_source_patch_source_only_submodule_roundtrip(tmp_path):
     import ubelt as ub
 
-    from git_well.archive_source_patch import apply_source_patch
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'patch_source_only_sub')
     super_repo = _make_repo_with_submodules(
@@ -1497,7 +1497,7 @@ def test_archive_source_patch_source_only_submodule_roundtrip(tmp_path):
 def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'local_recovery_src')
     super_repo = _make_repo_with_submodules(
@@ -1567,7 +1567,7 @@ def test_archive_source_recovers_unadvertised_local_submodule_commit(tmp_path):
 def test_archive_source_recovers_submodule_commit_from_source_remote(tmp_path):
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     remote_work = _make_submodule_repo(tmp_path, 'remote_recovery_work')
     committed_sha = _stdout_text(
@@ -1654,7 +1654,7 @@ def test_archive_source_warns_and_omits_uninitialized_submodule(
 ):
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'uninitialized_src')
     super_repo = _make_repo_with_submodules(
@@ -1695,7 +1695,7 @@ def test_archive_source_warns_and_omits_uninitialized_submodule(
 def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'staged_only_src')
     super_repo = tmp_path / 'staged_only_super'
@@ -1734,7 +1734,7 @@ def test_archive_source_uses_committed_submodules_not_staged_index(tmp_path):
 
 
 def test_archive_source_submodule_path_with_spaces(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'space_src')
     super_repo = _make_repo_with_submodules(
@@ -1761,7 +1761,7 @@ def test_archive_source_missing_gitmodules_mapping_fails(tmp_path):
     import pytest
     import ubelt as ub
 
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_repo = _make_submodule_repo(tmp_path, 'broken_mapping_src')
     super_repo = _make_repo_with_submodules(
@@ -1784,7 +1784,7 @@ def test_archive_source_missing_gitmodules_mapping_fails(tmp_path):
 
 
 def test_archive_source_submodule_depth_glob_and_exact_override(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     ordinary_src = _make_submodule_repo(tmp_path, 'ordinary_src')
     special_src = _make_submodule_repo(tmp_path, 'special_src')
@@ -1818,7 +1818,7 @@ def test_archive_source_submodule_depth_glob_and_exact_override(tmp_path):
 
 
 def test_archive_source_exclude_submodule(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     keep_src = _make_submodule_repo(tmp_path, 'keep_src')
     data_src = _make_submodule_repo(
@@ -1852,7 +1852,7 @@ def test_archive_source_exclude_submodule(tmp_path):
 
 
 def test_archive_source_excluding_parent_omits_nested_submodules(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     inner_src = _make_submodule_repo(
         tmp_path,
@@ -1888,10 +1888,8 @@ def test_archive_source_excluding_parent_omits_nested_submodules(tmp_path):
 def test_archive_source_exclude_submodule_glob_resolution():
     import pytest
 
-    from git_well.git_archive_source import (
-        SubmoduleStatus,
-        _resolve_exclude_submodule_paths,
-    )
+    from git_well.archive_source._common import SubmoduleStatus
+    from git_well.archive_source._policy import _resolve_exclude_submodule_paths
 
     infos = [
         SubmoduleStatus(' ', 'a' * 40, 'external/keep', ''),
@@ -1923,7 +1921,7 @@ def test_archive_source_exclude_submodule_glob_resolution():
 
 
 def test_archive_source_no_submodules(tmp_path):
-    from git_well.git_archive_source import archive_source
+    from git_well.archive_source import archive_source
 
     sub_src = _make_submodule_repo(tmp_path, 'sub_src')
     super_repo = _make_repo_with_submodules(

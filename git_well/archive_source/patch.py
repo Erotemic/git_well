@@ -10,28 +10,40 @@ other staged differences that Git does not reconstruct.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
-import stat
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:  # pragma: no cover
     from ._common import ResolvedArchiveFormat
 
-from git_well.source_patch_apply import SourcePatchError, apply_source_patch
+from .patch_apply import (
+    PATCH_MANIFEST_FNAME as _PATCH_MANIFEST_FNAME,
+    PATCH_SCHEMA as _PATCH_SCHEMA,
+    PathLike,
+    SourcePatchError,
+    _apply_deletions,
+    _apply_git_delta,
+    _apply_overlay,
+    _copy_entry,
+    _extract_archive,
+    _git,
+    _git_command,
+    _repo_has_commit,
+    _repo_head,
+    _run,
+    _safe_target,
+    _sha256_file,
+    _tree_entries,
+)
 
-PathLike = str | os.PathLike[str]
-_PATCH_MANIFEST_FNAME = 'GIT_WELL_SOURCE_PATCH.json'
 _PATCH_README_FNAME = 'README.txt'
 _PATCH_APPLY_FNAME = 'APPLY_SOURCE_PATCH.py'
 _REGISTRY_SCHEMA = 1
-_PATCH_SCHEMA = 1
 
 
 @dataclass(frozen=True)
@@ -45,64 +57,6 @@ class SourceArchiveInfo:
     history_depth: int | None
     all_branches: bool
     generated_timestamp: str | None
-
-
-@dataclass(frozen=True)
-class _Entry:
-    kind: str
-    mode: int
-    digest: str | None = None
-    link_target: str | None = None
-
-
-def _run(
-    args: Iterable[PathLike],
-    *,
-    cwd: Path | None = None,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    cmd = [os.fspath(part) for part in args]
-    proc = subprocess.run(
-        cmd,
-        cwd=os.fspath(cwd) if cwd is not None else None,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if check and proc.returncode != 0:
-        rendered = ' '.join(cmd)
-        raise SourcePatchError(
-            f'command failed with code {proc.returncode}: {rendered}\n'
-            f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
-        )
-    return proc
-
-
-def _git_command(repo: Path, *args: PathLike) -> list[PathLike]:
-    # Source archives may be unpacked by a different uid than the one recorded
-    # in the tar metadata (notably in agent/container handoffs). Trust only the
-    # exact repository this operation was explicitly given; never mutate the
-    # user's global safe.directory configuration.
-    return [
-        'git',
-        '-c',
-        f'safe.directory={repo.resolve()}',
-        '-C',
-        repo,
-        *args,
-    ]
-
-
-def _git(repo: Path, *args: str, check: bool = True) -> str:
-    return _run(_git_command(repo, *args), check=check).stdout.rstrip('\n')
-
-
-def _sha256_file(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with path.open('rb') as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b''):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def _git_common_dir(repo_root: Path) -> Path:
@@ -405,74 +359,6 @@ def resolve_patch_base(
     )
 
 
-def _safe_target(root: Path, relpath: str) -> Path:
-    pure = PurePosixPath(relpath)
-    if pure.is_absolute() or any(part in {'', '.', '..'} for part in pure.parts):
-        raise SourcePatchError(f'unsafe patch path: {relpath!r}')
-    path = root.joinpath(*pure.parts)
-    resolved_parent = path.parent.resolve()
-    root_resolved = root.resolve()
-    if resolved_parent != root_resolved and root_resolved not in resolved_parent.parents:
-        raise SourcePatchError(f'patch path escapes target root: {relpath!r}')
-    return path
-
-
-def _safe_extract_tar(tar: Any, dst: Path) -> None:
-    for member in tar.getmembers():
-        pure = PurePosixPath(member.name)
-        if pure.is_absolute() or '..' in pure.parts:
-            raise SourcePatchError(f'unsafe archive member: {member.name!r}')
-    try:
-        tar.extractall(dst, filter='fully_trusted')
-    except TypeError:
-        tar.extractall(dst)
-
-
-def _extract_archive(path: Path, dst: Path) -> None:
-    import tarfile
-    import zipfile
-
-    dst.mkdir(parents=True, exist_ok=True)
-    if zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path, 'r') as zfile:
-            for info in zfile.infolist():
-                pure = PurePosixPath(info.filename)
-                if pure.is_absolute() or '..' in pure.parts:
-                    raise SourcePatchError(
-                        f'unsafe archive member: {info.filename!r}'
-                    )
-                target = dst.joinpath(*pure.parts)
-                mode = (info.external_attr >> 16) & 0xFFFF
-                if info.is_dir() or stat.S_ISDIR(mode):
-                    target.mkdir(parents=True, exist_ok=True)
-                    if mode:
-                        os.chmod(target, stat.S_IMODE(mode))
-                elif stat.S_ISLNK(mode):
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if os.path.lexists(target):
-                        _remove_path(target)
-                    os.symlink(zfile.read(info).decode(), target)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zfile.open(info, 'r') as src, target.open('wb') as file:
-                        shutil.copyfileobj(src, file)
-                    if mode:
-                        os.chmod(target, stat.S_IMODE(mode))
-    else:
-        with tarfile.open(path, 'r:*') as tar:
-            _safe_extract_tar(tar, dst)
-
-
-def _repo_head(repo: Path) -> str:
-    return _git(repo, 'rev-parse', 'HEAD')
-
-
-def _repo_has_commit(repo: Path, commit: str) -> bool:
-    proc = _run(
-        _git_command(repo, 'cat-file', '-e', f'{commit}^{{commit}}'),
-        check=False,
-    )
-    return proc.returncode == 0
 
 
 def _create_bundle(
@@ -525,86 +411,6 @@ def _create_bundle(
     return True
 
 
-def _apply_git_delta(repo: Path, bundle: Path | None, target_head: str) -> None:
-    if bundle is not None:
-        _run(_git_command(repo, 'bundle', 'unbundle', bundle))
-    _run(_git_command(repo, 'reset', '--hard', '--quiet', target_head))
-
-
-def _entry_for(path: Path) -> _Entry:
-    st = path.lstat()
-    mode = stat.S_IMODE(st.st_mode)
-    if stat.S_ISLNK(st.st_mode):
-        return _Entry('symlink', mode, link_target=os.readlink(path))
-    if stat.S_ISDIR(st.st_mode):
-        return _Entry('dir', mode)
-    if stat.S_ISREG(st.st_mode):
-        hasher = hashlib.sha256()
-        with path.open('rb') as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b''):
-                hasher.update(chunk)
-        return _Entry('file', mode, digest=hasher.hexdigest())
-    raise SourcePatchError(f'unsupported filesystem entry in source archive: {path}')
-
-
-def _path_is_excluded(rel: PurePosixPath, excluded: tuple[PurePosixPath, ...]) -> bool:
-    for prefix in excluded:
-        if rel == prefix or prefix in rel.parents:
-            return True
-    return False
-
-
-def _tree_entries(
-    root: Path, *, excluded: tuple[PurePosixPath, ...]
-) -> dict[str, _Entry]:
-    entries: dict[str, _Entry] = {}
-
-    def walk(path: Path, rel: PurePosixPath) -> None:
-        if rel.parts and _path_is_excluded(rel, excluded):
-            return
-        if rel.parts:
-            entries[rel.as_posix()] = _entry_for(path)
-        st = path.lstat()
-        if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
-            return
-        for child in sorted(path.iterdir(), key=lambda item: item.name):
-            child_rel = rel / child.name if rel.parts else PurePosixPath(child.name)
-            walk(child, child_rel)
-
-    walk(root, PurePosixPath())
-    return entries
-
-
-def _remove_path(path: Path) -> None:
-    if not os.path.lexists(path):
-        return
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
-def _copy_entry(src: Path, dst: Path, entry: _Entry) -> None:
-    if entry.kind == 'dir':
-        if os.path.lexists(dst) and (dst.is_symlink() or not dst.is_dir()):
-            _remove_path(dst)
-        dst.mkdir(parents=True, exist_ok=True)
-        os.chmod(dst, entry.mode)
-    elif entry.kind == 'symlink':
-        if os.path.lexists(dst):
-            _remove_path(dst)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(os.readlink(src), dst)
-    elif entry.kind == 'file':
-        if os.path.lexists(dst) and (dst.is_symlink() or dst.is_dir()):
-            _remove_path(dst)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst)
-        os.chmod(dst, entry.mode)
-    else:  # pragma: no cover
-        raise AssertionError(entry.kind)
 
 
 def _build_residual_overlay(
@@ -638,37 +444,6 @@ def _build_residual_overlay(
     return deletions, overlay_paths
 
 
-def _apply_deletions(root: Path, deletions: Iterable[str]) -> None:
-    for relpath in sorted(
-        deletions, key=lambda value: (value.count('/'), value), reverse=True
-    ):
-        _remove_path(_safe_target(root, relpath))
-
-
-def _apply_overlay(
-    overlay_root: Path,
-    target_root: Path,
-    *,
-    paths: Iterable[str] | None = None,
-) -> None:
-    if not overlay_root.exists():
-        return
-    entries = _tree_entries(overlay_root, excluded=())
-    if paths is None:
-        relpaths = list(entries)
-    else:
-        relpaths = list(paths)
-    for relpath in sorted(
-        relpaths, key=lambda value: (value.count('/'), value)
-    ):
-        entry = entries.get(relpath)
-        if entry is None:
-            raise SourcePatchError(
-                f'patch overlay entry is missing: {relpath!r}'
-            )
-        src = _safe_target(overlay_root, relpath)
-        dst = _safe_target(target_root, relpath)
-        _copy_entry(src, dst, entry)
 
 
 def _verify_non_object_tree(
@@ -721,9 +496,9 @@ def _patch_root_name(repo_name: str, base_short: str, target_short: str) -> str:
 
 def _write_standalone_apply_script(patch_root: Path) -> None:
     """Copy the dependency-free applier used by git-well into the patch."""
-    from git_well import source_patch_apply
+    from . import patch_apply
 
-    source_path = Path(source_patch_apply.__file__).resolve()
+    source_path = Path(patch_apply.__file__).resolve()
     source = source_path.read_text(encoding='utf8')
     target = patch_root / _PATCH_APPLY_FNAME
     target.write_text(source, encoding='utf8')
@@ -767,7 +542,7 @@ def _write_patch_readme(patch_root: Path, manifest: dict[str, Any]) -> None:
         '',
         'The same application implementation is available as:',
         '',
-        '   git_well.archive_source_patch.apply_source_patch(',
+        '   git_well.archive_source.apply_source_patch(',
         '       base_archive, patch_archive, output_directory)',
         '',
         'Do not manually merge overlay/ into the base archive. Use the script or',
