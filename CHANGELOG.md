@@ -17,6 +17,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Add human-browsable history-store views: a generated `main` landing branch, `archive/...` branch/tag mirrors, and idempotent `git epoch history-sync` repair/backfill.
 * Add `git epoch compact` to prune locally unreachable retired-epoch objects from verified published checkouts while reporting before/after Git-directory sizes.
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
+* Add `archive_source --exclude-path` to omit selected tracked files or directories from materialized archive worktrees without rewriting Git history; history-bearing repositories retain the objects and use sparse checkout so the omission is clean and reversible.
 * Add programmatic `prepare` and `validate` hooks for repository-specific archive enrichment and policy checks.
 * Add `stage_source_archive()` and `ArchiveSourceContext` for direct control of staged archive contents, generated-path exclusions, metadata finalization, serialization, and retained-stage debugging.
 

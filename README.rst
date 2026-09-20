@@ -120,6 +120,25 @@ reachable. The archived working tree remains detached at the exact original
 honors positive ``--depth`` values from each included branch tip, and cannot
 be combined with source-only ``--depth 0`` archives.
 
+Large tracked files that are useful upstream but unnecessary in a handoff can
+be omitted from the materialized archive checkout without rewriting Git
+history. ``--exclude-path`` accepts archive-root-relative files, directories,
+or fnmatch-style selectors, including paths inside included submodules:
+
+.. code:: bash
+
+   git-well archive_source . \
+       --exclude-path 'tpl/segment-anything-2/notebooks' \
+                      'tpl/Open-GroundingDino/config/instances_val2017.json'
+
+For history-bearing repositories, the corresponding blobs remain reachable in
+``.git`` and the staged checkout uses sparse-checkout metadata so ``git status``
+remains clean. This removes the duplicate materialized copy rather than
+modifying commit IDs or creating an invalid object graph. Run
+``git sparse-checkout disable`` inside an affected repository to restore its
+omitted paths. With ``--depth 0``, there is no Git metadata to preserve and the
+selected paths are simply left out of the source-only tree.
+
 Repository-specific archivers can extend the same staging machinery through
 the Python API. Prepare hooks may add generated payloads to the committed
 checkout, while validation hooks run after git-well writes its metadata and

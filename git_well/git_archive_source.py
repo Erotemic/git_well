@@ -97,6 +97,21 @@ class ArchiveSourceCLI(kwconf.Config):
             entirely.
             """).strip(),
     )
+    exclude_path: list[str] = kwconf.Value(
+        [],
+        nargs='*',
+        alias=['exclude-path'],
+        help=textwrap.dedent("""
+            Archive-root-relative tracked paths or fnmatch-style selectors to
+            omit from materialized working trees. This does not rewrite Git
+            history or commit hashes. In history-bearing repositories the Git
+            objects are retained and sparse-checkout metadata keeps the staged
+            checkout clean; run `git sparse-checkout disable` in that repository
+            to restore omitted paths. Exact directory selectors omit all tracked
+            files below that directory. Quote glob patterns to prevent shell
+            expansion.
+            """).strip(),
+    )
     submodules = kwconf.Value(
         True,
         isflag=True,
@@ -162,6 +177,7 @@ class ArchiveSourceCLI(kwconf.Config):
             all_branches=bool(config.all_branches),
             submodule_depth=config.submodule_depth,
             exclude_submodule=config.exclude_submodule,
+            exclude_path=config.exclude_path,
             no_submodules=not bool(config.submodules),
             format=config.format,
             patch=config.patch,

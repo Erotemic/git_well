@@ -36,12 +36,14 @@ from ._io import (
 from ._policy import (
     _clone_depth_from_normalized_depth,
     _depth_label,
+    _normalize_archive_path_list,
     _normalize_depth,
     _normalize_submodule_path_list,
     _parse_submodule_depth_spec,
     _resolve_submodule_archive_decisions,
 )
 from ._repo import (
+    _apply_worktree_path_exclusions,
     _assert_has_head,
     _branch_ref_inventory,
     _clone_committed_checkout,
@@ -111,6 +113,10 @@ class ArchiveSourceContext:
     clone_depth: int | None
     branch_refs: BranchRefInventory | None
     submodule_decisions: tuple[SubmoduleArchiveDecision, ...]
+    exclude_path_selectors: tuple[str, ...]
+    excluded_worktree_paths: tuple[str, ...]
+    unmatched_exclude_path_selectors: tuple[str, ...]
+    excluded_worktree_bytes: int
     redact_local_paths: bool
     all_branches: bool
     keep_stage: bool
@@ -184,6 +190,10 @@ class ArchiveSourceContext:
             clone_depth=self.clone_depth,
             branch_refs=self.branch_refs,
             submodule_decisions=self.submodule_decisions,
+            exclude_path_selectors=self.exclude_path_selectors,
+            excluded_worktree_paths=self.excluded_worktree_paths,
+            unmatched_exclude_path_selectors=self.unmatched_exclude_path_selectors,
+            excluded_worktree_bytes=self.excluded_worktree_bytes,
             redact_local_paths=self.redact_local_paths,
         )
         self._metadata_finalized = True
@@ -239,6 +249,7 @@ def archive_source(
     depth: DepthArg = 'full',
     submodule_depth: SubmoduleDepthSpecArg = None,
     exclude_submodule: str | list[str] | None = None,
+    exclude_path: str | list[str] | None = None,
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
@@ -282,6 +293,14 @@ def archive_source(
             fnmatch-style glob pattern. Quote shell glob metacharacters when
             passing patterns through a shell. Omitted submodules are recorded
             in the manifest but not materialized.
+
+        exclude_path:
+            Archive-root-relative tracked path selectors to omit from staged
+            working trees. Exact file or directory paths and fnmatch-style
+            patterns are accepted. This never rewrites Git history. In
+            history-bearing repositories omitted paths remain available as Git
+            objects and the staged repository uses sparse checkout so status
+            remains clean and the files can be restored.
 
         no_submodules:
             If true, omit all recursive submodule working trees from the
@@ -354,6 +373,7 @@ def archive_source(
         depth=depth,
         submodule_depth=submodule_depth,
         exclude_submodule=exclude_submodule,
+        exclude_path=exclude_path,
         no_submodules=no_submodules,
         format=format,
         redact_local_paths=redact_local_paths,
@@ -387,6 +407,7 @@ def stage_source_archive(
     depth: DepthArg = 'full',
     submodule_depth: SubmoduleDepthSpecArg = None,
     exclude_submodule: str | list[str] | None = None,
+    exclude_path: str | list[str] | None = None,
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
@@ -431,6 +452,8 @@ def stage_source_archive(
     exclude_submodule_paths = _normalize_submodule_path_list(
         exclude_submodule
     )
+
+    exclude_path_selectors = _normalize_archive_path_list(exclude_path)
 
     archive_format = _resolve_archive_format(output, format)
     archive_path = _resolve_output(
@@ -482,6 +505,11 @@ def stage_source_archive(
             '[source-archive] excluded submodule selectors: '
             + ', '.join(exclude_submodule_paths)
         )
+    if exclude_path_selectors:
+        log(
+            '[source-archive] worktree exclusion selectors: '
+            + ', '.join(exclude_path_selectors)
+        )
     log(f'[source-archive] superproject HEAD: {short_sha}')
 
     import shutil
@@ -515,6 +543,10 @@ def stage_source_archive(
             _extract_git_archive(
                 repo, 'HEAD', stage, resolved_root_name
             )
+
+        staged_repo_units = [
+            ('', repo, head_sha, archive_root, include_git_history)
+        ]
 
         for decision in submodule_decisions:
             info = decision.info
@@ -574,6 +606,23 @@ def stage_source_archive(
                     stage,
                     f'{resolved_root_name}/{path}',
                 )
+            staged_repo_units.append(
+                (
+                    path,
+                    sub_repo,
+                    submodule_sha,
+                    archive_root / path,
+                    decision.depth != 0,
+                )
+            )
+
+        (
+            excluded_worktree_paths,
+            unmatched_exclude_path_selectors,
+            excluded_worktree_bytes,
+        ) = _apply_worktree_path_exclusions(
+            staged_repo_units, exclude_path_selectors, log
+        )
 
         context = ArchiveSourceContext(
             repo_root=repo_root,
@@ -591,6 +640,10 @@ def stage_source_archive(
             clone_depth=clone_depth,
             branch_refs=branch_refs,
             submodule_decisions=submodule_decisions,
+            exclude_path_selectors=tuple(exclude_path_selectors),
+            excluded_worktree_paths=excluded_worktree_paths,
+            unmatched_exclude_path_selectors=unmatched_exclude_path_selectors,
+            excluded_worktree_bytes=excluded_worktree_bytes,
             redact_local_paths=redact_local_paths,
             all_branches=all_branches,
             keep_stage=keep_stage,

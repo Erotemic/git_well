@@ -769,3 +769,152 @@ def _source_remote_urls(repo: 'git.Repo') -> list[tuple[str, str]]:
                 seen_urls.add(url)
                 pairs.append((remote.name, url))
     return pairs
+
+def _tracked_blob_paths(repo: 'git.Repo', treeish: str) -> list[str]:
+    """Return tracked blob/symlink paths, excluding submodule gitlinks."""
+    stdout = repo.git.ls_tree('-r', '-z', treeish)
+    paths = []
+    for record in stdout.split('\0'):
+        if not record:
+            continue
+        try:
+            header, path = record.split('\t', 1)
+            mode, object_type, _sha = header.split(' ', 2)
+        except ValueError as ex:
+            raise RuntimeError(
+                f'could not parse git ls-tree record: {record!r}'
+            ) from ex
+        if mode == '160000':
+            continue
+        if object_type == 'blob':
+            paths.append(path)
+    return paths
+
+
+def _archive_path_selector_matches(path: str, selector: str) -> bool:
+    """Match one archive-root-relative path against an exclusion selector."""
+    import fnmatch
+
+    selector = selector.rstrip('/')
+    if not selector:
+        return False
+    if any(ch in selector for ch in '*?['):
+        return fnmatch.fnmatchcase(path, selector)
+    return path == selector or path.startswith(selector + '/')
+
+
+def _sparse_literal_pattern(path: str) -> str:
+    """Encode a repository-relative path as a literal sparse-checkout rule."""
+    if '\n' in path or '\r' in path or '\x00' in path:
+        raise ValueError(
+            'cannot encode newline/NUL-containing Git path in sparse checkout'
+        )
+    escaped = []
+    for char in path:
+        if char in r'\\*?[' or char == ' ':
+            escaped.append('\\')
+        escaped.append(char)
+    return '!/' + ''.join(escaped)
+
+
+def _configure_sparse_worktree_exclusions(
+    repo_root: Path, local_paths: list[str]
+) -> None:
+    """Hide exact tracked paths while preserving a clean, restorable checkout."""
+    import git
+
+    repo = git.Repo(repo_root, search_parent_directories=False)
+    repo.git.sparse_checkout('init', '--no-cone')
+    sparse_path = Path(repo.git_dir) / 'info' / 'sparse-checkout'
+    rules = ['/*']
+    rules.extend(_sparse_literal_pattern(path) for path in sorted(local_paths))
+    sparse_path.write_text('\n'.join(rules) + '\n')
+    repo.git.read_tree('-mu', 'HEAD')
+
+
+def _remove_source_only_paths(repo_root: Path, local_paths: list[str]) -> None:
+    """Remove selected files from a source-only staged repository tree."""
+    for relpath in local_paths:
+        path = repo_root.joinpath(*PurePosixPath(relpath).parts)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        parent = path.parent
+        while parent != repo_root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def _apply_worktree_path_exclusions(
+    units: Iterable[tuple[str, 'git.Repo', str, Path, bool]],
+    selectors: list[str],
+    log: '_Logger',
+) -> tuple[tuple[str, ...], tuple[str, ...], int]:
+    """
+    Omit selected tracked paths without rewriting any repository history.
+
+    Args:
+        units:
+            Tuples of ``(archive_prefix, source_repo, treeish, staged_root,
+            history_bearing)`` for the superproject and included submodules.
+    """
+    if not selectors:
+        return (), (), 0
+
+    selector_hits = {selector: False for selector in selectors}
+    omitted_paths: list[str] = []
+    omitted_bytes = 0
+
+    for prefix, source_repo, treeish, staged_root, history_bearing in units:
+        local_matches = []
+        for local_path in _tracked_blob_paths(source_repo, treeish):
+            archive_path = (
+                PurePosixPath(prefix, local_path).as_posix()
+                if prefix
+                else PurePosixPath(local_path).as_posix()
+            )
+            matched = False
+            for selector in selectors:
+                if _archive_path_selector_matches(archive_path, selector):
+                    selector_hits[selector] = True
+                    matched = True
+            if not matched:
+                continue
+
+            staged_path = staged_root.joinpath(
+                *PurePosixPath(local_path).parts
+            )
+            if os.path.lexists(staged_path):
+                try:
+                    omitted_bytes += staged_path.lstat().st_size
+                except OSError:
+                    pass
+                local_matches.append(local_path)
+                omitted_paths.append(archive_path)
+
+        if not local_matches:
+            continue
+        if history_bearing:
+            _configure_sparse_worktree_exclusions(staged_root, local_matches)
+        else:
+            _remove_source_only_paths(staged_root, local_matches)
+
+    unmatched = tuple(
+        selector for selector, was_hit in selector_hits.items() if not was_hit
+    )
+    for selector in unmatched:
+        log.warning(
+            '[source-archive] WARNING: --exclude-path selector matched no '
+            f'tracked path in the materialized archive: {selector}'
+        )
+    if omitted_paths:
+        log(
+            '[source-archive] worktree pruning: omitted '
+            f'{len(omitted_paths)} tracked path(s), {omitted_bytes} raw bytes; '
+            'Git history was not rewritten'
+        )
+    return tuple(sorted(omitted_paths)), unmatched, omitted_bytes

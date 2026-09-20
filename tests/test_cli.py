@@ -244,6 +244,9 @@ def test_archive_source_cli_options():
             '{"*": 0, special/submod: 100}',
             '--exclude-submodule',
             'external/big-data',
+            '--exclude-path',
+            'external/big-data/notebooks',
+            'assets/*.bin',
             '--no-submodules',
             '--all-branches',
             '--redact-local-paths',
@@ -252,6 +255,10 @@ def test_archive_source_cli_options():
     )
     assert str(config.submodule_depth) == '{"*": 0, special/submod: 100}'
     assert config.exclude_submodule == ['external/big-data']
+    assert config.exclude_path == [
+        'external/big-data/notebooks',
+        'assets/*.bin',
+    ]
     assert config.submodules is False
     assert config.all_branches is True
     assert config.redact_local_paths is True
@@ -1240,6 +1247,117 @@ def test_archive_source_prints_output_directory(tmp_path, monkeypatch):
         '',
     ) in linked_paths
 
+
+
+def test_archive_source_exclude_path_history_is_clean_and_restorable(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'exclude_history'
+    _init_demo_repo(repo)
+    (repo / 'payload').mkdir()
+    (repo / 'payload' / 'keep.txt').write_text('keep\n')
+    (repo / 'payload' / 'large.json').write_text('x' * 10000)
+    _commit_all(repo, 'add payload')
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'exclude-history.tar.gz',
+        exclude_path=['payload/large.json'],
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-history')
+
+    assert (root / 'payload' / 'keep.txt').exists()
+    assert not (root / 'payload' / 'large.json').exists()
+    status = subprocess.run(
+        ['git', 'status', '--porcelain=v1'],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert status.stdout == ''
+    subprocess.run(['git', 'fsck', '--full'], cwd=root, check=True)
+    shown = subprocess.run(
+        ['git', 'show', 'HEAD:payload/large.json'],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert len(shown.stdout) == 10000
+    subprocess.run(['git', 'sparse-checkout', 'disable'], cwd=root, check=True)
+    assert (root / 'payload' / 'large.json').read_text() == 'x' * 10000
+
+    manifest = (root / 'GIT_WELL_ARCHIVE_INFO.txt').read_text()
+    assert 'Worktree path exclusions:' in manifest
+    assert '- payload/large.json' in manifest
+    assert 'Git history rewritten: no' in manifest
+
+
+def test_archive_source_exclude_path_source_only_and_directory(tmp_path):
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'exclude_source_only'
+    _init_demo_repo(repo)
+    (repo / 'notebooks').mkdir()
+    (repo / 'notebooks' / 'a.ipynb').write_text('A' * 1000)
+    (repo / 'notebooks' / 'nested').mkdir()
+    (repo / 'notebooks' / 'nested' / 'b.ipynb').write_text('B' * 1000)
+    (repo / 'keep.py').write_text('print(1)\n')
+    _commit_all(repo, 'add source-only payload')
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'exclude-source-only.tar.gz',
+        depth=0,
+        exclude_path=['notebooks'],
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-source-only')
+    assert not (root / '.git').exists()
+    assert not (root / 'notebooks').exists()
+    assert (root / 'keep.py').exists()
+
+
+def test_archive_source_exclude_path_inside_history_submodule(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(
+        tmp_path,
+        'exclude_sub_src',
+        filename='notebooks/demo.ipynb',
+        content='large notebook\n',
+    )
+    (sub_repo / 'code.py').write_text('print(1)\n')
+    _commit_all(sub_repo, 'add code')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'tpl/lib': sub_repo}
+    )
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'exclude-submodule-path.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-submodule-path')
+    sub = root / 'tpl/lib'
+    assert not (sub / 'notebooks/demo.ipynb').exists()
+    assert (sub / 'code.py').exists()
+    status = subprocess.run(
+        ['git', 'status', '--porcelain=v1'],
+        cwd=sub,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert status.stdout == ''
+    subprocess.run(['git', 'sparse-checkout', 'disable'], cwd=sub, check=True)
+    assert (sub / 'notebooks/demo.ipynb').exists()
 
 def _commit_all(repo, message):
     import ubelt as ub

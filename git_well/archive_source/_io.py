@@ -191,6 +191,10 @@ def _write_manifest(
     clone_depth: int | None,
     branch_refs: BranchRefInventory | None,
     submodule_decisions: Sequence[SubmoduleArchiveDecision],
+    exclude_path_selectors: Sequence[str],
+    excluded_worktree_paths: Sequence[str],
+    unmatched_exclude_path_selectors: Sequence[str],
+    excluded_worktree_bytes: int,
     redact_local_paths: bool,
 ) -> None:
     from git_well import __version__
@@ -232,6 +236,12 @@ def _write_manifest(
                 f'submodule {path!r} Git history limited to depth '
                 f'{decision.depth}'
             )
+
+    if exclude_path_selectors:
+        pruning_details.append(
+            f'{len(excluded_worktree_paths)} tracked worktree path(s) omitted '
+            f'({excluded_worktree_bytes} raw bytes); Git history not rewritten'
+        )
 
     lines = [
         'git-well source archive',
@@ -276,6 +286,25 @@ def _write_manifest(
             )
         else:
             lines.append('(none)')
+
+    if exclude_path_selectors:
+        lines += [
+            '',
+            'Worktree path exclusions:',
+            'Git history rewritten: no',
+            f'Matched tracked paths omitted: {len(excluded_worktree_paths)}',
+            f'Raw materialized bytes omitted: {excluded_worktree_bytes}',
+            'Restore history-bearing repository paths with: '
+            'git sparse-checkout disable',
+            'Selectors:',
+        ]
+        lines.extend(f'- {selector}' for selector in exclude_path_selectors)
+        if unmatched_exclude_path_selectors:
+            lines += ['Unmatched selectors:']
+            lines.extend(
+                f'- {selector}'
+                for selector in unmatched_exclude_path_selectors
+            )
 
     lines += ['', 'Submodules:']
     if submodule_decisions:

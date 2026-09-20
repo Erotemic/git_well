@@ -264,6 +264,39 @@ def _looks_like_fnmatch_pattern(text: str) -> bool:
     return any(ch in text for ch in '*?[')
 
 
+def _normalize_archive_path_list(
+    value: str | list[str] | None,
+) -> list[str]:
+    """Normalize archive-root-relative worktree exclusion selectors."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    else:
+        items = list(value)
+
+    selectors = []
+    for item in items:
+        selector = str(item).strip().replace('\\', '/')
+        while selector.startswith('./'):
+            selector = selector[2:]
+        selector = selector.lstrip('/')
+        if not selector:
+            continue
+        if '\x00' in selector or '\n' in selector or '\r' in selector:
+            raise ValueError(
+                f'invalid --exclude-path selector: {item!r}'
+            )
+        parts = [part for part in selector.split('/') if part]
+        if any(part == '..' for part in parts):
+            raise ValueError(
+                '--exclude-path selectors must be archive-root-relative and '
+                f'cannot contain traversal: {item!r}'
+            )
+        selectors.append('/'.join(parts))
+    return selectors
+
+
 def _normalize_submodule_path_list(
     value: str | list[str] | None
 ) -> list[str]:
