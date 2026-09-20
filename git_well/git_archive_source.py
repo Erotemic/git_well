@@ -119,6 +119,8 @@ class ArchiveSourceCLI(kwconf.Config):
     patch = kwconf.Value(
         None,
         parser=str,
+        short_alias='p',
+        bare='auto',
         help=textwrap.dedent("""
             Create an incremental source patch against a prior full Git-bearing
             source archive. Use "auto" to select the closest compatible full
