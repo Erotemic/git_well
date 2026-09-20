@@ -31,6 +31,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Remove the staging clone's synthetic `refs/remotes/origin/HEAD` symref when preserving cached branch refs, preventing `--all-branches` archives from carrying a dangling zero-OID remote HEAD that fails `git fsck`.
+* Build sparse/promisor patch object deltas from reachable locally-present object sets instead of `git cat-file` availability probes, avoiding lazy-fetch/version-dependent failures while still backfilling previously promised objects that become required.
 * Store `core.longpaths=true` in every history-bearing source archive checkout so Git for Windows can read packed objects after extraction beneath long directory prefixes without requiring global Git configuration.
 * Make the Git epoch subprocess boundary encode all string stdin as bytes before invoking Git, so line-oriented plumbing cannot acquire CRLF terminators on Windows regardless of the caller.
 * Keep Git epoch batched local ref publication compatible with Git for Windows by using the portable `update-ref --stdin` batch form.

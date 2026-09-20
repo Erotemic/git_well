@@ -955,6 +955,11 @@ def test_archive_source_all_branches_preserves_cached_refs(tmp_path):
     assert 'refs/heads/temporary-pr' not in refs
     assert 'refs/remotes/contributor/pr/topic' in refs
     assert 'refs/remotes/origin/review-copy' in refs
+    # The staging clone synthesizes origin/HEAD. Removing its temporary origin
+    # must not leave that symref dangling after cached refs are copied. A
+    # dangling remote HEAD resolves to the zero OID and makes git fsck fail.
+    assert 'refs/remotes/origin/HEAD' not in refs
+    ub.cmd(['git', 'fsck', '--full'], cwd=unpacked, check=True)
 
     archived_head = _stdout_text(
         ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=unpacked, check=True)
@@ -1781,6 +1786,64 @@ def test_archive_source_history_blobs_sparse_patch_roundtrip_offline(tmp_path):
         check=True,
     )
     assert status.stdout == ''
+
+
+def test_archive_source_history_blobs_sparse_patch_generation_works_with_dead_base_promisor(
+    tmp_path,
+):
+    """Patch generation must inspect local object state without lazy fetching."""
+    import subprocess
+    import tarfile
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_dead_base_remote'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'A' * 12000)
+    (repo / 'keep.txt').write_text('base\n')
+    _commit_all(repo, 'base payload')
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-dead-remote-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    # Rewrite only the extracted base's promisor URL to a nonexistent path,
+    # then repack it. Patch generation has all required target objects in the
+    # live source repository and therefore must not need to contact this base
+    # promisor merely to decide which objects are locally available.
+    extracted = _extract_tar_root(base_archive, tmp_path / 'dead-base-extract')
+    subprocess.run(
+        [
+            'git',
+            'config',
+            '--local',
+            'remote.git-well-promisor.url',
+            str(tmp_path / 'definitely-missing-promisor.git'),
+        ],
+        cwd=extracted,
+        check=True,
+    )
+    dead_base = tmp_path / 'promisor-dead-remote-base-repacked.tar.gz'
+    with tarfile.open(dead_base, 'w:gz') as tar:
+        tar.add(extracted, arcname=extracted.name)
+
+    (repo / 'large.bin').write_bytes(b'B' * 13000)
+    (repo / 'keep.txt').write_text('target\n')
+    _commit_all(repo, 'target payload')
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-dead-remote-update.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        patch=dead_base,
+        verbose=0,
+    )
+    assert patch_archive.is_file()
 
 
 def test_archive_source_history_blobs_sparse_patch_new_selector_match(tmp_path):

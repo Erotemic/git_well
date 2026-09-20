@@ -570,51 +570,6 @@ def _delta_revision_args(
     return args
 
 
-def _locally_missing_oids(repo: Path, oids: list[str]) -> list[str]:
-    """Return ``oids`` that are not available without a promisor fetch."""
-    if not oids:
-        return []
-    env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
-    proc = subprocess.run(
-        [
-            os.fspath(part)
-            for part in _git_command(
-                repo,
-                'cat-file',
-                '--batch-check=%(objectname) %(objecttype)',
-            )
-        ],
-        input=''.join(f'{oid}\n' for oid in oids),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        check=False,
-    )
-    if proc.returncode:
-        raise SourcePatchError(
-            'failed to inspect base Git object availability:\n'
-            f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
-        )
-    lines = proc.stdout.splitlines()
-    if len(lines) != len(oids):
-        raise SourcePatchError(
-            'git cat-file returned an unexpected number of object probes; '
-            f'expected {len(oids)}, got {len(lines)}'
-        )
-    missing: list[str] = []
-    for expected_oid, line in zip(oids, lines):
-        fields = line.split()
-        if len(fields) != 2 or fields[0] != expected_oid:
-            raise SourcePatchError(
-                'could not parse git cat-file object availability result: '
-                f'{line!r}'
-            )
-        if fields[1] == 'missing':
-            missing.append(expected_oid)
-    return missing
-
-
 def _enumerate_revision_objects(
     repo: Path, revisions: list[str]
 ) -> tuple[list[str], int]:
@@ -698,19 +653,28 @@ def _create_object_pack(
         delta_present, missing_count = _enumerate_revision_objects(
             target_repo, revisions
         )
-        pack_oids = _locally_missing_oids(base_repo, delta_present)
+        # Revision subtraction already tells us these locally-present objects
+        # are not supplied by the base's reachable graph. Carry them directly
+        # instead of probing the base with ``cat-file``.  In a partial clone,
+        # object-existence probes can enter Git's lazy-fetch machinery and have
+        # varied across Git versions even with GIT_NO_LAZY_FETCH set.
+        pack_oids = list(delta_present)
 
         # Revision subtraction deliberately removes objects reachable from the
         # base graph. A promisor base may not actually have some of those
         # objects. If the fresh target now materialized one, carry it too.
-        base_missing = sorted(_missing_promisor_oids(base_repo))
+        # Enumerating the target's reachable-present set also distinguishes
+        # this case from a promised object that simply aged out of a shallow
+        # history window and is no longer required by the target at all.
+        base_missing = _missing_promisor_oids(base_repo)
         if base_missing:
-            still_missing_in_target = set(
-                _locally_missing_oids(target_repo, base_missing)
+            target_present, _target_missing = _enumerate_revision_objects(
+                target_repo, ['--all']
             )
+            target_present_set = set(target_present)
             seen = set(pack_oids)
-            for oid in base_missing:
-                if oid not in still_missing_in_target and oid not in seen:
+            for oid in sorted(base_missing):
+                if oid in target_present_set and oid not in seen:
                     pack_oids.append(oid)
                     seen.add(oid)
     else:
@@ -718,7 +682,16 @@ def _create_object_pack(
         target_present, missing_count = _enumerate_revision_objects(
             target_repo, revisions
         )
-        pack_oids = _locally_missing_oids(base_repo, target_present)
+        # Unrelated histories cannot use revision subtraction. Compare the
+        # repositories' reachable, locally-present object sets instead. This
+        # may conservatively retransmit an unreachable duplicate object that
+        # happens to live in the base object store, but it never needs a lazy
+        # fetch and it preserves the sparse/promisor contract.
+        base_present, _base_missing = _enumerate_revision_objects(
+            base_repo, ['--all']
+        )
+        base_present_set = set(base_present)
+        pack_oids = [oid for oid in target_present if oid not in base_present_set]
 
     if not pack_oids:
         return False, missing_count

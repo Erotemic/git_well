@@ -348,6 +348,8 @@ def _copy_cached_branch_refs(
     log: '_Logger',
 ) -> None:
     """Copy cached branch refs by importing local objects, never by fetching."""
+    import git
+
     src_root = Path(cast(str, src.working_tree_dir)).resolve()
 
     # The initial clone creates synthetic ``origin/*`` refs for the local
@@ -355,6 +357,17 @@ def _copy_cached_branch_refs(
     # source repository's actual cached remote-tracking refs into place.
     if 'origin' in [remote.name for remote in cloned.remotes]:
         cloned.git.remote('remove', 'origin')
+        # ``git remote remove`` deletes the generated ``origin/<branch>`` ref
+        # but can leave ``refs/remotes/origin/HEAD`` behind as a dangling
+        # symbolic ref.  That renders an otherwise valid archive repository
+        # invalid to ``git fsck`` (the symref resolves to the zero OID).
+        # Remove only the synthetic symref here; if the source repository has
+        # a real cached ``origin/HEAD`` entry, the ref-copy loop below recreates
+        # it from the source inventory.
+        try:
+            cloned.git.symbolic_ref('--delete', 'refs/remotes/origin/HEAD')
+        except git.GitCommandError:
+            pass
 
     # Local cached refs are local state, so keep them entirely out of Git's
     # transport layer. This uses the same direct object-database import as
