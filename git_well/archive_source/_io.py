@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
@@ -270,6 +271,8 @@ def _write_manifest(
         f'Superproject short commit: {short_sha}',
         f'Superproject history: {superproject_history}',
         f'History blob retention: {history_blobs}',
+        'Worktree exclusion selectors JSON: '
+        + json.dumps(list(exclude_path_selectors), separators=(',', ':')),
         'Superproject branches: '
         + (
             'all locally cached local and remote-tracking branches'

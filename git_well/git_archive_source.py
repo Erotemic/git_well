@@ -149,12 +149,14 @@ class ArchiveSourceCLI(kwconf.Config):
         short_alias='p',
         bare='auto',
         help=textwrap.dedent("""
-            Create an incremental source patch against a prior full Git-bearing
-            source archive. Use "auto" to select the closest compatible full
-            archive previously written by git-well, or pass an explicit base
-            archive path. Patch mode requires superproject Git history and v1
-            only supports descendant updates with the same superproject history
-            and --all-branches policy.
+            Create an incremental source patch against a prior compatible
+            Git-bearing source archive. Use "auto" to select the closest
+            compatible archive previously written by git-well, or pass an
+            explicit base archive path. Patch mode requires superproject Git
+            history and supports descendant updates with the same superproject
+            history and --all-branches policy. With --history-blobs sparse, the
+            base and target must also use the same --exclude-path policy so
+            promised blobs remain omitted from the patch transport.
             """).strip(),
     )
     redact_local_paths = kwconf.Value(

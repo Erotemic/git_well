@@ -221,11 +221,11 @@ class ArchiveSourceContext:
             self.archive_format,
         )
         self._archive_written = True
-        if self.include_git_history and self.history_blobs == 'full':
+        if self.include_git_history:
             try:
-                from .patch import register_full_archive
+                from .patch import register_source_archive
 
-                register_full_archive(
+                register_source_archive(
                     repo_root=self.repo_root,
                     archive_path=self.archive_path,
                     head_sha=self.head_sha,
@@ -233,6 +233,8 @@ class ArchiveSourceContext:
                     include_git_history=True,
                     normalized_depth=self.normalized_depth,
                     all_branches=self.all_branches,
+                    history_blobs=self.history_blobs,
+                    exclude_path_selectors=self.exclude_path_selectors,
                     timestamp=self.timestamp,
                     archive_format=self.archive_format,
                 )
@@ -331,12 +333,15 @@ def archive_source(
             possible and otherwise defaults to ``'tar.gz'``.
 
         patch:
-            If omitted, write a normal full source archive. ``'auto'`` creates
-            an incremental source patch against the closest compatible full
-            archive recorded for this repository. Any other value is treated as
-            an explicit base archive path. Patch mode requires superproject Git
-            history and currently supports descendant updates only. Prepare and
-            validate hooks still operate on the complete target staging tree.
+            If omitted, write a normal source archive. ``'auto'`` creates an
+            incremental source patch against the closest compatible archive
+            recorded for this repository. Any other value is treated as an
+            explicit base archive path. Patch mode requires superproject Git
+            history and currently supports descendant updates only. Sparse
+            promisor bases and targets must use the same ``exclude_path``
+            policy so omitted blobs stay omitted instead of being backfilled or
+            reintroduced. Prepare and validate hooks still operate on the
+            complete target staging tree.
 
         redact_local_paths:
             If true, redact absolute source/output paths from the generated
@@ -384,12 +389,6 @@ def archive_source(
 
         raise SourcePatchError(
             'archive_source patch mode requires Git history; depth=0 is not supported'
-        )
-    if patch is not None and normalized_history_blobs != 'full':
-        from .patch import SourcePatchError
-
-        raise SourcePatchError(
-            'archive_source patch mode currently requires history_blobs="full"'
         )
     prepare_hooks = _coerce_archive_hooks(prepare, phase='prepare')
     validate_hooks = _coerce_archive_hooks(validate, phase='validate')

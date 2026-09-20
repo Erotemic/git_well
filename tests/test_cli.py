@@ -1700,42 +1700,632 @@ def test_archive_source_history_blobs_sparse_redaction_requires_remote(tmp_path)
         )
 
 
-def test_archive_source_history_blobs_sparse_rejects_patch_mode():
+def test_archive_source_history_blobs_sparse_patch_roundtrip_offline(tmp_path):
+    import json
+    import subprocess
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_roundtrip'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'A' * 12000)
+    (repo / 'keep.txt').write_text('base\n')
+    _commit_all(repo, 'base payload')
+    old_large = _git_rev_parse(repo, 'HEAD:large.bin')
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-patch-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    (repo / 'large.bin').write_bytes(b'B' * 13000)
+    (repo / 'keep.txt').write_text('target\n')
+    _commit_all(repo, 'target payload')
+    new_large = _git_rev_parse(repo, 'HEAD:large.bin')
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-patch-update.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        patch=base_archive,
+        verbose=0,
+    )
+    patch_root = _extract_tar_root(
+        patch_archive, tmp_path / 'extract-promisor-patch'
+    )
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    assert manifest['schema_version'] == 2
+    assert manifest['target']['history_blobs'] == 'sparse'
+    assert manifest['target']['exclude_path_selectors'] == ['large.bin']
+    super_entry = next(
+        item for item in manifest['git_repositories'] if item['path'] == '.'
+    )
+    assert super_entry['bundle'] is None
+    assert super_entry['object_pack'] is not None
+    assert super_entry['object_pack_promisor'] is True
+    assert super_entry['missing_promisor_objects'] >= 1
+    assert len(super_entry['missing_promisor_oid_sha256']) == 64
+    assert (patch_root / super_entry['object_pack']).is_file()
+
+    # Make the fallback promisor unreachable. Patch application must not need
+    # the omitted blob merely to advance the sparse checkout.
+    offline_repo = tmp_path / 'promisor_patch_roundtrip.offline'
+    repo.rename(offline_repo)
+
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-patch-applied',
+    )
+    assert (applied / 'keep.txt').read_text() == 'target\n'
+    assert not (applied / 'large.bin').exists()
+    assert not _git_object_exists(applied, old_large)
+    assert not _git_object_exists(applied, new_large)
+    no_lazy_env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
+    subprocess.run(
+        ['git', 'fsck', '--full'], cwd=applied, env=no_lazy_env, check=True
+    )
+    status = subprocess.run(
+        ['git', 'status', '--porcelain=v1'],
+        cwd=applied,
+        env=no_lazy_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert status.stdout == ''
+
+
+def test_archive_source_history_blobs_sparse_patch_new_selector_match(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_new_match'
+    _init_demo_repo(repo)
+    (repo / 'keep.txt').write_text('base\n')
+    _commit_all(repo, 'base without payload')
+
+    # The selector is intentionally unmatched in the base. A later commit may
+    # add a matching file, so the patch must install target sparse/promisor
+    # metadata before resetting to the target commit.
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-new-match-base.tar.gz',
+        exclude_path=['payload'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    (repo / 'payload').mkdir()
+    (repo / 'payload' / 'large.bin').write_bytes(b'new-large' * 5000)
+    (repo / 'keep.txt').write_text('target\n')
+    _commit_all(repo, 'add excluded payload')
+    large_oid = _git_rev_parse(repo, 'HEAD:payload/large.bin')
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-new-match-update.tar.gz',
+        exclude_path=['payload'],
+        history_blobs='sparse',
+        patch=base_archive,
+        verbose=0,
+    )
+    offline_repo = tmp_path / 'promisor_patch_new_match.offline'
+    repo.rename(offline_repo)
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-new-match-applied',
+    )
+    assert (applied / 'keep.txt').read_text() == 'target\n'
+    assert not (applied / 'payload' / 'large.bin').exists()
+    assert not _git_object_exists(applied, large_oid)
+    configured = subprocess.run(
+        ['git', 'config', '--get', 'extensions.partialClone'],
+        cwd=applied,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    assert configured == 'git-well-promisor'
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=applied,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+
+
+def test_archive_source_history_blobs_sparse_patch_backfills_moved_blob(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_moved_blob'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'stable-large-payload' * 4000)
+    (repo / 'keep.txt').write_text('base\n')
+    _commit_all(repo, 'base excluded payload')
+    large_oid = _git_rev_parse(repo, 'HEAD:large.bin')
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-moved-blob-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    # Keep the exact blob object but move it outside the exclusion. The base
+    # intentionally lacks this OID even though it is reachable from base HEAD,
+    # so a revision-only delta would fail to provide the now-required object.
+    (repo / 'src').mkdir()
+    subprocess.run(
+        ['git', 'mv', 'large.bin', 'src/large.bin'], cwd=repo, check=True
+    )
+    (repo / 'keep.txt').write_text('target\n')
+    _commit_all(repo, 'move payload into retained source')
+    assert _git_rev_parse(repo, 'HEAD:src/large.bin') == large_oid
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-moved-blob-update.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        patch=base_archive,
+        verbose=0,
+    )
+
+    # Remove access to the fallback promisor. The patch itself must carry the
+    # newly-required old blob even though its object ID predates the base.
+    offline_repo = tmp_path / 'promisor_patch_moved_blob.offline'
+    repo.rename(offline_repo)
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-moved-blob-applied',
+    )
+    assert not (applied / 'large.bin').exists()
+    assert (applied / 'src' / 'large.bin').read_bytes() == (
+        b'stable-large-payload' * 4000
+    )
+    assert _git_object_exists(applied, large_oid)
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=applied,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+
+
+def test_archive_source_history_blobs_sparse_patch_shallow_promise_ages_out(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_shallow_ageout'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'old-large' * 4000)
+    (repo / 'keep.txt').write_text('one\n')
+    _commit_all(repo, 'one with excluded payload')
+    initial_commit = _git_rev_parse(repo, 'HEAD')
+
+    (repo / 'large.bin').unlink()
+    for index in range(2, 5):
+        (repo / 'keep.txt').write_text(f'{index}\n')
+        _commit_all(repo, f'commit {index}')
+
+    # Depth four still retains commit one, so the base intentionally promises
+    # large.bin even though it is absent from the current worktree.
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-shallow-ageout-base.tar.gz',
+        depth=4,
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    (repo / 'keep.txt').write_text('five\n')
+    _commit_all(repo, 'commit five')
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-shallow-ageout-update.tar.gz',
+        depth=4,
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        patch=base_archive,
+        verbose=0,
+    )
+
+    offline_repo = tmp_path / 'promisor_patch_shallow_ageout.offline'
+    repo.rename(offline_repo)
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-shallow-ageout-applied',
+    )
+    assert (applied / 'keep.txt').read_text() == 'five\n'
+    assert not (applied / 'large.bin').exists()
+    # The old object may remain as unreachable storage from the base, but it is
+    # no longer promised by any retained target history and must not be needed.
+    missing = subprocess.run(
+        ['git', 'rev-list', '--objects', '--all', '--missing=print'],
+        cwd=applied,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert not any(line.startswith('?') for line in missing.splitlines())
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=applied,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+    reachable = subprocess.run(
+        ['git', 'rev-list', '--all'],
+        cwd=applied,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()
+    assert initial_commit not in reachable
+
+
+def test_archive_source_history_blobs_sparse_patch_rejects_policy_change(tmp_path):
     import pytest
 
     from git_well.archive_source import archive_source
     from git_well.archive_source.patch import SourcePatchError
 
-    with pytest.raises(SourcePatchError, match='history_blobs'):
-        archive_source(patch='auto', history_blobs='sparse')
-
-
-def test_archive_source_history_blobs_sparse_not_patch_auto_base(tmp_path):
-    import json
-
-    from git_well.archive_source import archive_source
-    from git_well.archive_source.patch import _registry_path
-
-    repo = tmp_path / 'promisor_registry'
+    repo = tmp_path / 'promisor_patch_policy_change'
     _init_demo_repo(repo)
-    (repo / 'large.bin').write_bytes(b'large' * 1000)
-    _commit_all(repo, 'payload')
-
-    sparse_archive = archive_source(
+    (repo / 'large.bin').write_bytes(b'base-large')
+    (repo / 'keep.txt').write_text('base\n')
+    _commit_all(repo, 'base')
+    base_archive = archive_source(
         repo_dpath=repo,
-        output=tmp_path / 'sparse-source.tar.gz',
+        output=tmp_path / 'promisor-policy-base.tar.gz',
         exclude_path=['large.bin'],
         history_blobs='sparse',
         verbose=0,
     )
-    registry = _registry_path(repo)
-    if registry.exists():
-        records = [
-            json.loads(line)
-            for line in registry.read_text(encoding='utf8').splitlines()
-            if line.strip()
-        ]
-        assert all(Path(item['path']) != sparse_archive.resolve() for item in records)
+
+    (repo / 'keep.txt').write_text('target\n')
+    _commit_all(repo, 'target')
+    with pytest.raises(SourcePatchError, match='same --exclude-path policy'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'invalid-policy-patch.tar.gz',
+            exclude_path=['other.bin'],
+            history_blobs='sparse',
+            patch=base_archive,
+            verbose=0,
+        )
+
+
+def test_archive_source_history_blobs_sparse_patch_auto_policy_aware(tmp_path):
+    import json
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_auto'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'one' * 1000)
+    (repo / 'keep.txt').write_text('one\n')
+    _commit_all(repo, 'one')
+    sparse_base = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-auto-sparse-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+
+    # A closer full-blob archive is incompatible with a sparse target and must
+    # not win merely because its HEAD is newer.
+    (repo / 'keep.txt').write_text('two\n')
+    _commit_all(repo, 'two')
+    archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-auto-full-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='full',
+        verbose=0,
+    )
+
+    (repo / 'large.bin').write_bytes(b'three' * 1000)
+    (repo / 'keep.txt').write_text('three\n')
+    _commit_all(repo, 'three')
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-auto-patch.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        patch='auto',
+        verbose=0,
+    )
+    patch_root = _extract_tar_root(
+        patch_archive, tmp_path / 'extract-promisor-auto-patch'
+    )
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    assert manifest['base']['archive_name'] == sparse_base.name
+
+
+def test_archive_source_history_blobs_sparse_patch_submodule(tmp_path):
+    import json
+    import subprocess
+
+    import ubelt as ub
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(
+        tmp_path,
+        'promisor_patch_sub_src',
+        filename='notebooks/demo.ipynb',
+        content='notebook-v1\n',
+    )
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'tpl/lib': sub_repo}
+    )
+    base_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'promisor-patch-sub-base.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        history_blobs='sparse',
+        submodule_depth=10,
+        verbose=0,
+    )
+
+    (sub_repo / 'notebooks' / 'demo.ipynb').write_text('notebook-v2\n')
+    (sub_repo / 'code.py').write_text('print(2)\n')
+    _commit_all(sub_repo, 'advance sparse submodule')
+    new_large = _git_rev_parse(sub_repo, 'HEAD:notebooks/demo.ipynb')
+    target_sub_sha = _git_rev_parse(sub_repo, 'HEAD')
+    sub_checkout = super_repo / 'tpl/lib'
+    ub.cmd(['git', 'fetch', str(sub_repo)], cwd=sub_checkout, check=True)
+    ub.cmd(['git', 'checkout', target_sub_sha], cwd=sub_checkout, check=True)
+    _commit_all(super_repo, 'advance sparse submodule gitlink')
+
+    patch_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'promisor-patch-sub-update.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        history_blobs='sparse',
+        submodule_depth=10,
+        patch=base_archive,
+        verbose=0,
+    )
+    patch_root = _extract_tar_root(
+        patch_archive, tmp_path / 'extract-promisor-patch-sub'
+    )
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    sub_entry = next(
+        item for item in manifest['git_repositories']
+        if item['path'] == 'tpl/lib'
+    )
+    assert sub_entry['bundle'] is None
+    assert sub_entry['object_pack'] is not None
+    assert sub_entry['object_pack_promisor'] is True
+
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-patch-sub-applied',
+    )
+    applied_sub = applied / 'tpl/lib'
+    assert (applied_sub / 'code.py').read_text() == 'print(2)\n'
+    assert not (applied_sub / 'notebooks' / 'demo.ipynb').exists()
+    assert not _git_object_exists(applied_sub, new_large)
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=applied_sub,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+
+
+def test_archive_source_history_blobs_sparse_patch_unrelated_submodule(tmp_path):
+    import json
+    import subprocess
+
+    import ubelt as ub
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(
+        tmp_path,
+        'promisor_patch_unrelated_sub_src',
+        filename='notebooks/demo.ipynb',
+        content='notebook-base\n',
+    )
+    (sub_repo / 'code.py').write_text('print("base")\n')
+    _commit_all(sub_repo, 'base retained code')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'tpl/lib': sub_repo}
+    )
+    base_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'promisor-patch-unrelated-sub-base.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        history_blobs='sparse',
+        submodule_depth=10,
+        verbose=0,
+    )
+
+    # Move the submodule to an unrelated orphan history. Sparse object packs
+    # can still transport the target's locally-present objects exactly; falling
+    # back to copying the complete .git object store would make the patch much
+    # larger and could hide transport bugs.
+    ub.cmd(['git', 'checkout', '--orphan', 'replacement'], cwd=sub_repo, check=True)
+    ub.cmd(['git', 'rm', '-rf', '.'], cwd=sub_repo, check=True)
+    (sub_repo / 'notebooks').mkdir(parents=True, exist_ok=True)
+    (sub_repo / 'notebooks' / 'demo.ipynb').write_bytes(b'new-notebook' * 4000)
+    (sub_repo / 'code.py').write_text('print("replacement")\n')
+    _commit_all(sub_repo, 'replacement history')
+    target_sub_sha = _git_rev_parse(sub_repo, 'HEAD')
+    omitted_oid = _git_rev_parse(sub_repo, 'HEAD:notebooks/demo.ipynb')
+
+    sub_checkout = super_repo / 'tpl/lib'
+    ub.cmd(['git', 'fetch', str(sub_repo), target_sub_sha], cwd=sub_checkout, check=True)
+    ub.cmd(['git', 'checkout', target_sub_sha], cwd=sub_checkout, check=True)
+    _commit_all(super_repo, 'switch submodule to unrelated history')
+
+    patch_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'promisor-patch-unrelated-sub-update.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        history_blobs='sparse',
+        submodule_depth=10,
+        patch=base_archive,
+        verbose=0,
+    )
+    patch_root = _extract_tar_root(
+        patch_archive, tmp_path / 'extract-promisor-unrelated-sub-patch'
+    )
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    sub_entry = next(
+        item for item in manifest['git_repositories']
+        if item['path'] == 'tpl/lib'
+    )
+    assert sub_entry['object_pack'] is not None
+    assert sub_entry['bundle'] is None
+    assert sub_entry['missing_promisor_objects'] >= 1
+
+    offline_super = tmp_path / 'promisor_patch_unrelated_super.offline'
+    offline_sub = tmp_path / 'promisor_patch_unrelated_source.offline'
+    super_repo.rename(offline_super)
+    sub_repo.rename(offline_sub)
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-patch-unrelated-sub-applied',
+    )
+    applied_sub = applied / 'tpl/lib'
+    assert _git_rev_parse(applied_sub, 'HEAD') == target_sub_sha
+    assert (applied_sub / 'code.py').read_text() == 'print("replacement")\n'
+    assert not (applied_sub / 'notebooks' / 'demo.ipynb').exists()
+    assert not _git_object_exists(applied_sub, omitted_oid)
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=applied_sub,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+
+
+def test_archive_source_history_blobs_sparse_patch_all_branches(tmp_path):
+    import json
+    import subprocess
+
+    from git_well.archive_source import apply_source_patch
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_patch_all_branches'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'main-large' * 1000)
+    (repo / 'keep.txt').write_text('main\n')
+    _commit_all(repo, 'main base')
+    main_branch = subprocess.run(
+        ['git', 'branch', '--show-current'], cwd=repo, text=True,
+        capture_output=True, check=True,
+    ).stdout.strip()
+    subprocess.run(['git', 'checkout', '-q', '-b', 'topic'], cwd=repo, check=True)
+    (repo / 'topic.txt').write_text('topic-v1\n')
+    _commit_all(repo, 'topic base')
+    subprocess.run(['git', 'checkout', '-q', main_branch], cwd=repo, check=True)
+
+    base_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-all-branches-base.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        all_branches=True,
+        verbose=0,
+    )
+
+    subprocess.run(['git', 'checkout', '-q', 'topic'], cwd=repo, check=True)
+    (repo / 'large.bin').write_bytes(b'topic-large-v2' * 1000)
+    (repo / 'topic.txt').write_text('topic-v2\n')
+    _commit_all(repo, 'topic target')
+    topic_large = _git_rev_parse(repo, 'HEAD:large.bin')
+    subprocess.run(['git', 'checkout', '-q', main_branch], cwd=repo, check=True)
+
+    patch_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-all-branches-update.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        all_branches=True,
+        patch=base_archive,
+        verbose=0,
+    )
+    patch_root = _extract_tar_root(
+        patch_archive, tmp_path / 'extract-promisor-all-branches-patch'
+    )
+    manifest = json.loads(
+        (patch_root / 'GIT_WELL_SOURCE_PATCH.json').read_text()
+    )
+    super_entry = next(
+        item for item in manifest['git_repositories'] if item['path'] == '.'
+    )
+    assert super_entry['object_pack'] is not None
+    assert super_entry['missing_promisor_objects'] >= 1
+
+    applied = apply_source_patch(
+        base_archive,
+        patch_archive,
+        tmp_path / 'promisor-all-branches-applied',
+    )
+    shown = subprocess.run(
+        ['git', 'show', 'topic:topic.txt'],
+        cwd=applied,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert shown.stdout == 'topic-v2\n'
+    assert not _git_object_exists(applied, topic_large)
+
+
+def test_patch_manifest_reader_accepts_schema_v1(tmp_path):
+    import json
+
+    from git_well.archive_source.patch_apply import _read_patch_manifest
+
+    patch_root = tmp_path / 'legacy-patch'
+    patch_root.mkdir()
+    manifest = {
+        'schema_version': 1,
+        'kind': 'git-well-source-patch',
+    }
+    (patch_root / 'GIT_WELL_SOURCE_PATCH.json').write_text(
+        json.dumps(manifest)
+    )
+    assert _read_patch_manifest(patch_root)['schema_version'] == 1
 
 
 def test_parse_legacy_archive_manifest_defaults_history_blobs_full():
@@ -1751,6 +2341,38 @@ Generated timestamp: 2026-09-20T00:00:00+00:00
 """
     parsed = _parse_archive_manifest(manifest)
     assert parsed['history_blobs'] == 'full'
+    assert parsed['exclude_path_selectors'] == ()
+
+
+def test_parse_legacy_sparse_archive_manifest_recovers_selectors():
+    from git_well.archive_source.patch import _parse_archive_manifest
+
+    manifest = """Git Well Source Archive
+Archive prefix: legacy-source
+Superproject commit: 0123456789abcdef
+Superproject short commit: 0123456
+Superproject history: full
+History blob retention: sparse
+Superproject branches: current HEAD history only
+
+Worktree path exclusions:
+Git history rewritten: no
+Matched tracked paths omitted: 1
+Raw materialized bytes omitted: 123
+Selectors:
+- notebooks
+- data/large.json
+Unmatched selectors:
+- never-present.bin
+
+Promisor history pruning:
+Git history rewritten: no
+"""
+    parsed = _parse_archive_manifest(manifest)
+    assert parsed['history_blobs'] == 'sparse'
+    assert parsed['exclude_path_selectors'] == (
+        'notebooks', 'data/large.json'
+    )
 
 
 def _commit_all(repo, message):

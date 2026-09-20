@@ -19,6 +19,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 * Add `archive_source --all-branches` to preserve every local branch and every locally cached remote-tracking branch without contacting configured remotes.
 * Add `archive_source --exclude-path` to omit selected tracked files or directories from materialized archive worktrees without rewriting Git history; history-bearing repositories retain the objects and use sparse checkout so the omission is clean and reversible.
 * Add `archive_source --history-blobs sparse` to turn path exclusions into partial/promisor archives that omit matching reachable blob objects without rewriting commits or trees, including historical versions and included submodules, with lazy recovery through a recorded promisor remote.
+* Extend incremental `archive_source --patch` transport to sparse/promisor archives with exact local-object-difference packs that preserve promised missing blobs, backfill previously omitted objects when unchanged path policy makes them required again, handle unrelated sparse submodule updates without whole-object-store fallback, verify promised-object set digests offline, use policy-aware `patch=auto` selection, and retain schema-v1 reader compatibility.
 * Add programmatic `prepare` and `validate` hooks for repository-specific archive enrichment and policy checks.
 * Add `stage_source_archive()` and `ArchiveSourceContext` for direct control of staged archive contents, generated-path exclusions, metadata finalization, serialization, and retained-stage debugging.
 

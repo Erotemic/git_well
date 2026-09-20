@@ -198,9 +198,8 @@ Incremental source archives
 ---------------------------
 
 History-bearing source archives can also be used as bases for small incremental
-updates. First create a normal full archive, then make one or more descendant
-commits and request a patch against the closest compatible full archive recorded
-by git-well:
+updates. First create a normal archive, then make one or more descendant commits
+and request a patch against the closest compatible archive recorded by git-well:
 
 .. code:: bash
 
@@ -209,12 +208,41 @@ by git-well:
    git-well archive_source . --patch auto -o project-update.tar.gz
 
 Patch mode requires the superproject ``.git`` directory. Source-only
-``--depth 0`` archives are not supported as bases or targets. The initial patch
-implementation intentionally supports the clear descendant-history case only:
-the base and target must use the same superproject history depth and the same
-``--all-branches`` policy. ``patch=auto`` chooses the compatible recorded full
-archive whose HEAD is closest to the target HEAD. An explicit full archive path
-may be passed instead of ``auto``.
+``--depth 0`` archives are not supported as bases or targets. Patch transport
+supports the descendant-history case: the base and target must use the same
+superproject history depth, ``--all-branches`` policy, and history-blob policy.
+``patch=auto`` chooses the compatible recorded archive whose HEAD is closest to
+the target HEAD. An explicit compatible archive path may be passed instead of
+``auto``.
+
+Sparse promisor archives are patch-capable. When both base and target use
+``--history-blobs sparse``, they must also use the same ``--exclude-path``
+policy. The patch compares the target's locally-present reachable objects with
+what is physically available in the base, then transports only the difference
+in a filtered pack while leaving promised excluded blobs absent. This is more
+precise than a revision-only delta: if a previously omitted blob moves to an
+included path without changing its object ID, the patch carries that now-needed
+old blob even though it is reachable from the base commit. Conversely, changing
+an excluded notebook or dataset does not put the new excluded blob into the
+incremental patch.
+
+The standalone applier installs target sparse/promisor metadata before advancing
+the checkout and disables lazy fetching during that operation, so applying the
+patch does not require access to the promisor remote. Each sparse repository
+entry also records a SHA-256 digest of its exact reachable promised-missing
+object set. The applier recomputes that set and runs ``git fsck --full`` with
+lazy fetching disabled, preventing a malformed patch from silently rehydrating
+an omitted blob or promising an extra required object.
+
+Changing the sparse exclusion policy requires a new base archive. Removing an
+exclusion can require backfilling historical blobs that the base deliberately
+does not contain; adding an exclusion can require deleting objects already
+present in the base. Refusing that policy change keeps incremental patches
+predictable and preserves the requested size semantics. Path movement under an
+unchanged policy is supported: required blobs are backfilled by object identity
+as needed. Sparse Git-bearing submodules may also jump to unrelated commits;
+the patch transports their exact locally-present target object difference rather
+than silently copying the whole staged submodule object store.
 
 Repository-specific Python wrappers use the same mechanism. Prepare and
 validation hooks still see a complete target staging tree; git-well computes the
@@ -231,21 +259,24 @@ without requiring patch-specific hooks:
        validate=validate,
    )
 
-Git bundles transport new repository objects while a residual filesystem overlay
-transports generated hook payloads and other non-Git differences. Patch archives
-contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact base archive SHA-256 and a
-standalone ``APPLY_SOURCE_PATCH.py``. The standalone applier uses only the Python
-standard library plus the ``git`` executable, so a recipient does not need
-git-well installed. Extract the patch archive and run the script beside its
-manifest:
+Full-blob patches use Git bundles for new repository objects. Sparse-promisor
+patches use filtered Git object packs that intentionally omit promised blobs. A
+residual filesystem overlay transports generated hook payloads and other non-Git
+differences. Patch archives contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact
+base archive SHA-256 and a standalone ``APPLY_SOURCE_PATCH.py``. The standalone
+applier uses only the Python standard library plus the ``git`` executable, so a
+recipient does not need git-well installed. Extract the patch archive and run the
+script beside its manifest:
 
 .. code:: bash
 
    python APPLY_SOURCE_PATCH.py /path/to/project-base.tar.gz /path/to/output
 
 The script verifies the exact base archive, applies superproject and submodule Git
-bundles plus residual deletions/overlays, verifies the resulting repository HEADs,
-and prints the reconstructed target source root. Installed callers use the same
+object deltas plus residual deletions/overlays, verifies the resulting repository
+HEADs, and prints the reconstructed target source root. Sparse patch generation
+also verifies offline that the reconstructed repositories have the same reachable
+promised-missing objects as the staged target. Installed callers use the same
 implementation through ``git_well.archive_source.apply_source_patch``.
 
 

@@ -23,7 +23,8 @@ from typing import Iterable
 
 PathLike = str | os.PathLike[str]
 PATCH_MANIFEST_FNAME = 'GIT_WELL_SOURCE_PATCH.json'
-PATCH_SCHEMA = 1
+PATCH_SCHEMA = 2
+_SUPPORTED_PATCH_SCHEMAS = {1, 2}
 
 
 class SourcePatchError(RuntimeError):
@@ -160,16 +161,214 @@ def _repo_has_commit(repo: Path, commit: str) -> bool:
     return proc.returncode == 0
 
 
-def _apply_git_delta(repo: Path, bundle: Path | None, target_head: str) -> None:
+def _git_dir(repo: Path) -> Path:
+    text = _git(repo, 'rev-parse', '--git-dir')
+    path = Path(text)
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve()
+
+
+def _write_sparse_checkout(repo: Path, spec: str | None) -> None:
+    """Install target sparse metadata before checking out a promised commit."""
+    if spec is None:
+        return
+    git_dir = _git_dir(repo)
+    sparse_path = git_dir / 'info' / 'sparse-checkout'
+    sparse_path.parent.mkdir(parents=True, exist_ok=True)
+    if not spec.endswith('\n'):
+        spec += '\n'
+    sparse_path.write_text(spec, encoding='utf8')
+    worktree_config = _git(
+        repo, 'config', '--bool', '--get', 'extensions.worktreeConfig', check=False
+    ).strip().lower() in {'true', 'yes', 'on', '1'}
+    scope = '--worktree' if worktree_config else '--local'
+    _run(_git_command(repo, 'config', scope, 'core.sparseCheckout', 'true'))
+    _run(_git_command(repo, 'config', scope, 'core.sparseCheckoutCone', 'false'))
+
+
+def _configure_promisor(repo: Path, config: dict | None) -> None:
+    """Install partial-clone metadata needed before a sparse target reset."""
+    if config is None:
+        return
+    name = config.get('name')
+    url = config.get('url')
+    if not isinstance(name, str) or not name:
+        raise SourcePatchError('invalid patch promisor remote name')
+    if not isinstance(url, str) or not url:
+        raise SourcePatchError('invalid patch promisor remote URL')
+    current = _git(
+        repo, 'config', '--local', '--get', 'core.repositoryformatversion', check=False
+    ).strip()
+    try:
+        repository_format = int(current)
+    except ValueError:
+        repository_format = 0
+    if repository_format < 1:
+        _run(
+            _git_command(
+                repo, 'config', '--local', 'core.repositoryformatversion', '1'
+            )
+        )
+    _run(_git_command(repo, 'config', '--local', 'extensions.partialClone', name))
+    _run(_git_command(repo, 'config', '--local', f'remote.{name}.url', url))
+    _run(_git_command(repo, 'config', '--local', f'remote.{name}.promisor', 'true'))
+
+
+def _install_object_pack(
+    repo: Path,
+    object_pack: Path,
+    *,
+    promisor: bool,
+) -> None:
+    """Install an exact object pack without asking a promisor remote for blobs."""
+    if not object_pack.is_file():
+        raise SourcePatchError(f'patch Git object pack is missing: {object_pack}')
+    env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
+    with object_pack.open('rb') as file:
+        proc = subprocess.run(
+            [os.fspath(part) for part in _git_command(repo, 'index-pack', '--stdin')],
+            stdin=file,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    if proc.returncode:
+        raise SourcePatchError(
+            'failed to install Git object pack:\n'
+            f'stdout:\n{proc.stdout.decode(errors="replace")}\n'
+            f'stderr:\n{proc.stderr.decode(errors="replace")}'
+        )
+    output = proc.stdout.decode(errors='replace').strip()
+    pack_hash = output.split()[-1] if output else ''
+    if pack_hash.startswith('pack-'):
+        pack_hash = pack_hash[len('pack-'):]
+    if promisor:
+        if len(pack_hash) < 16:
+            raise SourcePatchError(
+                f'could not determine installed pack hash from index-pack: {output!r}'
+            )
+        pack_dir = Path(_git(repo, 'rev-parse', '--git-path', 'objects/pack'))
+        if not pack_dir.is_absolute():
+            pack_dir = repo / pack_dir
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        (pack_dir / f'pack-{pack_hash}.promisor').touch()
+
+
+def _apply_git_delta(
+    repo: Path,
+    bundle: Path | None,
+    target_head: str,
+    *,
+    object_pack: Path | None = None,
+    object_pack_promisor: bool = False,
+    sparse_checkout: str | None = None,
+    promisor: dict | None = None,
+) -> None:
+    """Import patch objects and advance a checkout without lazy-fetch surprises."""
+    if bundle is not None and object_pack is not None:
+        raise SourcePatchError('patch Git delta cannot contain both bundle and object pack')
+    _configure_promisor(repo, promisor)
+    _write_sparse_checkout(repo, sparse_checkout)
     if bundle is not None:
         if not bundle.is_file():
             raise SourcePatchError(f'patch Git bundle is missing: {bundle}')
         _run(_git_command(repo, 'bundle', 'unbundle', bundle))
+    if object_pack is not None:
+        _install_object_pack(
+            repo,
+            object_pack,
+            promisor=object_pack_promisor,
+        )
     if not _repo_has_commit(repo, target_head):
         raise SourcePatchError(
             f'patch did not provide target commit {target_head} for {repo}'
         )
-    _run(_git_command(repo, 'reset', '--hard', '--quiet', target_head))
+    cmd = [os.fspath(part) for part in _git_command(
+        repo, 'reset', '--hard', '--quiet', target_head
+    )]
+    env = None
+    if object_pack_promisor or sparse_checkout is not None or promisor is not None:
+        env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    if proc.returncode:
+        raise SourcePatchError(
+            'failed to advance Git checkout without lazy-fetching promised blobs:\n'
+            f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+        )
+
+
+def _reachable_missing_oids(repo: Path) -> set[str]:
+    """Enumerate reachable objects intentionally absent from this checkout."""
+    env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
+    proc = subprocess.run(
+        [
+            os.fspath(part)
+            for part in _git_command(
+                repo, 'rev-list', '--objects', '--all', '--missing=print'
+            )
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    if proc.returncode:
+        raise SourcePatchError(
+            'could not inspect promised missing Git objects at '
+            f'{repo}: {proc.stderr.strip()}'
+        )
+    return {
+        line[1:].strip()
+        for line in proc.stdout.splitlines()
+        if line.startswith('?') and line[1:].strip()
+    }
+
+
+def _oid_set_sha256(oids: set[str]) -> str:
+    payload = ''.join(f'{oid}\n' for oid in sorted(oids)).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _verify_sparse_object_state(repo: Path, item: dict) -> None:
+    """Verify schema-v2 sparse patches preserved the exact promised set."""
+    expected_digest = item.get('missing_promisor_oid_sha256')
+    if expected_digest is None:
+        return
+    if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+        raise SourcePatchError('invalid sparse patch missing-object digest')
+    expected_count = item.get('missing_promisor_objects')
+    if not isinstance(expected_count, int) or expected_count < 0:
+        raise SourcePatchError('invalid sparse patch missing-object count')
+    actual = _reachable_missing_oids(repo)
+    if len(actual) != expected_count or _oid_set_sha256(actual) != expected_digest:
+        raise SourcePatchError(
+            'applied sparse patch did not preserve the promised missing-object set; '
+            f'expected_count={expected_count}, actual_count={len(actual)}'
+        )
+    env = {**os.environ, 'GIT_NO_LAZY_FETCH': '1'}
+    proc = subprocess.run(
+        [os.fspath(part) for part in _git_command(repo, 'fsck', '--full')],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    if proc.returncode:
+        raise SourcePatchError(
+            'applied sparse patch failed offline git fsck at '
+            f'{repo}: {proc.stderr.strip()}'
+        )
 
 
 def _entry_for(path: Path) -> _Entry:
@@ -289,7 +488,7 @@ def _read_patch_manifest(patch_root: Path) -> dict:
         data = json.loads(path.read_text(encoding='utf8'))
     except (OSError, json.JSONDecodeError) as ex:
         raise SourcePatchError(f'invalid source patch manifest: {path}') from ex
-    if data.get('schema_version') != PATCH_SCHEMA:
+    if data.get('schema_version') not in _SUPPORTED_PATCH_SCHEMAS:
         raise SourcePatchError(
             f'unsupported source patch schema: {data.get("schema_version")!r}'
         )
@@ -366,13 +565,26 @@ def apply_extracted_source_patch(
                     f'{item["base_head"]}, got {current_head}'
                 )
             bundle = (
-                patch_root / item['bundle']
+                _safe_target(patch_root, item['bundle'])
                 if item.get('bundle') is not None
                 else None
             )
-            _apply_git_delta(repo, bundle, item['target_head'])
+            object_pack = (
+                _safe_target(patch_root, item['object_pack'])
+                if item.get('object_pack') is not None
+                else None
+            )
+            _apply_git_delta(
+                repo,
+                bundle,
+                item['target_head'],
+                object_pack=object_pack,
+                object_pack_promisor=bool(item.get('object_pack_promisor', False)),
+                sparse_checkout=item.get('sparse_checkout'),
+                promisor=item.get('promisor'),
+            )
 
-        deletions_path = patch_root / manifest['deletions_file']
+        deletions_path = _safe_target(patch_root, manifest['deletions_file'])
         try:
             deletions = json.loads(deletions_path.read_text(encoding='utf8'))
         except (OSError, json.JSONDecodeError) as ex:
@@ -397,7 +609,7 @@ def apply_extracted_source_patch(
                 'source patch overlay entry count does not match manifest'
             )
         _apply_overlay(
-            patch_root / manifest['overlay_root'],
+            _safe_target(patch_root, manifest['overlay_root']),
             target_root,
             paths=overlay_paths,
         )
@@ -411,6 +623,7 @@ def apply_extracted_source_patch(
                 raise SourcePatchError(
                     f'applied source patch HEAD mismatch at {relpath!r}'
                 )
+            _verify_sparse_object_state(repo, item)
         return target_root
     except Exception:
         shutil.rmtree(output_dpath, ignore_errors=True)
@@ -444,7 +657,7 @@ def _build_parser() -> argparse.ArgumentParser:
             'Run this script from inside the extracted patch directory.'
         )
     )
-    parser.add_argument('base_archive', help='exact full base archive named by the patch')
+    parser.add_argument('base_archive', help='exact compatible base archive named by the patch')
     parser.add_argument(
         'output_dpath',
         help='empty/nonexistent directory where reconstructed source is written',
