@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from ._common import (
     DepthArg,
+    HistoryBlobsArg,
     SubmoduleArchiveDecision,
     SubmoduleDepthSpecArg,
     SubmoduleStatus,
@@ -116,6 +117,19 @@ class SubmoduleDepthPolicy:
             for pattern, depth in sorted(self.glob_depths.items()):
                 lines.append(f'    {pattern}: {_depth_label(depth)}')
         return lines
+
+
+def _normalize_history_blobs(value: str | None) -> HistoryBlobsArg:
+    """Normalize the history-blob retention policy."""
+    if value is None:
+        return 'full'
+    normalized = str(value).strip().lower()
+    if normalized not in {'full', 'sparse'}:
+        raise ValueError(
+            "history_blobs must be 'full' or 'sparse'; "
+            f'got {value!r}'
+        )
+    return cast(HistoryBlobsArg, normalized)
 
 def _normalize_depth(depth: DepthArg) -> int | None:
     import re

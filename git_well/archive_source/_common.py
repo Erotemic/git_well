@@ -22,6 +22,7 @@ ArchiveFormatArg = Literal[
     'txz',
 ]
 ResolvedArchiveFormat = Literal['tar', 'tar.gz', 'zip', 'tar.bz2', 'tar.xz']
+HistoryBlobsArg = Literal['full', 'sparse']
 
 _FORMAT_TO_EXTENSION = {
     'tar': '.tar',
@@ -80,6 +81,18 @@ class BranchRefInventory:
 
     local_branches: tuple[str, ...]
     remote_tracking_branches: tuple[str, ...]
+
+@dataclass(frozen=True)
+class PromisorPruneResult:
+    """Summary of history blobs intentionally omitted from one repository."""
+
+    archive_prefix: str
+    matched_history_paths: tuple[str, ...]
+    omitted_blob_oids: tuple[str, ...]
+    omitted_blob_bytes: int
+    promisor_remote_name: str
+    promisor_remote_url: str
+
 
 class _Logger:
     def __init__(self, verbose: int) -> None:

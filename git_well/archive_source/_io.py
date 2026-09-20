@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Literal, cast
 from ._common import (
     ArchiveFormatArg,
     BranchRefInventory,
+    HistoryBlobsArg,
     PathLike,
+    PromisorPruneResult,
     ResolvedArchiveFormat,
     SubmoduleArchiveDecision,
     _ARCHIVE_INFO_FNAME,
@@ -195,6 +197,8 @@ def _write_manifest(
     excluded_worktree_paths: Sequence[str],
     unmatched_exclude_path_selectors: Sequence[str],
     excluded_worktree_bytes: int,
+    history_blobs: HistoryBlobsArg,
+    promisor_prune_results: Sequence[PromisorPruneResult],
     redact_local_paths: bool,
 ) -> None:
     from git_well import __version__
@@ -243,6 +247,15 @@ def _write_manifest(
             f'({excluded_worktree_bytes} raw bytes); Git history not rewritten'
         )
 
+    if promisor_prune_results:
+        omitted_count = sum(len(item.omitted_blob_oids) for item in promisor_prune_results)
+        omitted_bytes = sum(item.omitted_blob_bytes for item in promisor_prune_results)
+        pruning_details.append(
+            f'{omitted_count} reachable blob object(s) omitted from local Git '
+            f'object storage ({omitted_bytes} raw bytes) using promisor semantics; '
+            'commit and tree hashes unchanged'
+        )
+
     lines = [
         'git-well source archive',
         '=======================',
@@ -256,6 +269,7 @@ def _write_manifest(
         f'Superproject commit: {head_sha}',
         f'Superproject short commit: {short_sha}',
         f'Superproject history: {superproject_history}',
+        f'History blob retention: {history_blobs}',
         'Superproject branches: '
         + (
             'all locally cached local and remote-tracking branches'
@@ -304,6 +318,36 @@ def _write_manifest(
             lines.extend(
                 f'- {selector}'
                 for selector in unmatched_exclude_path_selectors
+            )
+
+    if promisor_prune_results:
+        lines += [
+            '',
+            'Promisor history pruning:',
+            'Git history rewritten: no',
+            'Missing blobs are intentional partial-clone/promisor objects.',
+            'Commands confined to retained sparse paths remain offline-safe.',
+            'Accessing an omitted blob may contact its recorded promisor remote.',
+        ]
+        for item in promisor_prune_results:
+            label = item.archive_prefix or '.'
+            remote_url = (
+                '(redacted by --redact-local-paths)'
+                if redact_local_paths and (
+                    item.promisor_remote_url.startswith('/')
+                    or item.promisor_remote_url.startswith('file://')
+                )
+                else item.promisor_remote_url
+            )
+            lines.extend(
+                [
+                    f'- repository: {label}',
+                    f'  matched historical paths: {len(item.matched_history_paths)}',
+                    f'  omitted blobs: {len(item.omitted_blob_oids)}',
+                    f'  omitted raw blob bytes: {item.omitted_blob_bytes}',
+                    f'  promisor remote: {item.promisor_remote_name}',
+                    f'  promisor URL: {remote_url}',
+                ]
             )
 
     lines += ['', 'Submodules:']

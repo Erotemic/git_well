@@ -247,6 +247,8 @@ def test_archive_source_cli_options():
             '--exclude-path',
             'external/big-data/notebooks',
             'assets/*.bin',
+            '--history-blobs',
+            'sparse',
             '--no-submodules',
             '--all-branches',
             '--redact-local-paths',
@@ -259,6 +261,7 @@ def test_archive_source_cli_options():
         'external/big-data/notebooks',
         'assets/*.bin',
     ]
+    assert config.history_blobs == 'sparse'
     assert config.submodules is False
     assert config.all_branches is True
     assert config.redact_local_paths is True
@@ -1314,6 +1317,7 @@ def test_archive_source_exclude_path_source_only_and_directory(tmp_path):
         output=tmp_path / 'exclude-source-only.tar.gz',
         depth=0,
         exclude_path=['notebooks'],
+        history_blobs='sparse',
         verbose=0,
     )
     root = _extract_tar_root(archive, tmp_path / 'extract-source-only')
@@ -1358,6 +1362,396 @@ def test_archive_source_exclude_path_inside_history_submodule(tmp_path):
     assert status.stdout == ''
     subprocess.run(['git', 'sparse-checkout', 'disable'], cwd=sub, check=True)
     assert (sub / 'notebooks/demo.ipynb').exists()
+
+
+
+def _git_object_exists(repo, oid, *, no_lazy=True):
+    import subprocess
+
+    env = os.environ.copy()
+    if no_lazy:
+        env['GIT_NO_LAZY_FETCH'] = '1'
+    proc = subprocess.run(
+        ['git', 'cat-file', '-e', oid],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _git_rev_parse(repo, spec):
+    import subprocess
+
+    return subprocess.run(
+        ['git', 'rev-parse', spec],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+def test_archive_source_history_blobs_sparse_promisor_roundtrip(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_roundtrip'
+    _init_demo_repo(repo)
+    (repo / 'payload').mkdir()
+    (repo / 'payload' / 'large.bin').write_bytes(b'A' * 12000)
+    (repo / 'keep.txt').write_text('keep-v1\n')
+    _commit_all(repo, 'first payload')
+    old_large = _git_rev_parse(repo, 'HEAD:payload/large.bin')
+    old_keep = _git_rev_parse(repo, 'HEAD:keep.txt')
+
+    (repo / 'payload' / 'large.bin').write_bytes(b'B' * 13000)
+    (repo / 'keep.txt').write_text('keep-v2\n')
+    _commit_all(repo, 'second payload')
+    new_large = _git_rev_parse(repo, 'HEAD:payload/large.bin')
+    new_keep = _git_rev_parse(repo, 'HEAD:keep.txt')
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-roundtrip.tar.gz',
+        exclude_path=['payload/large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-promisor-roundtrip')
+
+    assert not (root / 'payload' / 'large.bin').exists()
+    assert (root / 'keep.txt').read_text() == 'keep-v2\n'
+    assert not _git_object_exists(root, old_large)
+    assert not _git_object_exists(root, new_large)
+    assert _git_object_exists(root, old_keep)
+    assert _git_object_exists(root, new_keep)
+
+    no_lazy_env = os.environ.copy()
+    no_lazy_env['GIT_NO_LAZY_FETCH'] = '1'
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=root,
+        env=no_lazy_env,
+        check=True,
+    )
+    status = subprocess.run(
+        ['git', 'status', '--porcelain=v1'],
+        cwd=root,
+        env=no_lazy_env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert status.stdout == ''
+
+    promisor = subprocess.run(
+        ['git', 'config', '--get', 'extensions.partialClone'],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert promisor == 'git-well-promisor'
+    assert list((root / '.git' / 'objects' / 'pack').glob('*.promisor'))
+
+    # The source checkout is the conservative fallback promisor when there is
+    # no published configured remote, so restoring the sparse checkout proves
+    # that omitted current blobs are lazily recoverable without rewritten IDs.
+    subprocess.run(['git', 'sparse-checkout', 'disable'], cwd=root, check=True)
+    assert (root / 'payload' / 'large.bin').read_bytes() == b'B' * 13000
+    assert _git_rev_parse(root, 'HEAD:payload/large.bin') == new_large
+
+    manifest = (root / 'GIT_WELL_ARCHIVE_INFO.txt').read_text()
+    assert 'History blob retention: sparse' in manifest
+    assert 'Promisor history pruning:' in manifest
+    assert 'omitted blobs: 2' in manifest
+    assert 'Git history rewritten: no' in manifest
+
+
+def test_archive_source_history_blobs_sparse_covers_deleted_history(tmp_path):
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_deleted_history'
+    _init_demo_repo(repo)
+    (repo / 'notebooks').mkdir()
+    (repo / 'notebooks' / 'old.ipynb').write_bytes(b'old-notebook' * 1000)
+    (repo / 'keep.py').write_text('print("v1")\n')
+    _commit_all(repo, 'old notebook')
+    old_oid = _git_rev_parse(repo, 'HEAD:notebooks/old.ipynb')
+
+    (repo / 'notebooks' / 'old.ipynb').unlink()
+    (repo / 'notebooks' / 'current.ipynb').write_bytes(
+        b'current-notebook' * 1000
+    )
+    _commit_all(repo, 'replace notebook')
+    current_oid = _git_rev_parse(repo, 'HEAD:notebooks/current.ipynb')
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-deleted-history.tar.gz',
+        exclude_path=['notebooks'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-promisor-history')
+
+    assert not (root / 'notebooks').exists()
+    assert not _git_object_exists(root, old_oid)
+    assert not _git_object_exists(root, current_oid)
+    manifest = (root / 'GIT_WELL_ARCHIVE_INFO.txt').read_text()
+    assert 'matched historical paths: 2' in manifest
+    assert 'omitted blobs: 2' in manifest
+
+
+def test_archive_source_history_blobs_sparse_inside_submodule(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    sub_repo = _make_submodule_repo(
+        tmp_path,
+        'promisor_sub_src',
+        filename='notebooks/demo.ipynb',
+        content='notebook-v1\n',
+    )
+    old_oid = _git_rev_parse(sub_repo, 'HEAD:notebooks/demo.ipynb')
+    (sub_repo / 'notebooks' / 'demo.ipynb').write_text('notebook-v2\n')
+    (sub_repo / 'code.py').write_text('print(1)\n')
+    _commit_all(sub_repo, 'update notebook and code')
+    new_oid = _git_rev_parse(sub_repo, 'HEAD:notebooks/demo.ipynb')
+
+    super_repo = _make_repo_with_submodules(tmp_path, {'tpl/lib': sub_repo})
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'promisor-submodule.tar.gz',
+        exclude_path=['tpl/lib/notebooks'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-promisor-submodule')
+    sub = root / 'tpl/lib'
+
+    assert not (sub / 'notebooks' / 'demo.ipynb').exists()
+    assert (sub / 'code.py').exists()
+    assert not _git_object_exists(sub, old_oid)
+    assert not _git_object_exists(sub, new_oid)
+    no_lazy_env = os.environ.copy()
+    no_lazy_env['GIT_NO_LAZY_FETCH'] = '1'
+    subprocess.run(
+        ['git', 'fsck', '--full'], cwd=sub, env=no_lazy_env, check=True
+    )
+    subprocess.run(['git', 'sparse-checkout', 'disable'], cwd=sub, check=True)
+    assert (sub / 'notebooks' / 'demo.ipynb').read_text() == 'notebook-v2\n'
+
+
+def test_archive_source_history_blobs_sparse_all_branches(tmp_path):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_all_branches'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'main-large' * 1000)
+    (repo / 'keep.txt').write_text('main\n')
+    _commit_all(repo, 'main payload')
+    main_branch = subprocess.run(
+        ['git', 'branch', '--show-current'],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    main_large = _git_rev_parse(repo, 'HEAD:large.bin')
+
+    subprocess.run(['git', 'checkout', '-q', '-b', 'topic'], cwd=repo, check=True)
+    (repo / 'large.bin').write_bytes(b'topic-large' * 1000)
+    (repo / 'topic.txt').write_text('topic source\n')
+    _commit_all(repo, 'topic payload')
+    topic_large = _git_rev_parse(repo, 'HEAD:large.bin')
+    topic_keep = _git_rev_parse(repo, 'HEAD:topic.txt')
+    subprocess.run(['git', 'checkout', '-q', main_branch], cwd=repo, check=True)
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-all-branches.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        all_branches=True,
+        verbose=0,
+    )
+    root = _extract_tar_root(archive, tmp_path / 'extract-promisor-branches')
+
+    assert not _git_object_exists(root, main_large)
+    assert not _git_object_exists(root, topic_large)
+    assert _git_object_exists(root, topic_keep)
+    shown = subprocess.run(
+        ['git', 'show', 'topic:topic.txt'],
+        cwd=root,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert shown.stdout == 'topic source\n'
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=root,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+
+
+def test_promisor_remote_local_url_detection():
+    from git_well.archive_source._prune import _looks_like_local_remote_url
+
+    assert _looks_like_local_remote_url('/tmp/repo.git')
+    assert _looks_like_local_remote_url('../repo.git')
+    assert _looks_like_local_remote_url('relative/repo.git')
+    assert _looks_like_local_remote_url('file:///tmp/repo.git')
+    assert _looks_like_local_remote_url(r'C:\\repo')
+    assert not _looks_like_local_remote_url('https://example.com/org/repo.git')
+    assert not _looks_like_local_remote_url('ssh://example.com/org/repo.git')
+    assert not _looks_like_local_remote_url('git@example.com:org/repo.git')
+
+
+def test_archive_source_history_blobs_sparse_redaction_uses_published_remote(
+    tmp_path,
+):
+    import subprocess
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_redacted_published'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'large' * 1000)
+    (repo / 'keep.py').write_text('print(1)\n')
+    _commit_all(repo, 'payload')
+    large_oid = _git_rev_parse(repo, 'HEAD:large.bin')
+    branch = subprocess.run(
+        ['git', 'branch', '--show-current'],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    remote_url = 'https://example.invalid/org/promisor-test.git'
+    subprocess.run(
+        ['git', 'remote', 'add', 'origin', remote_url], cwd=repo, check=True
+    )
+    subprocess.run(
+        ['git', 'update-ref', f'refs/remotes/origin/{branch}', 'HEAD'],
+        cwd=repo,
+        check=True,
+    )
+
+    archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'promisor-redacted-published.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        redact_local_paths=True,
+        verbose=0,
+    )
+    root = _extract_tar_root(
+        archive, tmp_path / 'extract-promisor-redacted-published'
+    )
+    assert not _git_object_exists(root, large_oid)
+    configured = subprocess.run(
+        ['git', 'config', '--get', 'remote.git-well-promisor.url'],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert configured == remote_url
+    subprocess.run(
+        ['git', 'fsck', '--full'],
+        cwd=root,
+        env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'},
+        check=True,
+    )
+    manifest = (root / 'GIT_WELL_ARCHIVE_INFO.txt').read_text()
+    assert str(repo.resolve()) not in manifest
+    assert remote_url in manifest
+
+
+def test_archive_source_history_blobs_sparse_redaction_requires_remote(tmp_path):
+    import pytest
+
+    from git_well.archive_source import archive_source
+
+    repo = tmp_path / 'promisor_redacted'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'large' * 1000)
+    _commit_all(repo, 'payload')
+
+    with pytest.raises(RuntimeError, match='promisor remote'):
+        archive_source(
+            repo_dpath=repo,
+            output=tmp_path / 'should-not-exist.tar.gz',
+            exclude_path=['large.bin'],
+            history_blobs='sparse',
+            redact_local_paths=True,
+            verbose=0,
+        )
+
+
+def test_archive_source_history_blobs_sparse_rejects_patch_mode():
+    import pytest
+
+    from git_well.archive_source import archive_source
+    from git_well.archive_source.patch import SourcePatchError
+
+    with pytest.raises(SourcePatchError, match='history_blobs'):
+        archive_source(patch='auto', history_blobs='sparse')
+
+
+def test_archive_source_history_blobs_sparse_not_patch_auto_base(tmp_path):
+    import json
+
+    from git_well.archive_source import archive_source
+    from git_well.archive_source.patch import _registry_path
+
+    repo = tmp_path / 'promisor_registry'
+    _init_demo_repo(repo)
+    (repo / 'large.bin').write_bytes(b'large' * 1000)
+    _commit_all(repo, 'payload')
+
+    sparse_archive = archive_source(
+        repo_dpath=repo,
+        output=tmp_path / 'sparse-source.tar.gz',
+        exclude_path=['large.bin'],
+        history_blobs='sparse',
+        verbose=0,
+    )
+    registry = _registry_path(repo)
+    if registry.exists():
+        records = [
+            json.loads(line)
+            for line in registry.read_text(encoding='utf8').splitlines()
+            if line.strip()
+        ]
+        assert all(Path(item['path']) != sparse_archive.resolve() for item in records)
+
+
+def test_parse_legacy_archive_manifest_defaults_history_blobs_full():
+    from git_well.archive_source.patch import _parse_archive_manifest
+
+    manifest = """Git Well Source Archive
+Archive prefix: legacy-source
+Superproject commit: 0123456789abcdef
+Superproject short commit: 0123456
+Superproject history: full
+Superproject branches: current HEAD history only
+Generated timestamp: 2026-09-20T00:00:00+00:00
+"""
+    parsed = _parse_archive_manifest(manifest)
+    assert parsed['history_blobs'] == 'full'
+
 
 def _commit_all(repo, message):
     import ubelt as ub

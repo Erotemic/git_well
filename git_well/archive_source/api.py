@@ -13,7 +13,9 @@ from ._common import (
     ArchiveFormatArg,
     BranchRefInventory,
     DepthArg,
+    HistoryBlobsArg,
     PathLike,
+    PromisorPruneResult,
     ResolvedArchiveFormat,
     SubmoduleArchiveDecision,
     SubmoduleDepthSpecArg,
@@ -38,12 +40,16 @@ from ._policy import (
     _depth_label,
     _normalize_archive_path_list,
     _normalize_depth,
+    _normalize_history_blobs,
     _normalize_submodule_path_list,
     _parse_submodule_depth_spec,
     _resolve_submodule_archive_decisions,
 )
-from ._repo import (
+from ._prune import (
+    _apply_promisor_history_pruning,
     _apply_worktree_path_exclusions,
+)
+from ._repo import (
     _assert_has_head,
     _branch_ref_inventory,
     _clone_committed_checkout,
@@ -117,6 +123,8 @@ class ArchiveSourceContext:
     excluded_worktree_paths: tuple[str, ...]
     unmatched_exclude_path_selectors: tuple[str, ...]
     excluded_worktree_bytes: int
+    history_blobs: HistoryBlobsArg
+    promisor_prune_results: tuple[PromisorPruneResult, ...]
     redact_local_paths: bool
     all_branches: bool
     keep_stage: bool
@@ -194,6 +202,8 @@ class ArchiveSourceContext:
             excluded_worktree_paths=self.excluded_worktree_paths,
             unmatched_exclude_path_selectors=self.unmatched_exclude_path_selectors,
             excluded_worktree_bytes=self.excluded_worktree_bytes,
+            history_blobs=self.history_blobs,
+            promisor_prune_results=self.promisor_prune_results,
             redact_local_paths=self.redact_local_paths,
         )
         self._metadata_finalized = True
@@ -211,7 +221,7 @@ class ArchiveSourceContext:
             self.archive_format,
         )
         self._archive_written = True
-        if self.include_git_history:
+        if self.include_git_history and self.history_blobs == 'full':
             try:
                 from .patch import register_full_archive
 
@@ -250,6 +260,7 @@ def archive_source(
     submodule_depth: SubmoduleDepthSpecArg = None,
     exclude_submodule: str | list[str] | None = None,
     exclude_path: str | list[str] | None = None,
+    history_blobs: HistoryBlobsArg | str = 'full',
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
@@ -301,6 +312,14 @@ def archive_source(
             history-bearing repositories omitted paths remain available as Git
             objects and the staged repository uses sparse checkout so status
             remains clean and the files can be restored.
+
+        history_blobs:
+            ``'full'`` keeps every reachable Git blob, including blobs for
+            paths omitted by ``exclude_path``. ``'sparse'`` turns those path
+            exclusions into a partial/promisor repository: matching blobs are
+            removed from local Git object storage without changing commit or
+            tree hashes and may be lazily recovered from the recorded promisor
+            remote. The default is ``'full'``.
 
         no_submodules:
             If true, omit all recursive submodule working trees from the
@@ -359,11 +378,18 @@ def archive_source(
         excluded. Hook failures abort serialization and are wrapped in
         :class:`ArchiveSourceHookError` with the hook phase and name.
     """
+    normalized_history_blobs = _normalize_history_blobs(history_blobs)
     if patch is not None and _normalize_depth(depth) == 0:
         from .patch import SourcePatchError
 
         raise SourcePatchError(
             'archive_source patch mode requires Git history; depth=0 is not supported'
+        )
+    if patch is not None and normalized_history_blobs != 'full':
+        from .patch import SourcePatchError
+
+        raise SourcePatchError(
+            'archive_source patch mode currently requires history_blobs="full"'
         )
     prepare_hooks = _coerce_archive_hooks(prepare, phase='prepare')
     validate_hooks = _coerce_archive_hooks(validate, phase='validate')
@@ -374,6 +400,7 @@ def archive_source(
         submodule_depth=submodule_depth,
         exclude_submodule=exclude_submodule,
         exclude_path=exclude_path,
+        history_blobs=normalized_history_blobs,
         no_submodules=no_submodules,
         format=format,
         redact_local_paths=redact_local_paths,
@@ -408,6 +435,7 @@ def stage_source_archive(
     submodule_depth: SubmoduleDepthSpecArg = None,
     exclude_submodule: str | list[str] | None = None,
     exclude_path: str | list[str] | None = None,
+    history_blobs: HistoryBlobsArg | str = 'full',
     no_submodules: bool = False,
     format: ArchiveFormatArg = 'auto',
     redact_local_paths: bool = False,
@@ -454,6 +482,7 @@ def stage_source_archive(
     )
 
     exclude_path_selectors = _normalize_archive_path_list(exclude_path)
+    normalized_history_blobs = _normalize_history_blobs(history_blobs)
 
     archive_format = _resolve_archive_format(output, format)
     archive_path = _resolve_output(
@@ -510,6 +539,7 @@ def stage_source_archive(
             '[source-archive] worktree exclusion selectors: '
             + ', '.join(exclude_path_selectors)
         )
+    log(f'[source-archive] history blobs: {normalized_history_blobs}')
     log(f'[source-archive] superproject HEAD: {short_sha}')
 
     import shutil
@@ -624,6 +654,17 @@ def stage_source_archive(
             staged_repo_units, exclude_path_selectors, log
         )
 
+        if normalized_history_blobs == 'sparse':
+            promisor_prune_results = _apply_promisor_history_pruning(
+                staged_repo_units,
+                exclude_path_selectors,
+                redact_local_paths=redact_local_paths,
+                all_branches=all_branches,
+                log=log,
+            )
+        else:
+            promisor_prune_results = ()
+
         context = ArchiveSourceContext(
             repo_root=repo_root,
             archive_path=archive_path,
@@ -644,6 +685,8 @@ def stage_source_archive(
             excluded_worktree_paths=excluded_worktree_paths,
             unmatched_exclude_path_selectors=unmatched_exclude_path_selectors,
             excluded_worktree_bytes=excluded_worktree_bytes,
+            history_blobs=normalized_history_blobs,
+            promisor_prune_results=promisor_prune_results,
             redact_local_paths=redact_local_paths,
             all_branches=all_branches,
             keep_stage=keep_stage,

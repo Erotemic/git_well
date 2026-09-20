@@ -56,6 +56,7 @@ class SourceArchiveInfo:
     has_git: bool
     history_depth: int | None
     all_branches: bool
+    history_blobs: str
     generated_timestamp: str | None
 
 
@@ -139,6 +140,7 @@ def _parse_archive_manifest(text: str) -> dict[str, Any]:
         'short_sha': values['Superproject short commit'],
         'history_depth': _parse_history_depth(values['Superproject history']),
         'all_branches': values['Superproject branches'].startswith('all '),
+        'history_blobs': values.get('History blob retention', 'full'),
         'generated_timestamp': values.get('Generated timestamp'),
     }
 
@@ -205,6 +207,7 @@ def inspect_source_archive(path: PathLike) -> SourceArchiveInfo:
         has_git=has_git,
         history_depth=parsed['history_depth'],
         all_branches=bool(parsed['all_branches']),
+        history_blobs=str(parsed['history_blobs']),
         generated_timestamp=parsed['generated_timestamp'],
     )
 
@@ -249,6 +252,11 @@ def _validate_base_compatibility(
     if not info.has_git or info.history_depth == 0:
         raise SourcePatchError(
             'patch mode requires a base archive whose superproject contains .git'
+        )
+    if info.history_blobs != 'full':
+        raise SourcePatchError(
+            'patch mode requires a base archive with full Git blob retention; '
+            f'base history_blobs={info.history_blobs!r}'
         )
     if info.history_depth != target_depth:
         base_label = 'full' if info.history_depth is None else str(info.history_depth)

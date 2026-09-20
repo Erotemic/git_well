@@ -131,13 +131,39 @@ or fnmatch-style selectors, including paths inside included submodules:
        --exclude-path 'tpl/segment-anything-2/notebooks' \
                       'tpl/Open-GroundingDino/config/instances_val2017.json'
 
-For history-bearing repositories, the corresponding blobs remain reachable in
-``.git`` and the staged checkout uses sparse-checkout metadata so ``git status``
-remains clean. This removes the duplicate materialized copy rather than
-modifying commit IDs or creating an invalid object graph. Run
-``git sparse-checkout disable`` inside an affected repository to restore its
-omitted paths. With ``--depth 0``, there is no Git metadata to preserve and the
-selected paths are simply left out of the source-only tree.
+For history-bearing repositories, the default ``--history-blobs full`` keeps
+the corresponding blobs reachable in ``.git`` and the staged checkout uses
+sparse-checkout metadata so ``git status`` remains clean. This removes the
+duplicate materialized copy rather than modifying commit IDs or creating an
+invalid object graph.
+
+For handoff archives where those paths are deliberately disposable, add
+``--history-blobs sparse``:
+
+.. code:: bash
+
+   git-well archive_source . \
+       --exclude-path 'tpl/segment-anything-2/notebooks' \
+                      'tpl/Open-GroundingDino/config/instances_val2017.json' \
+       --history-blobs sparse
+
+This turns each affected history-bearing checkout into a real partial/promisor
+repository. Reachable blobs associated with excluded paths are omitted from the
+local object database while commit and tree hashes remain unchanged. Git marks
+the remaining packs as promisor packs, so ``git fsck --full`` recognizes the
+missing blobs as intentional. Accessing one of those blobs, or running
+``git sparse-checkout disable``, may lazily fetch it from the recorded promisor
+remote. The archive manifest records the affected repositories, path count,
+blob count, raw omitted bytes, and promisor URL.
+
+``history-blobs=sparse`` applies selectors across reachable history, not just
+the current checkout, so old versions of an excluded notebook or dataset are
+omitted as well. git-well prefers a configured remote already known locally to
+contain the archived commit; otherwise non-redacted archives use the source
+checkout itself as the truthful fallback promisor. ``--redact-local-paths``
+therefore requires a non-local configured remote known to contain the commit.
+With ``--depth 0``, there is no Git metadata to prune and selected paths are
+simply left out of the source-only tree.
 
 Repository-specific archivers can extend the same staging machinery through
 the Python API. Prepare hooks may add generated payloads to the committed

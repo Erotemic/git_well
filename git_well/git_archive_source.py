@@ -112,6 +112,18 @@ class ArchiveSourceCLI(kwconf.Config):
             expansion.
             """).strip(),
     )
+    history_blobs = kwconf.Value(
+        'full',
+        alias=['history-blobs'],
+        choices=['full', 'sparse'],
+        help=textwrap.dedent("""
+            Git blob retention policy. "full" keeps all reachable blobs.
+            "sparse" additionally removes blobs matching --exclude-path from
+            local Git object storage and records a promisor remote so commit
+            and tree hashes remain unchanged and omitted blobs may be lazily
+            recovered. This is partial-clone semantics, not history rewriting.
+            """).strip(),
+    )
     submodules = kwconf.Value(
         True,
         isflag=True,
@@ -178,6 +190,7 @@ class ArchiveSourceCLI(kwconf.Config):
             submodule_depth=config.submodule_depth,
             exclude_submodule=config.exclude_submodule,
             exclude_path=config.exclude_path,
+            history_blobs=config.history_blobs,
             no_submodules=not bool(config.submodules),
             format=config.format,
             patch=config.patch,
