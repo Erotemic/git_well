@@ -35,6 +35,7 @@ scripts.git-sync = "git_well.git_sync:main"
 scripts.git-track-upstream = "git_well.git_track_upstream:main"
 scripts.git-well = "git_well.__main__:main"
 scripts.git-ipfs = "git_well.ipfs:main"
+scripts.git-epoch = "git_well.git_epoch:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -185,4 +186,5 @@ entry_points.console_scripts = [
   "git-track-upstream = git_well.git_track_upstream:main",
   "git-archive-source = git_well.git_archive_source:main",
   "git-ipfs = git_well.ipfs:main",
+  "git-epoch = git_well.git_epoch:main",
 ]

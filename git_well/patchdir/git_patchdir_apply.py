@@ -19,7 +19,11 @@ class GitApplyPatchCLI(kwconf.Config):
     )
     patch_dpath = kwconf.Value('patches', help='Directory of saved patches')
     list_only = kwconf.Flag(False, help='Only list available patches')
-    dry = kwconf.Flag(False, help='Show what would be applied without applying')
+    dry = kwconf.Flag(
+        False,
+        short_alias=['n'],
+        help='Show what would be applied without applying',
+    )
     restore_patch = kwconf.Flag(
         False, help='Restore (unstage) patch files after applying'
     )

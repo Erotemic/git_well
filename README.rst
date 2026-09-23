@@ -95,6 +95,369 @@ The tools in this module are derived from:
 
 
 
+Archiving pull-request review state
+-----------------------------------
+
+``git archive-source`` normally archives the committed checkout and the
+history reachable from the current ``HEAD``. When reviewing a pull request
+from a contributor fork, use ``--all-branches`` to also preserve every local
+branch and every remote-tracking branch that has already been fetched into the
+superproject repository:
+
+.. code:: bash
+
+   git remote add contributor git@github.com:contributor/project.git
+   git fetch contributor
+   git archive-source --all-branches
+
+The archive operation itself does not contact ``origin``, ``contributor``, or
+any other configured remote. It copies the locally cached ``refs/heads/*`` and
+``refs/remotes/*`` state, so the unpacked archive can run commands such as
+``git branch --all``, ``git log contributor/topic``, and
+``git diff main...contributor/topic`` even if the original fork is no longer
+reachable. The archived working tree remains detached at the exact original
+``HEAD`` commit. ``--all-branches`` is opt-in, applies to the superproject,
+honors positive ``--depth`` values from each included branch tip, and cannot
+be combined with source-only ``--depth 0`` archives.
+
+Large tracked files that are useful upstream but unnecessary in a handoff can
+be omitted from the materialized archive checkout without rewriting Git
+history. ``--exclude-path`` accepts archive-root-relative files, directories,
+or fnmatch-style selectors, including paths inside included submodules:
+
+.. code:: bash
+
+   git-well archive_source . \
+       --exclude-path 'tpl/segment-anything-2/notebooks' \
+                      'tpl/Open-GroundingDino/config/instances_val2017.json'
+
+For history-bearing repositories, the default ``--history-blobs full`` keeps
+the corresponding blobs reachable in ``.git`` and the staged checkout uses
+sparse-checkout metadata so ``git status`` remains clean. This removes the
+duplicate materialized copy rather than modifying commit IDs or creating an
+invalid object graph.
+
+For handoff archives where those paths are deliberately disposable, add
+``--history-blobs sparse``:
+
+.. code:: bash
+
+   git-well archive_source . \
+       --exclude-path 'tpl/segment-anything-2/notebooks' \
+                      'tpl/Open-GroundingDino/config/instances_val2017.json' \
+       --history-blobs sparse
+
+This turns each affected history-bearing checkout into a real partial/promisor
+repository. Reachable blobs associated with excluded paths are omitted from the
+local object database while commit and tree hashes remain unchanged. Git marks
+the remaining packs as promisor packs, so ``git fsck --full`` recognizes the
+missing blobs as intentional. Accessing one of those blobs, or running
+``git sparse-checkout disable``, may lazily fetch it from the recorded promisor
+remote. The archive manifest records the affected repositories, path count,
+blob count, raw omitted bytes, and promisor URL.
+
+``history-blobs=sparse`` applies selectors across reachable history, not just
+the current checkout, so old versions of an excluded notebook or dataset are
+omitted as well. git-well prefers a configured remote already known locally to
+contain the archived commit; otherwise non-redacted archives use the source
+checkout itself as the truthful fallback promisor. ``--redact-local-paths``
+therefore requires a non-local configured remote known to contain the commit.
+With ``--depth 0``, there is no Git metadata to prune and selected paths are
+simply left out of the source-only tree.
+
+Repository-specific archivers can extend the same staging machinery through
+the Python API. Prepare hooks may add generated payloads to the committed
+checkout, while validation hooks run after git-well writes its metadata and
+immediately before serialization:
+
+.. code:: python
+
+   from git_well.archive_source import archive_source
+
+   def prepare(context):
+       report = context.archive_root / 'PROJECT_ARCHIVE_REPORT.txt'
+       report.write_text('project-specific report\n')
+       context.add_generated_excludes('PROJECT_ARCHIVE_REPORT.txt')
+
+   def validate(context):
+       assert context.manifest_path.exists()
+
+   archive_source(
+       repo_dpath='.',
+       depth=100,
+       prepare=prepare,
+       validate=validate,
+   )
+
+For workflows that need direct control, ``stage_source_archive()`` exposes the
+same context manager before metadata finalization and archive writing. These
+extension points are programmatic only; the command-line interface does not
+execute arbitrary hooks.
+
+Incremental source archives
+---------------------------
+
+History-bearing source archives can also be used as bases for small incremental
+updates. First create a normal archive, then make one or more descendant commits
+and request a patch against the closest compatible archive recorded by git-well:
+
+.. code:: bash
+
+   git-well archive_source . -o project-base.tar.gz
+   # make and commit changes
+   git-well archive_source . --patch auto -o project-update.tar.gz
+
+Patch mode requires the superproject ``.git`` directory. Source-only
+``--depth 0`` archives are not supported as bases or targets. Patch transport
+supports the descendant-history case: the base and target must use the same
+superproject history depth, ``--all-branches`` policy, and history-blob policy.
+``patch=auto`` chooses the compatible recorded archive whose HEAD is closest to
+the target HEAD. An explicit compatible archive path may be passed instead of
+``auto``.
+
+Sparse promisor archives are patch-capable. When both base and target use
+``--history-blobs sparse``, they must also use the same ``--exclude-path``
+policy. The patch compares the target's locally-present reachable objects with
+what is physically available in the base, then transports only the difference
+in a filtered pack while leaving promised excluded blobs absent. This is more
+precise than a revision-only delta: if a previously omitted blob moves to an
+included path without changing its object ID, the patch carries that now-needed
+old blob even though it is reachable from the base commit. Conversely, changing
+an excluded notebook or dataset does not put the new excluded blob into the
+incremental patch.
+
+The standalone applier installs target sparse/promisor metadata before advancing
+the checkout and disables lazy fetching during that operation, so applying the
+patch does not require access to the promisor remote. Each sparse repository
+entry also records a SHA-256 digest of its exact reachable promised-missing
+object set. The applier recomputes that set and runs ``git fsck --full`` with
+lazy fetching disabled, preventing a malformed patch from silently rehydrating
+an omitted blob or promising an extra required object.
+
+Changing the sparse exclusion policy requires a new base archive. Removing an
+exclusion can require backfilling historical blobs that the base deliberately
+does not contain; adding an exclusion can require deleting objects already
+present in the base. Refusing that policy change keeps incremental patches
+predictable and preserves the requested size semantics. Path movement under an
+unchanged policy is supported: required blobs are backfilled by object identity
+as needed. Sparse Git-bearing submodules may also jump to unrelated commits;
+the patch transports their exact locally-present target object difference rather
+than silently copying the whole staged submodule object store.
+
+Repository-specific Python wrappers use the same mechanism. Prepare and
+validation hooks still see a complete target staging tree; git-well computes the
+incremental transport only after validation, so generated payloads are included
+without requiring patch-specific hooks:
+
+.. code:: python
+
+   archive_source(
+       repo_dpath='.',
+       depth=100,
+       patch='auto',
+       prepare=prepare,
+       validate=validate,
+   )
+
+Full-blob patches use Git bundles for new repository objects. Sparse-promisor
+patches use filtered Git object packs that intentionally omit promised blobs. A
+residual filesystem overlay transports generated hook payloads and other non-Git
+differences. Patch archives contain ``GIT_WELL_SOURCE_PATCH.json`` with the exact
+base archive SHA-256 and a standalone ``APPLY_SOURCE_PATCH.py``. The standalone
+applier uses only the Python standard library plus the ``git`` executable, so a
+recipient does not need git-well installed. Extract the patch archive and run the
+script beside its manifest:
+
+.. code:: bash
+
+   python APPLY_SOURCE_PATCH.py /path/to/project-base.tar.gz /path/to/output
+
+The script verifies the exact base archive, applies superproject and submodule Git
+object deltas plus residual deletions/overlays, verifies the resulting repository
+HEADs, and prints the reconstructed target source root. Sparse patch generation
+also verifies offline that the reconstructed repositories have the same reachable
+promised-missing objects as the staged target. Installed callers use the same
+implementation through ``git_well.archive_source.apply_source_patch``.
+
+
+Bounded active history with Git epochs
+--------------------------------------
+
+``git epoch`` periodically moves an exact retired Git epoch into a separate
+history-store repository and replaces the active branch with a new root commit
+that represents the same checkout. Ordinary clones then receive only the
+current epoch, while the archived commits keep their original object IDs,
+merge topology, tags, trees, and blobs.
+
+Initialize a repository without changing its active refs:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store ../ambition-history.git \
+       --config-only
+
+For a remote history store, also write a committed clone-visible locator before
+planning the first rollover. The history-store ID is stable even if the archive
+URL later moves:
+
+.. code:: bash
+
+   git epoch init --repository ambition \
+       --history-store git@github.com:Erotemic/ambition-history.git \
+       --history-store-id ambition-history \
+       --public-history-url https://github.com/Erotemic/ambition-history.git \
+       --public-history-browse-url https://github.com/Erotemic/ambition-history \
+       --config-only
+   git add .git-epoch.yaml
+   git commit -m "Record Git epoch history location"
+
+A checkpoint using a remote history store refuses to proceed until this file is
+committed and agrees with the local repository/store identity.
+
+For managed submodules, initialize the child repositories as well and classify
+each superproject occurrence before a recursive checkpoint:
+
+.. code:: bash
+
+   git epoch configure-submodule renderer epoch --repository renderer
+   git epoch configure-submodule third_party/upstream external
+
+Before touching production remotes, the same workflow can be rehearsed against
+disposable local bare remotes. ``sandbox create`` clones the current checked-out
+state, removes non-sandbox remotes from those clones, and records the original
+URLs only as metadata. ``sandbox publish`` rechecks containment immediately
+before rewriting refs:
+
+.. code:: bash
+
+   SANDBOX_DPATH=$(mktemp -d "${TMPDIR:-/tmp}/git-well-epoch-sandbox.XXXXXX")
+   git epoch sandbox create --recursive --all-submodules=epoch \
+       --output "$SANDBOX_DPATH"
+   git epoch sandbox run "$SANDBOX_DPATH" --bundle
+
+The staged ``sandbox plan``, ``sandbox apply``, ``sandbox publish``, and
+``sandbox verify`` commands expose the same phases when the rehearsal should be
+inspected between steps. Verification fresh-clones every repository using only
+sandbox remotes and composes those clones at the translated gitlinks. Git admin
+directories are kept flat and separate from the recursive worktree, avoiding
+platform path growth while still checking the combined parent/submodule tree.
+
+Use ``git epoch stats`` to inspect the physical local history store and each
+archived epoch. The report separates shared-store bytes from standalone bundle
+bytes because epochs can share Git objects. In a sandbox, ``sandbox stats`` also
+reports active bare-remote sizes and the recursive fresh-clone size; add
+``--source-archive`` to build and measure the same full-history ``tar.gz`` shape
+used by ``archive_source``:
+
+.. code:: bash
+
+   git epoch sandbox stats "$SANDBOX_DPATH"
+   git epoch sandbox stats "$SANDBOX_DPATH" --source-archive
+
+Run ``git epoch gc`` from a managed sandbox worktree when you also want to
+measure repacking savings. It reports before/after file bytes and allocated
+filesystem bytes, then deep-verifies the archive after packing.
+
+A checkpoint can be split into an inspectable, resumable preparation and a
+separate publication step. Keep the plan outside the worktree so writing it
+does not make the checkpoint immediately dirty:
+
+.. code:: bash
+
+   CUTOVER_DPATH="$HOME/ambition-epoch-cutover"
+   mkdir -p "$CUTOVER_DPATH"
+   PLAN="$CUTOVER_DPATH/checkpoint.yaml"
+
+   git epoch plan --recursive --bundle -o "$PLAN"
+   git epoch apply "$PLAN"
+   git epoch inspect
+   git epoch publish --plan "$PLAN"
+
+``apply``, ``publish``, and deep verification print elapsed-time progress to
+stderr by default while keeping their YAML result on stdout. Pass ``--quiet``
+when scripting without progress output. Archive refs are pushed per repository
+in one atomic batch, and deep verification fetches each repository's archived
+refs in one batch before one ``git fsck``.
+
+``apply`` archives and verifies the retiring epoch before any active branch is
+rewritten. Until ``publish`` succeeds, manifest entries are marked
+``prepared``. Use ``git epoch abort --plan "$PLAN"`` to discard a prepared
+transaction before any successor branch has been adopted.
+
+After publication, verify the archive and reconstruct archaeology checkouts as
+needed:
+
+.. code:: bash
+
+   git epoch verify --deep
+   git epoch reconstruct --recursive -o ../ambition-history-view
+
+Publication also maintains a human-facing ``main`` branch in the history store
+and mirrors committed archived branches/tags under ``archive/...`` refs. The
+canonical machine authorities remain ``refs/meta/main`` and ``refs/epochs/...``.
+For a history store created by an older git-epoch version, backfill those
+browsing views idempotently with:
+
+.. code:: bash
+
+   git epoch history-sync
+
+A normal clone of the history repository can then browse archived branches
+without custom refspecs. ``main`` contains a generated ``README.md`` and
+``archive-index.yaml`` explaining the store and mapping the canonical refs to
+the browsing refs.
+
+Once publication and verification are complete, an existing active checkout may
+still contain unreachable retired objects through its reflog. ``compact``
+validates the published lineage, expires only unreachable reflog entries, runs
+``git gc --prune=now``, and reports before/after Git-directory sizes:
+
+.. code:: bash
+
+   git epoch compact --recursive
+
+Reconstruction fetches the exact archived commits and creates local
+``refs/replace`` objects that connect each successor root to its recorded
+predecessor. The archived commit objects themselves are not rewritten.
+
+A successor root records immutable lineage and the logical history-store ID,
+not a machine-local archive path. ``.git-epoch.yaml`` supplies the movable public
+locator. A fresh clone can therefore explain its split history immediately:
+
+.. code:: bash
+
+   git epoch status
+   git epoch inspect
+
+``status`` does not contact the public archive when local attachment is absent.
+``inspect`` and ``reconstruct`` may use the committed public locator read-only.
+To create machine-local management state, validate and attach the archive:
+
+.. code:: bash
+
+   git epoch attach
+
+Maintainers may override the public fetch URL with a writable/local endpoint
+while keeping the same logical store identity:
+
+.. code:: bash
+
+   git epoch attach --history-store git@github.com:Erotemic/ambition-history.git
+
+Attachment verifies the public locator, successor-root trailers, archive
+manifest, successor commit/tree, and predecessor commit/tree before writing
+``.git/epoch/config.yaml``.
+
+Version one intentionally requires SHA-1 repositories and a clean single
+worktree. By default checkpoint planning refuses extra active branches because
+they would keep the retired epoch reachable. Maintainers can explicitly use
+``--retire-extra-branches`` to archive those branch tips under their original
+names and delete the auxiliary active refs atomically during publication. See
+``docs/planning/git_epoch.md`` for the data model, safety invariants, recursive
+submodule semantics, and deferred scope.
+
+
 Tracking large files with IPFS
 ------------------------------
 
