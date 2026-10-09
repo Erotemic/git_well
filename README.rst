@@ -120,6 +120,21 @@ reachable. The archived working tree remains detached at the exact original
 honors positive ``--depth`` values from each included branch tip, and cannot
 be combined with source-only ``--depth 0`` archives.
 
+Use ``--branches`` when only specific branches are needed. Pass branch names
+separated by spaces, using local names or locally cached remote-tracking names:
+
+.. code:: bash
+
+   git archive-source . --branches main topic/one contributor/pr/123
+
+Only the named branch refs are retained. The original checkout ``HEAD`` and its
+history are also preserved, detached, even if its branch was not selected.
+Missing or ambiguous branch names are errors; use ``refs/heads/...`` or
+``refs/remotes/...`` when both namespaces have the same display name. No remote
+fetch is performed. ``--branches`` cannot be used with ``--all-branches`` or
+``--depth 0``. An incremental ``--patch`` archive must use the same selected
+branch names as its base archive (branch tips may advance).
+
 Large tracked files that are useful upstream but unnecessary in a handoff can
 be omitted from the materialized archive checkout without rewriting Git
 history. ``--exclude-path`` accepts archive-root-relative files, directories,

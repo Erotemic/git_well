@@ -71,6 +71,19 @@ class ArchiveSourceCLI(kwconf.Config):
             history, so it cannot be combined with --depth 0.
             """).strip(),
     )
+    branches: list[str] = kwconf.Value(
+        [],
+        nargs='+',
+        help=textwrap.dedent("""
+            Include exactly these locally available superproject branches, in
+            addition to the detached checkout at the original HEAD commit.
+            Pass exact local branch names (feature/x), cached remote-tracking
+            names (origin/feature), or explicit refs/heads/... and
+            refs/remotes/... names. Ambiguous or missing names are errors.
+            No remotes are contacted. Mutually exclusive with --all-branches;
+            requires Git history (not --depth 0).
+            """).strip(),
+    )
     submodule_depth = kwconf.Value(
         None,
         parser=str,
@@ -154,7 +167,7 @@ class ArchiveSourceCLI(kwconf.Config):
             compatible archive previously written by git-well, or pass an
             explicit base archive path. Patch mode requires superproject Git
             history and supports descendant updates with the same superproject
-            history and --all-branches policy. With --history-blobs sparse, the
+            history and branch-selection policy. With --history-blobs sparse, the
             base and target must also use the same --exclude-path policy so
             promised blobs remain omitted from the patch transport.
             """).strip(),
@@ -189,6 +202,7 @@ class ArchiveSourceCLI(kwconf.Config):
             output=config.output,
             depth=config.depth,
             all_branches=bool(config.all_branches),
+            branches=config.branches or None,
             submodule_depth=config.submodule_depth,
             exclude_submodule=config.exclude_submodule,
             exclude_path=config.exclude_path,

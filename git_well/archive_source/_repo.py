@@ -244,6 +244,64 @@ def _branch_ref_inventory(repo: 'git.Repo') -> BranchRefInventory:
     )
 
 
+def _select_branch_ref_inventory(
+    repo: 'git.Repo', branches: str | list[str] | tuple[str, ...]
+) -> BranchRefInventory:
+    """Resolve explicit branch selectors against locally cached refs only.
+
+    Fully qualified refs disambiguate a local branch named ``origin/topic``
+    from the remote-tracking ref with the same display name.
+    """
+    if isinstance(branches, str):
+        requested = (branches,)
+    else:
+        requested = tuple(branches)
+    if not requested:
+        raise ValueError('--branches requires at least one branch name')
+
+    inventory = _branch_ref_inventory(repo)
+    local_names = set(inventory.local_branches)
+    tracking_names = set(inventory.remote_tracking_branches)
+    selected_local: set[str] = set()
+    selected_tracking: set[str] = set()
+
+    for name in requested:
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise ValueError(f'invalid --branches name: {name!r}')
+        if name.startswith('refs/heads/'):
+            short = name[len('refs/heads/'):]
+            if short not in local_names:
+                raise ValueError(f'local branch not found: {name!r}')
+            selected_local.add(short)
+        elif name.startswith('refs/remotes/'):
+            short = name[len('refs/remotes/'):]
+            if short not in tracking_names:
+                raise ValueError(f'cached remote-tracking branch not found: {name!r}')
+            selected_tracking.add(short)
+        else:
+            local = name in local_names
+            tracking = name in tracking_names
+            if local and tracking:
+                raise ValueError(
+                    f'ambiguous branch {name!r}; specify refs/heads/{name} '
+                    f'or refs/remotes/{name}'
+                )
+            if not local and not tracking:
+                raise ValueError(
+                    f'branch {name!r} not found in local or cached '
+                    'remote-tracking refs; fetch it before archiving'
+                )
+            if local:
+                selected_local.add(name)
+            else:
+                selected_tracking.add(name)
+
+    return BranchRefInventory(
+        local_branches=tuple(sorted(selected_local)),
+        remote_tracking_branches=tuple(sorted(selected_tracking)),
+    )
+
+
 def _clone_options_for_depth(clone_depth: int | None) -> list[str]:
     options = ['--quiet', '--no-local', '--single-branch', '--no-checkout']
     if clone_depth is not None:
@@ -271,6 +329,7 @@ def _clone_committed_checkout(
     label: str,
     clone_depth: int | None,
     branch_refs: BranchRefInventory | None,
+    exact_branch_refs: bool,
     redact_local_paths: bool,
     log: '_Logger',
 ) -> None:
@@ -325,6 +384,7 @@ def _clone_committed_checkout(
             cloned=cloned,
             clone_depth=clone_depth,
             branch_refs=branch_refs,
+            exact_branch_refs=exact_branch_refs,
             log=log,
         )
 
@@ -337,6 +397,7 @@ def _clone_committed_checkout(
             cloned=cloned,
             clone_depth=clone_depth,
             branch_refs=branch_refs,
+            exact_branch_refs=exact_branch_refs,
         )
 
 
@@ -345,6 +406,7 @@ def _copy_cached_branch_refs(
     cloned: 'git.Repo',
     clone_depth: int | None,
     branch_refs: BranchRefInventory,
+    exact_branch_refs: bool,
     log: '_Logger',
 ) -> None:
     """Copy cached branch refs by importing local objects, never by fetching."""
@@ -368,6 +430,16 @@ def _copy_cached_branch_refs(
             cloned.git.symbolic_ref('--delete', 'refs/remotes/origin/HEAD')
         except git.GitCommandError:
             pass
+
+    if exact_branch_refs:
+        # The initial single-branch clone creates a local branch for the
+        # source HEAD. Remove it if it was not explicitly requested. HEAD was
+        # detached before maintenance, so deleting these refs is safe.
+        for name in cloned.git.for_each_ref(
+            '--format=%(refname)', 'refs/heads', 'refs/remotes'
+        ).splitlines():
+            if name:
+                cloned.git.update_ref('--no-deref', '-d', name)
 
     # Local cached refs are local state, so keep them entirely out of Git's
     # transport layer. This uses the same direct object-database import as
@@ -407,6 +479,7 @@ def _verify_cached_branch_refs(
     cloned: 'git.Repo',
     clone_depth: int | None,
     branch_refs: BranchRefInventory,
+    exact_branch_refs: bool,
 ) -> None:
     """Verify the exact cached-ref contract before archive serialization."""
     import git
@@ -419,6 +492,19 @@ def _verify_cached_branch_refs(
         (f'refs/remotes/{name}', f'refs/remotes/{name}')
         for name in branch_refs.remote_tracking_branches
     )
+    if exact_branch_refs:
+        expected_refs = {dest_ref for _source_ref, dest_ref in source_to_dest}
+        actual_refs = set(
+            cloned.git.for_each_ref(
+                '--format=%(refname)', 'refs/heads', 'refs/remotes'
+            ).splitlines()
+        )
+        if actual_refs != expected_refs:
+            raise RuntimeError(
+                'archive checkout branch selection mismatch: '
+                f'extra={sorted(actual_refs - expected_refs)}, '
+                f'missing={sorted(expected_refs - actual_refs)}'
+            )
     for source_ref, dest_ref in source_to_dest:
         expected = src.git.rev_parse('--verify', source_ref).strip()
         try:

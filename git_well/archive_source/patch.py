@@ -59,6 +59,7 @@ class SourceArchiveInfo:
     has_git: bool
     history_depth: int | None
     all_branches: bool
+    branches: tuple[str, ...]
     history_blobs: str
     exclude_path_selectors: tuple[str, ...]
     generated_timestamp: str | None
@@ -85,6 +86,7 @@ def register_source_archive(
     include_git_history: bool,
     normalized_depth: int | None,
     all_branches: bool,
+    branches: tuple[str, ...],
     history_blobs: str,
     exclude_path_selectors: tuple[str, ...],
     timestamp: str,
@@ -101,6 +103,7 @@ def register_source_archive(
         'has_git': bool(include_git_history),
         'history_depth': normalized_depth,
         'all_branches': bool(all_branches),
+        'branches': list(branches),
         'history_blobs': history_blobs,
         'exclude_path_selectors': list(exclude_path_selectors),
         'timestamp': timestamp,
@@ -166,6 +169,35 @@ def _parse_manifest_exclude_path_selectors(text: str) -> tuple[str, ...]:
     return tuple(selectors)
 
 
+def _parse_manifest_branch_selection(text: str) -> tuple[str, ...]:
+    prefix = 'Selected superproject branches JSON: '
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            try:
+                value = json.loads(line[len(prefix):])
+            except json.JSONDecodeError as ex:
+                raise SourcePatchError('invalid selected branch JSON in source archive') from ex
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise SourcePatchError(
+                    'invalid selected branch JSON in source archive'
+                )
+            if (
+                len(value) != len(set(value))
+                or value != sorted(value)
+                or any(
+                    not item.startswith(('refs/heads/', 'refs/remotes/'))
+                    for item in value
+                )
+            ):
+                raise SourcePatchError(
+                    'invalid selected branch list in source archive'
+                )
+            return tuple(value)
+    return ()
+
+
 def _parse_archive_manifest(text: str) -> dict[str, Any]:
     values: dict[str, str] = {}
     for line in text.splitlines():
@@ -185,12 +217,21 @@ def _parse_archive_manifest(text: str) -> dict[str, Any]:
             'archive information file is missing required fields: '
             + ', '.join(missing)
         )
+    selected_branches = _parse_manifest_branch_selection(text)
+    if (
+        values['Superproject branches'].startswith('explicitly selected')
+        and not selected_branches
+    ):
+        raise SourcePatchError(
+            'selected source archive is missing its explicit branch list'
+        )
     return {
         'root_name': values['Archive prefix'],
         'head_sha': values['Superproject commit'],
         'short_sha': values['Superproject short commit'],
         'history_depth': _parse_history_depth(values['Superproject history']),
         'all_branches': values['Superproject branches'].startswith('all '),
+        'branches': selected_branches,
         'history_blobs': values.get('History blob retention', 'full'),
         'exclude_path_selectors': _parse_manifest_exclude_path_selectors(text),
         'generated_timestamp': values.get('Generated timestamp'),
@@ -259,6 +300,7 @@ def inspect_source_archive(path: PathLike) -> SourceArchiveInfo:
         has_git=has_git,
         history_depth=parsed['history_depth'],
         all_branches=bool(parsed['all_branches']),
+        branches=tuple(parsed['branches']),
         history_blobs=str(parsed['history_blobs']),
         exclude_path_selectors=tuple(parsed['exclude_path_selectors']),
         generated_timestamp=parsed['generated_timestamp'],
@@ -301,6 +343,7 @@ def _validate_base_compatibility(
     *,
     target_depth: int | None,
     target_all_branches: bool,
+    target_branches: tuple[str, ...],
     target_history_blobs: str,
     target_exclude_path_selectors: tuple[str, ...],
 ) -> None:
@@ -330,10 +373,10 @@ def _validate_base_compatibility(
             'patch mode currently requires the same superproject history policy; '
             f'base={base_label}, target={target_label}'
         )
-    if info.all_branches != target_all_branches:
+    if info.all_branches != target_all_branches or info.branches != target_branches:
         raise SourcePatchError(
-            'patch mode currently requires the same --all-branches policy in '
-            'the base and target archives'
+            'patch mode requires the same branch-selection policy in base and '
+            'target (--all-branches or the exact --branches list)'
         )
 
 
@@ -343,6 +386,7 @@ def resolve_patch_base(
     target_head: str,
     target_depth: int | None,
     target_all_branches: bool,
+    target_branches: tuple[str, ...],
     target_history_blobs: str,
     target_exclude_path_selectors: tuple[str, ...],
     patch: PathLike,
@@ -358,6 +402,7 @@ def resolve_patch_base(
             info,
             target_depth=target_depth,
             target_all_branches=target_all_branches,
+            target_branches=target_branches,
             target_history_blobs=target_history_blobs,
             target_exclude_path_selectors=target_exclude_path_selectors,
         )
@@ -382,6 +427,8 @@ def resolve_patch_base(
         if record.get('history_depth') != target_depth:
             continue
         if bool(record.get('all_branches')) != target_all_branches:
+            continue
+        if tuple(record.get('branches', ())) != target_branches:
             continue
         if record.get('history_blobs', 'full') != target_history_blobs:
             continue
@@ -473,7 +520,9 @@ def _create_bundle(
             f'in staged repository {target_repo}'
         )
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    positives = ['--all'] if all_refs else ['HEAD']
+    # --all enumerates refs but does not include a detached HEAD. With
+    # --branches the archived HEAD may deliberately be on an excluded branch.
+    positives = ['--all', 'HEAD'] if all_refs else ['HEAD']
     prerequisite_heads = {base_head}
     if all_refs:
         for line in _git(base_repo, 'for-each-ref', '--format=%(objectname)').splitlines():
@@ -560,7 +609,7 @@ def _delta_revision_args(
         )
     if not all_refs:
         return [target_head, f'^{base_head}']
-    args = ['--all']
+    args = ['--all', target_head]
     prerequisite_heads = {base_head}
     for line in _git(base_repo, 'for-each-ref', '--format=%(objectname)').splitlines():
         sha = line.strip()
@@ -669,7 +718,7 @@ def _create_object_pack(
         base_missing = _missing_promisor_oids(base_repo)
         if base_missing:
             target_present, _target_missing = _enumerate_revision_objects(
-                target_repo, ['--all']
+                target_repo, ['--all', target_head]
             )
             target_present_set = set(target_present)
             seen = set(pack_oids)
@@ -678,7 +727,7 @@ def _create_object_pack(
                     pack_oids.append(oid)
                     seen.add(oid)
     else:
-        revisions = ['--all'] if all_refs else [target_head]
+        revisions = ['--all', target_head] if all_refs else [target_head]
         target_present, missing_count = _enumerate_revision_objects(
             target_repo, revisions
         )
@@ -785,7 +834,7 @@ def _missing_promisor_oids(repo: Path) -> set[str]:
         [
             os.fspath(part)
             for part in _git_command(
-                repo, 'rev-list', '--objects', '--all', '--missing=print'
+                repo, 'rev-list', '--objects', '--all', 'HEAD', '--missing=print'
             )
         ],
         text=True,
@@ -811,8 +860,8 @@ def _verify_git_repo(actual: Path, expected: Path) -> None:
         raise SourcePatchError(f'patch self-verification HEAD mismatch at {actual}')
     if _git_refs(actual) != _git_refs(expected):
         raise SourcePatchError(f'patch self-verification ref mismatch at {actual}')
-    actual_reachable = _git(actual, 'rev-list', '--all').splitlines()
-    expected_reachable = _git(expected, 'rev-list', '--all').splitlines()
+    actual_reachable = _git(actual, 'rev-list', '--all', 'HEAD').splitlines()
+    expected_reachable = _git(expected, 'rev-list', '--all', 'HEAD').splitlines()
     if set(actual_reachable) != set(expected_reachable):
         raise SourcePatchError(
             f'patch self-verification reachable-history mismatch at {actual}'
@@ -1018,6 +1067,7 @@ def build_source_patch(
         target_head=context.head_sha,
         target_depth=context.normalized_depth,
         target_all_branches=context.all_branches,
+        target_branches=context.branches,
         target_history_blobs=context.history_blobs,
         target_exclude_path_selectors=context.exclude_path_selectors,
         patch=patch,
@@ -1063,7 +1113,7 @@ def build_source_patch(
             patch_root=patch_root,
             transport_stem='superproject',
             history_blobs=context.history_blobs,
-            all_refs=context.all_branches,
+            all_refs=bool(context.all_branches or context.branches),
         )
         super_entry['path'] = '.'
         git_entries.append(super_entry)
@@ -1139,6 +1189,7 @@ def build_source_patch(
                 'short_sha': context.short_sha,
                 'history_depth': context.normalized_depth,
                 'all_branches': context.all_branches,
+                'branches': list(context.branches),
                 'history_blobs': context.history_blobs,
                 'exclude_path_selectors': list(context.exclude_path_selectors),
             },

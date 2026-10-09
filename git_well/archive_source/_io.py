@@ -193,6 +193,7 @@ def _write_manifest(
     include_git_history: bool,
     clone_depth: int | None,
     branch_refs: BranchRefInventory | None,
+    branches: tuple[str, ...],
     submodule_decisions: Sequence[SubmoduleArchiveDecision],
     exclude_path_selectors: Sequence[str],
     excluded_worktree_paths: Sequence[str],
@@ -275,10 +276,16 @@ def _write_manifest(
         + json.dumps(list(exclude_path_selectors), separators=(',', ':')),
         'Superproject branches: '
         + (
-            'all locally cached local and remote-tracking branches'
-            if branch_refs is not None
-            else 'current HEAD history only'
+            'explicitly selected local and remote-tracking branches'
+            if branches
+            else (
+                'all locally cached local and remote-tracking branches'
+                if branch_refs is not None
+                else 'current HEAD history only'
+            )
         ),
+        'Selected superproject branches JSON: '
+        + json.dumps(list(branches), separators=(',', ':')),
         '',
         f'Content pruning: {"yes" if pruning_details else "none"}',
     ]

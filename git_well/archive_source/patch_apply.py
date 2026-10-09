@@ -313,7 +313,7 @@ def _reachable_missing_oids(repo: Path) -> set[str]:
         [
             os.fspath(part)
             for part in _git_command(
-                repo, 'rev-list', '--objects', '--all', '--missing=print'
+                repo, 'rev-list', '--objects', '--all', 'HEAD', '--missing=print'
             )
         ],
         text=True,

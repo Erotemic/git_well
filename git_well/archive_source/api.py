@@ -52,6 +52,7 @@ from ._prune import (
 from ._repo import (
     _assert_has_head,
     _branch_ref_inventory,
+    _select_branch_ref_inventory,
     _clone_committed_checkout,
     _coerce_repo,
     _logical_repo_root,
@@ -127,6 +128,7 @@ class ArchiveSourceContext:
     promisor_prune_results: tuple[PromisorPruneResult, ...]
     redact_local_paths: bool
     all_branches: bool
+    branches: tuple[str, ...]
     keep_stage: bool
     _log: '_Logger' = field(repr=False)
     _generated_excludes: list[str] = field(
@@ -197,6 +199,7 @@ class ArchiveSourceContext:
             include_git_history=self.include_git_history,
             clone_depth=self.clone_depth,
             branch_refs=self.branch_refs,
+            branches=self.branches,
             submodule_decisions=self.submodule_decisions,
             exclude_path_selectors=self.exclude_path_selectors,
             excluded_worktree_paths=self.excluded_worktree_paths,
@@ -233,6 +236,7 @@ class ArchiveSourceContext:
                     include_git_history=True,
                     normalized_depth=self.normalized_depth,
                     all_branches=self.all_branches,
+                    branches=self.branches,
                     history_blobs=self.history_blobs,
                     exclude_path_selectors=self.exclude_path_selectors,
                     timestamp=self.timestamp,
@@ -273,6 +277,7 @@ def archive_source(
     archive_root_name: str | None = None,
     keep_stage: bool = False,
     patch: PathLike | None = None,
+    branches: str | list[str] | tuple[str, ...] | None = None,
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -356,6 +361,15 @@ def archive_source(
             branch already cached in the superproject repository. No configured
             remote is contacted. This cannot be combined with ``depth=0``.
 
+        branches:
+            Exact local branch or locally cached remote-tracking branch names
+            to preserve, without contacting any remote. Accepts a branch name
+            (``feature/x``), a tracking name (``origin/feature/x``), or a fully
+            qualified ``refs/heads/...`` / ``refs/remotes/...`` name. Missing
+            or ambiguous names are errors. Keeps ``HEAD`` detached at its
+            original commit even when its branch is not selected. Mutually
+            exclusive with ``all_branches`` and unavailable with ``depth=0``.
+
         prepare:
             One callable, or an iterable of callables, invoked after committed
             source and submodules are staged but before git-well metadata is
@@ -405,6 +419,7 @@ def archive_source(
         redact_local_paths=redact_local_paths,
         verbose=verbose,
         all_branches=all_branches,
+        branches=branches,
         archive_root_name=archive_root_name,
         keep_stage=keep_stage,
     ) as context:
@@ -442,6 +457,7 @@ def stage_source_archive(
     all_branches: bool = False,
     archive_root_name: str | None = None,
     keep_stage: bool = False,
+    branches: str | list[str] | tuple[str, ...] | None = None,
 ) -> Iterator[ArchiveSourceContext]:
     """
     Stage committed source and yield a context before metadata/serialization.
@@ -469,12 +485,33 @@ def stage_source_archive(
 
     normalized_depth = _normalize_depth(depth)
     include_git_history = normalized_depth != 0
+    if branches is not None and all_branches:
+        raise ValueError('--branches and --all-branches are mutually exclusive')
     if all_branches and not include_git_history:
         raise ValueError(
             '--all-branches requires Git history; use --depth 1 or greater'
         )
+    if branches is not None and not include_git_history:
+        raise ValueError(
+            '--branches requires Git history; use --depth 1 or greater'
+        )
     clone_depth = None if normalized_depth in {0, None} else normalized_depth
-    branch_refs = _branch_ref_inventory(repo) if all_branches else None
+    if all_branches:
+        branch_refs = _branch_ref_inventory(repo)
+    elif branches is not None:
+        branch_refs = _select_branch_ref_inventory(repo, branches)
+    else:
+        branch_refs = None
+    selected_branches = (
+        tuple(
+            sorted(
+                [f'refs/heads/{name}' for name in branch_refs.local_branches]
+                + [f'refs/remotes/{name}' for name in branch_refs.remote_tracking_branches]
+            )
+        )
+        if branches is not None and branch_refs is not None
+        else ()
+    )
     submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
     exclude_submodule_paths = _normalize_submodule_path_list(
         exclude_submodule
@@ -513,10 +550,10 @@ def stage_source_archive(
     if include_git_history:
         depth_label = 'full' if clone_depth is None else str(clone_depth)
         log(f'[source-archive] history depth: {depth_label}')
-        if all_branches:
-            assert branch_refs is not None
+        if branch_refs is not None:
+            scope = 'all locally cached' if all_branches else 'selected'
             log(
-                '[source-archive] branches: all locally cached '
+                f'[source-archive] branches: {scope} '
                 f'({len(branch_refs.local_branches)} local, '
                 f'{len(branch_refs.remote_tracking_branches)} remote-tracking)'
             )
@@ -564,6 +601,7 @@ def stage_source_archive(
                 label='superproject',
                 clone_depth=clone_depth,
                 branch_refs=branch_refs,
+                exact_branch_refs=branches is not None,
                 redact_local_paths=redact_local_paths,
                 log=log,
             )
@@ -624,6 +662,7 @@ def stage_source_archive(
                     label=f'submodule {path}',
                     clone_depth=sub_clone_depth,
                     branch_refs=None,
+                    exact_branch_refs=False,
                     redact_local_paths=redact_local_paths,
                     log=log,
                 )
@@ -658,7 +697,7 @@ def stage_source_archive(
                 staged_repo_units,
                 exclude_path_selectors,
                 redact_local_paths=redact_local_paths,
-                all_branches=all_branches,
+                all_branches=bool(all_branches or selected_branches),
                 log=log,
             )
         else:
@@ -688,6 +727,7 @@ def stage_source_archive(
             promisor_prune_results=promisor_prune_results,
             redact_local_paths=redact_local_paths,
             all_branches=all_branches,
+            branches=selected_branches,
             keep_stage=keep_stage,
             _log=log,
         )
