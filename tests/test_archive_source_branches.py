@@ -175,6 +175,29 @@ def test_archive_source_branches_shallow_preserves_each_tip(tmp_path):
     _git(unpacked, 'fsck', '--full')
 
 
+def test_archive_source_branches_depth_with_overlapping_ancestors(tmp_path):
+    """Depth is per root even if one root lies inside another root's slice."""
+    from git_well.archive_source import archive_source
+
+    repo = _repo(tmp_path)
+    for i in range(6):
+        _commit(repo, 'chain.txt', f'commit {i}')
+    _git(repo, 'branch', 'older', 'HEAD~1')
+
+    archive = archive_source(
+        repo_dpath=repo, output=tmp_path / 'overlap.tar.gz',
+        branches=['older'], depth=2, verbose=0,
+    )
+    unpacked = _unpack(archive, tmp_path / 'overlap-unpacked')
+    assert _refs(unpacked) == {'refs/heads/older'}
+    assert _git(unpacked, 'rev-list', '--count', 'older') == '2'
+    # The union contains three generations from HEAD because the older tip
+    # needs its own parent; Git shares those commit objects across roots.
+    assert _git(unpacked, 'rev-list', '--count', 'HEAD') == '3'
+    assert _git(unpacked, 'rev-parse', '--is-shallow-repository') == 'true'
+    _git(unpacked, 'fsck', '--full')
+
+
 def test_archive_source_branches_patch_roundtrip_with_detached_head(tmp_path):
     from git_well.archive_source import apply_source_patch, archive_source
     from git_well.archive_source.patch import inspect_source_archive

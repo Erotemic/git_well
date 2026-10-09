@@ -457,11 +457,19 @@ def _copy_cached_branch_refs(
         for source_ref, dest_ref in source_to_dest
     ]
     if ref_targets:
+        # The requested depth is measured independently from the original
+        # checkout and from each included ref. Import the union of those
+        # slices and replace any shallow boundaries left by the initial clone;
+        # an initial boundary can be inside another branch's history window.
+        roots = [oid for _dest_ref, oid in ref_targets]
+        if clone_depth is not None:
+            roots.insert(0, src.head.commit.hexsha)
         _import_local_history_from_object_database(
             repo=cloned,
             source_repo=src,
-            commits=(oid for _dest_ref, oid in ref_targets),
+            commits=roots,
             clone_depth=clone_depth,
+            replace_shallow_boundaries=clone_depth is not None,
         )
         for dest_ref, oid in ref_targets:
             cloned.git.update_ref(dest_ref, oid)
@@ -634,6 +642,8 @@ def _import_local_history_from_object_database(
     source_repo: 'git.Repo',
     commits: Iterable[str],
     clone_depth: int | None,
+    *,
+    replace_shallow_boundaries: bool = False,
 ) -> None:
     """
     Import locally present commit histories without using Git transport.
@@ -665,10 +675,8 @@ def _import_local_history_from_object_database(
     else:
         selected: list[str] = []
         selected_seen: set[str] = set()
-        boundaries: list[str] = []
-        boundary_seen: set[str] = set()
         for commit in commit_list:
-            commit_slice, commit_boundaries = _local_history_slice(
+            commit_slice, _commit_boundaries = _local_history_slice(
                 source_repo,
                 commit,
                 clone_depth,
@@ -678,12 +686,10 @@ def _import_local_history_from_object_database(
                 if oid not in selected_seen:
                     selected_seen.add(oid)
                     selected.append(oid)
-            for oid in commit_boundaries:
-                if oid not in boundary_seen:
-                    boundary_seen.add(oid)
-                    boundaries.append(oid)
         selected_commits = tuple(selected)
-        shallow_boundaries = tuple(boundaries)
+        # Boundaries must be calculated *after* unioning the histories. A
+        # boundary from one root may be an interior commit for another root.
+        shallow_boundaries = _union_shallow_boundaries(source_repo, selected)
 
     rev_args = [
         'git',
@@ -761,8 +767,59 @@ def _import_local_history_from_object_database(
             'local Git object transfer completed without importing commits: '
             f'{missing_commits}'
         )
-    if shallow_boundaries:
-        _record_shallow_boundaries(repo, shallow_boundaries)
+    if replace_shallow_boundaries or shallow_boundaries:
+        _record_shallow_boundaries(
+            repo, shallow_boundaries, replace=replace_shallow_boundaries
+        )
+
+
+def _union_shallow_boundaries(
+    source_repo: 'git.Repo', selected: list[str]
+) -> tuple[str, ...]:
+    """Find shallow roots of the union of per-ref depth windows.
+
+    A commit is shallow only when one of its real parents was omitted from
+    the union, or the source itself stops at that commit. Using individual
+    per-ref boundaries can incorrectly truncate overlapping histories.
+    """
+    if not selected:
+        return ()
+    source_root = cast(str | None, source_repo.working_tree_dir)
+    if source_root is None:
+        raise RuntimeError('local history slicing requires a working tree')
+    proc = subprocess.run(
+        ['git', 'rev-list', '--parents', '--no-walk', '--stdin'],
+        cwd=source_root,
+        input=('\n'.join(selected) + '\n').encode('ascii'),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode:
+        error = proc.stderr.decode(errors='replace').strip()
+        raise RuntimeError(f'could not resolve combined commit parents: {error}')
+    parent_map: dict[str, tuple[str, ...]] = {}
+    for line in proc.stdout.decode('ascii').splitlines():
+        oid, *parents = line.split()
+        parent_map[oid] = tuple(parents)
+    if len(parent_map) != len(selected):
+        missing = set(selected) - parent_map.keys()
+        raise RuntimeError(f'missing parent metadata for {sorted(missing)}')
+
+    # rev-list treats the source's existing shallow roots as having no
+    # parents. Preserve those boundaries when they occur in our selection.
+    source_shallow_path = _shallow_file_path(source_repo)
+    source_shallow = (
+        set(source_shallow_path.read_text().splitlines())
+        if source_shallow_path.exists()
+        else set()
+    )
+    selected_set = set(selected)
+    return tuple(
+        oid for oid in selected
+        if oid in source_shallow
+        or any(parent not in selected_set for parent in parent_map[oid])
+    )
 
 
 def _local_history_slice(
@@ -836,8 +893,8 @@ def _local_history_slice(
     return tuple(selected), boundaries
 
 
-def _record_shallow_boundaries(repo: 'git.Repo', commits: Iterable[str]) -> None:
-    """Merge imported shallow roots into the destination's shallow file."""
+def _shallow_file_path(repo: 'git.Repo') -> Path:
+    """Resolve Git's actual shallow-file path, including gitdir indirection."""
     raw = repo.git.rev_parse('--git-path', 'shallow').strip()
     path = Path(raw)
     if not path.is_absolute():
@@ -845,10 +902,24 @@ def _record_shallow_boundaries(repo: 'git.Repo', commits: Iterable[str]) -> None
         if working_tree is None:
             raise RuntimeError('cannot resolve shallow file for a bare repository')
         path = Path(working_tree) / path
-    existing = set(path.read_text().splitlines()) if path.exists() else set()
+    return path
+
+
+def _record_shallow_boundaries(
+    repo: 'git.Repo', commits: Iterable[str], *, replace: bool = False
+) -> None:
+    """Write or merge imported shallow roots into the destination."""
+    path = _shallow_file_path(repo)
+    existing = (
+        set() if replace or not path.exists()
+        else set(path.read_text().splitlines())
+    )
     existing.update(commits)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(('\n'.join(sorted(existing)) + '\n').encode())
+    if existing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(('\n'.join(sorted(existing)) + '\n').encode())
+    elif replace:
+        path.unlink(missing_ok=True)
 
 
 def _source_remote_urls(repo: 'git.Repo') -> list[tuple[str, str]]:

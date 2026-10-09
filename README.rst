@@ -129,6 +129,9 @@ separated by spaces, using local names or locally cached remote-tracking names:
 
 Only the named branch refs are retained. The original checkout ``HEAD`` and its
 history are also preserved, detached, even if its branch was not selected.
+For finite ``--depth`` values, each named branch tip and the checkout ``HEAD``
+gets its own history window. The archive keeps their union, so shared ancestry
+can make the history visible from a tip deeper than the requested minimum.
 Missing or ambiguous branch names are errors; use ``refs/heads/...`` or
 ``refs/remotes/...`` when both namespaces have the same display name. No remote
 fetch is performed. ``--branches`` cannot be used with ``--all-branches`` or
