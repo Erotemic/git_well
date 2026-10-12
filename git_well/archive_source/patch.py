@@ -482,6 +482,7 @@ def resolve_patch_base(
                     info,
                     target_depth=target_depth,
                     target_all_branches=target_all_branches,
+                    target_branches=target_branches,
                     target_history_blobs=target_history_blobs,
                     target_exclude_path_selectors=target_exclude_path_selectors,
                 )
