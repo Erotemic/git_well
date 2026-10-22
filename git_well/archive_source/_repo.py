@@ -71,7 +71,15 @@ def _assert_has_head(repo: 'git.Repo') -> None:
     except ValueError as ex:
         raise RuntimeError('repository has no HEAD commit to archive') from ex
 
-def _submodule_status(repo: 'git.Repo') -> list[SubmoduleStatus]:
+def _submodule_status(
+    repo: 'git.Repo', *, submodule_revision: str = 'gitlink'
+) -> list[SubmoduleStatus]:
+    """Discover committed paths, selecting either gitlinks or checkout HEADs."""
+    if submodule_revision not in {'gitlink', 'checkout'}:
+        raise ValueError(
+            "submodule_revision must be 'gitlink' or 'checkout'; "
+            f'got {submodule_revision!r}'
+        )
     infos: list[SubmoduleStatus] = []
     repo_root = Path(cast(str, repo.working_tree_dir)).resolve()
     _collect_committed_submodules(
@@ -80,6 +88,7 @@ def _submodule_status(repo: 'git.Repo') -> list[SubmoduleStatus]:
         superproject_root=repo_root,
         prefix='',
         infos=infos,
+        use_checkout_heads=submodule_revision == 'checkout',
     )
     return infos
 
@@ -90,8 +99,14 @@ def _collect_committed_submodules(
     superproject_root: Path,
     prefix: str,
     infos: list[SubmoduleStatus],
+    use_checkout_heads: bool = False,
 ) -> None:
-    """Recursively enumerate gitlinks from committed trees, not the index."""
+    """Recursively enumerate committed submodule paths, not the index.
+
+    In checkout mode the current submodule HEAD selects the exported commit;
+    recurse through that selected commit's gitlinks, not a missing parent
+    gitlink. The root superproject always remains at its committed HEAD.
+    """
     gitlinks = _committed_gitlinks(repo, treeish)
     if not gitlinks:
         return
@@ -116,33 +131,42 @@ def _collect_committed_submodules(
             *PurePosixPath(full_path).parts
         )
         sub_repo = _open_exact_repo(local_dpath)
-        if sub_repo is None:
-            status = '-'
-        else:
+        current_sha: str | None = None
+        if sub_repo is not None:
             try:
                 current_sha = sub_repo.head.commit.hexsha
             except ValueError:
-                status = '-'
-            else:
-                status = ' ' if current_sha == sha else '+'
-
-        line = f'{status}{sha} {full_path}'
+                pass
+        if current_sha is None:
+            status = '-'
+        elif current_sha == sha:
+            status = ' '
+        else:
+            status = '+'
+        selected_sha = (
+            current_sha if use_checkout_heads and current_sha is not None
+            else sha
+        )
+        parent_gitlink_sha = sha if selected_sha != sha else None
+        line = f'{status}{selected_sha} {full_path}'
         infos.append(
             SubmoduleStatus(
                 status=status,
-                sha=sha,
+                sha=selected_sha,
                 path=full_path,
                 line=line,
+                parent_gitlink_sha=parent_gitlink_sha,
             )
         )
 
-        if sub_repo is not None and _repo_has_commit(sub_repo, sha):
+        if sub_repo is not None and _repo_has_commit(sub_repo, selected_sha):
             _collect_committed_submodules(
                 repo=sub_repo,
-                treeish=sha,
+                treeish=selected_sha,
                 superproject_root=superproject_root,
                 prefix=full_path,
                 infos=infos,
+                use_checkout_heads=use_checkout_heads,
             )
 
 
@@ -614,13 +638,20 @@ def _checkout_commit(
     details = '\n'.join(f'  - {item}' for item in recovery_errors)
     if details:
         details = '\nRecovery failures:\n' + details
+    checkout_hint = (
+        ' To archive the currently checked-out submodule HEAD instead, pass '
+        '--submodule-revision checkout; the manifest will record any mismatch '
+        'with the committed parent gitlink.'
+        if label.startswith('submodule ')
+        else ''
+    )
     raise RuntimeError(
         f'cannot materialize {label} commit {commit}; source checkout HEAD is '
         f'{source_head}. Required commit in local object database: '
         f'{local_state}. Configured source remotes tried: {tried}. The '
         'committed gitlink cannot be reconstructed; publish the referenced '
         'commit, update the superproject gitlink, or explicitly exclude the '
-        f'submodule from the archive.{details}'
+        f'submodule from the archive.{checkout_hint}{details}'
     )
 
 

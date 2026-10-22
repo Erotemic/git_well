@@ -58,6 +58,9 @@ class SubmoduleStatus:
     sha: str
     path: str
     line: str
+    # Set when --submodule-revision=checkout selects a commit different from
+    # the gitlink recorded in the committed parent tree.
+    parent_gitlink_sha: str | None = None
 
 
 @dataclass(frozen=True)

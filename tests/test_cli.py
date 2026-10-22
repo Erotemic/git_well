@@ -3189,3 +3189,96 @@ def test_standard_short_aliases_and_verbose_counters(capsys):
     assert modal.main(argv=['-V']) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == __version__
+
+
+def test_archive_source_checkout_revision_with_missing_gitlink(tmp_path, capsys):
+    """Explicit opt-in can archive HEAD without falsely changing parent gitlink."""
+    import pytest
+    import ubelt as ub
+
+    from git_well.archive_source import archive_source
+
+    sub_src = _make_submodule_repo(tmp_path, 'checkout_revision_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path, {'external/lib': sub_src}
+    )
+    sub_checkout = super_repo / 'external/lib'
+    checkout_sha = _stdout_text(
+        ub.cmd(['git', 'rev-parse', 'HEAD'], cwd=sub_checkout, check=True)
+    ).strip()
+
+    # A plausible committed gitlink whose object is absent from both the
+    # initialized checkout and the source remote. Do not alter the submodule.
+    missing_sha = 'f' * 40
+    ub.cmd(
+        [
+            'git', 'update-index', '--cacheinfo',
+            f'160000,{missing_sha},external/lib',
+        ],
+        cwd=super_repo,
+        check=True,
+    )
+    ub.cmd(
+        ['git', 'commit', '-m', 'point to unavailable submodule commit'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match='cannot materialize submodule'):
+        archive_source(
+            repo_dpath=super_repo,
+            output=tmp_path / 'strict.tar.gz',
+            depth=1,
+            submodule_depth=1,
+            verbose=0,
+        )
+
+    checkout_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'checkout.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        submodule_revision='checkout',
+        verbose=0,
+    )
+    assert 'differs from parent gitlink' in capsys.readouterr().err
+    manifest = _tar_manifest_text(checkout_archive)
+    assert f'  commit: {checkout_sha}' in manifest
+    assert f'  parent gitlink: {missing_sha}' in manifest
+
+    extracted = _extract_tar_root(
+        checkout_archive, tmp_path / 'checkout_extracted'
+    )
+    archived_head = _stdout_text(
+        ub.cmd(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=extracted / 'external/lib',
+            check=True,
+        )
+    ).strip()
+    assert archived_head == checkout_sha
+    archived_gitlink = _stdout_text(
+        ub.cmd(
+            ['git', 'ls-tree', 'HEAD', 'external/lib'],
+            cwd=extracted,
+            check=True,
+        )
+    )
+    assert missing_sha in archived_gitlink
+
+    with pytest.raises(ValueError, match='cannot be combined with patch mode'):
+        archive_source(
+            repo_dpath=super_repo,
+            submodule_revision='checkout',
+            patch='auto',
+            verbose=0,
+        )
+
+
+def test_archive_source_checkout_revision_from_cli():
+    from git_well.git_archive_source import ArchiveSourceCLI
+
+    cfg = ArchiveSourceCLI.cli(
+        argv=['--submodule_revision', 'checkout'], strict=True
+    )
+    assert cfg.submodule_revision == 'checkout'

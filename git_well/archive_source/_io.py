@@ -195,6 +195,7 @@ def _write_manifest(
     branch_refs: BranchRefInventory | None,
     branches: tuple[str, ...],
     submodule_decisions: Sequence[SubmoduleArchiveDecision],
+    submodule_revision: str,
     exclude_path_selectors: Sequence[str],
     excluded_worktree_paths: Sequence[str],
     unmatched_exclude_path_selectors: Sequence[str],
@@ -272,6 +273,7 @@ def _write_manifest(
         f'Superproject short commit: {short_sha}',
         f'Superproject history: {superproject_history}',
         f'History blob retention: {history_blobs}',
+        f'Submodule revision policy: {submodule_revision}',
         'Worktree exclusion selectors JSON: '
         + json.dumps(list(exclude_path_selectors), separators=(',', ':')),
         'Superproject branches: '
@@ -375,6 +377,11 @@ def _write_manifest(
                 [
                     f'- path: {decision.info.path}',
                     f'  commit: {decision.info.sha}',
+                    *(
+                        [f'  parent gitlink: {decision.info.parent_gitlink_sha}']
+                        if decision.info.parent_gitlink_sha is not None
+                        else []
+                    ),
                     f'  status: {"omitted" if decision.omitted else "included"}',
                     f'  history: {history}',
                     f'  reason: {decision.reason}',

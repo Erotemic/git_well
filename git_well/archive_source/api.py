@@ -120,6 +120,7 @@ class ArchiveSourceContext:
     clone_depth: int | None
     branch_refs: BranchRefInventory | None
     submodule_decisions: tuple[SubmoduleArchiveDecision, ...]
+    submodule_revision: Literal['gitlink', 'checkout']
     exclude_path_selectors: tuple[str, ...]
     excluded_worktree_paths: tuple[str, ...]
     unmatched_exclude_path_selectors: tuple[str, ...]
@@ -201,6 +202,7 @@ class ArchiveSourceContext:
             branch_refs=self.branch_refs,
             branches=self.branches,
             submodule_decisions=self.submodule_decisions,
+            submodule_revision=self.submodule_revision,
             exclude_path_selectors=self.exclude_path_selectors,
             excluded_worktree_paths=self.excluded_worktree_paths,
             unmatched_exclude_path_selectors=self.unmatched_exclude_path_selectors,
@@ -224,7 +226,7 @@ class ArchiveSourceContext:
             self.archive_format,
         )
         self._archive_written = True
-        if self.include_git_history:
+        if self.include_git_history and self.submodule_revision == 'gitlink':
             try:
                 from .patch import register_source_archive
 
@@ -278,6 +280,7 @@ def archive_source(
     keep_stage: bool = False,
     patch: PathLike | None = None,
     branches: str | list[str] | tuple[str, ...] | None = None,
+    submodule_revision: Literal['gitlink', 'checkout'] = 'gitlink',
 ) -> Path:
     """
     Create an archive of committed source in a Git repository.
@@ -304,6 +307,14 @@ def archive_source(
             ``'full'`` apply to every submodule. Mappings may use exact
             submodule paths, fnmatch-style glob keys, quoted ``"*"`` as a
             catch-all glob, and ``__default__`` as a non-glob fallback.
+
+        submodule_revision:
+            ``'gitlink'`` (default) exports exactly the committed parent
+            gitlink, failing when that commit cannot be obtained. ``'checkout'``
+            exports each initialized submodule's checked-out committed HEAD,
+            even if its parent gitlink differs. The archive manifest records
+            such mismatches, and its superproject HEAD is not rewritten.
+            Checkout mode is incompatible with incremental patch archives.
 
         exclude_submodule:
             Recursive submodule path selectors to omit from the archive. Each
@@ -398,6 +409,14 @@ def archive_source(
         :class:`ArchiveSourceHookError` with the hook phase and name.
     """
     normalized_history_blobs = _normalize_history_blobs(history_blobs)
+    if submodule_revision not in {'gitlink', 'checkout'}:
+        raise ValueError(
+            "submodule_revision must be 'gitlink' or 'checkout'"
+        )
+    if patch is not None and submodule_revision == 'checkout':
+        raise ValueError(
+            'submodule_revision=checkout cannot be combined with patch mode'
+        )
     if patch is not None and _normalize_depth(depth) == 0:
         from .patch import SourcePatchError
 
@@ -411,6 +430,7 @@ def archive_source(
         output=output,
         depth=depth,
         submodule_depth=submodule_depth,
+        submodule_revision=submodule_revision,
         exclude_submodule=exclude_submodule,
         exclude_path=exclude_path,
         history_blobs=normalized_history_blobs,
@@ -458,6 +478,7 @@ def stage_source_archive(
     archive_root_name: str | None = None,
     keep_stage: bool = False,
     branches: str | list[str] | tuple[str, ...] | None = None,
+    submodule_revision: Literal['gitlink', 'checkout'] = 'gitlink',
 ) -> Iterator[ArchiveSourceContext]:
     """
     Stage committed source and yield a context before metadata/serialization.
@@ -526,7 +547,9 @@ def stage_source_archive(
     )
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
-    submodule_status = _submodule_status(repo)
+    submodule_status = _submodule_status(
+        repo, submodule_revision=submodule_revision
+    )
     submodule_decisions = tuple(
         _resolve_submodule_archive_decisions(
             submodule_status,
@@ -563,6 +586,17 @@ def stage_source_archive(
         log('[source-archive] depth: 0 (source-only git archive mode)')
     for line in submodule_depth_policy.summary_lines():
         log(f'[source-archive] {line}')
+    if submodule_revision == 'checkout':
+        log('[source-archive] submodule revision policy: checked-out HEAD')
+        for decision in submodule_decisions:
+            parent_sha = decision.info.parent_gitlink_sha
+            if parent_sha is not None and not decision.omitted:
+                log.warning(
+                    '[source-archive] WARNING: submodule '
+                    f'{decision.info.path} checked-out HEAD '
+                    f'{decision.info.sha[:12]} differs from parent gitlink '
+                    f'{parent_sha[:12]}; retaining parent commit unchanged'
+                )
     if no_submodules:
         log('[source-archive] submodules: omitted by --no-submodules')
     elif exclude_submodule_paths:
@@ -647,8 +681,12 @@ def stage_source_archive(
                 )
             _assert_has_head(sub_repo)
             sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
+            selected_short = submodule_sha[:12]
+            commit_label = f'commit {selected_short}'
+            if sub_repo.head.commit.hexsha != submodule_sha:
+                commit_label += f' (source checkout HEAD {sub_short})'
             log(
-                f'[source-archive] exporting submodule {path} HEAD {sub_short} '
+                f'[source-archive] exporting submodule {path} {commit_label} '
                 f'depth={_depth_label(decision.depth)} mode={decision.mode}'
             )
             sub_clone_depth = _clone_depth_from_normalized_depth(
@@ -719,6 +757,7 @@ def stage_source_archive(
             clone_depth=clone_depth,
             branch_refs=branch_refs,
             submodule_decisions=submodule_decisions,
+            submodule_revision=submodule_revision,
             exclude_path_selectors=tuple(exclude_path_selectors),
             excluded_worktree_paths=excluded_worktree_paths,
             unmatched_exclude_path_selectors=unmatched_exclude_path_selectors,

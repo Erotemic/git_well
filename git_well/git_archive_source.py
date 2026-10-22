@@ -96,6 +96,20 @@ class ArchiveSourceCLI(kwconf.Config):
             non-glob fallback, e.g. '{"*": 0, special/submod: 100}'.
             """).strip(),
     )
+    submodule_revision = kwconf.Value(
+        'gitlink',
+        alias=['submodule-revision'],
+        choices=['gitlink', 'checkout'],
+        help=textwrap.dedent("""
+            Select submodule commits: "gitlink" (default) requires the exact
+            commit recorded in each parent Git tree. "checkout" uses each
+            initialized submodule's currently checked-out committed HEAD and
+            records parent gitlink mismatches in the archive manifest. The
+            superproject commit is unchanged and may not match the exported
+            submodule worktrees. Excludes uncommitted file changes. Checkout
+            mode is incompatible with --patch.
+            """).strip(),
+    )
     exclude_submodule: list[str] = kwconf.Value(
         [],
         nargs='*',
@@ -204,6 +218,7 @@ class ArchiveSourceCLI(kwconf.Config):
             all_branches=bool(config.all_branches),
             branches=config.branches or None,
             submodule_depth=config.submodule_depth,
+            submodule_revision=config.submodule_revision,
             exclude_submodule=config.exclude_submodule,
             exclude_path=config.exclude_path,
             history_blobs=config.history_blobs,
