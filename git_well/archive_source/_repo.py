@@ -386,6 +386,19 @@ def _clone_committed_checkout(
         source_repo=src,
     )
 
+    if branch_refs is None:
+        # A single-branch clone creates local main and origin/main refs at the
+        # *source checkout* tip. The archived commit can be an older gitlink,
+        # especially for submodules, and the source branch can advance between
+        # archives even when that gitlink has not changed. Those implicit refs
+        # do not belong to the requested HEAD-only archive: retaining them
+        # leaks checkout-dependent history and makes incremental patches copy
+        # branch refs whose objects were not otherwise needed.
+        #
+        # Drop only the synthetic refs. Keep the origin URL/configuration for
+        # the existing non-redacted archive behavior.
+        _drop_cloned_branch_refs(cloned)
+
     # Compact only the initial clone. Cached branch refs and any additional
     # shallow boundaries are final archive state, so install them after Git
     # maintenance. In particular, this prevents ``git gc`` / ``pack-refs``
@@ -425,6 +438,27 @@ def _clone_committed_checkout(
         )
 
 
+def _drop_cloned_branch_refs(cloned: 'git.Repo') -> None:
+    """Remove clone-created branch refs after detaching archived HEAD.
+
+    ``--no-deref`` removes symbolic remote HEAD refs themselves rather than
+    inadvertently deleting the branch to which they point.
+    """
+    import git
+
+    for name in cloned.git.for_each_ref(
+        '--format=%(refname)', 'refs/heads', 'refs/remotes'
+    ).splitlines():
+        if name:
+            cloned.git.update_ref('--no-deref', '-d', name)
+    # If origin/HEAD was already dangling, for-each-ref may omit it; explicitly
+    # remove that leftover symref so offline fsck remains valid.
+    try:
+        cloned.git.symbolic_ref('--delete', 'refs/remotes/origin/HEAD')
+    except git.GitCommandError:
+        pass
+
+
 def _copy_cached_branch_refs(
     src: 'git.Repo',
     cloned: 'git.Repo',
@@ -459,11 +493,7 @@ def _copy_cached_branch_refs(
         # The initial single-branch clone creates a local branch for the
         # source HEAD. Remove it if it was not explicitly requested. HEAD was
         # detached before maintenance, so deleting these refs is safe.
-        for name in cloned.git.for_each_ref(
-            '--format=%(refname)', 'refs/heads', 'refs/remotes'
-        ).splitlines():
-            if name:
-                cloned.git.update_ref('--no-deref', '-d', name)
+        _drop_cloned_branch_refs(cloned)
 
     # Local cached refs are local state, so keep them entirely out of Git's
     # transport layer. This uses the same direct object-database import as

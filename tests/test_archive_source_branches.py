@@ -72,6 +72,62 @@ def _selected_repo(root: Path) -> tuple[Path, str, str]:
     return repo, head_sha, remote_sha
 
 
+def test_archive_source_default_history_only_has_head_refs(tmp_path):
+    """Implicit refs created by clone are not part of a HEAD-only archive."""
+    from git_well.archive_source import archive_source
+
+    repo = _repo(tmp_path)
+    head = _git(repo, 'rev-parse', 'HEAD')
+    _git(repo, 'checkout', '-qb', 'unselected')
+    _commit(repo, 'unselected.txt', 'not in head history')
+    _git(repo, 'checkout', '-q', 'main')
+
+    archive = archive_source(
+        repo_dpath=repo, output=tmp_path / 'head-only.tar.gz',
+        verbose=0,
+    )
+    unpacked = _unpack(archive, tmp_path / 'head-only-unpacked')
+    assert _refs(unpacked) == set()
+    assert _git(unpacked, 'rev-parse', 'HEAD') == head
+    # Preserve the longstanding non-redacted origin URL behavior.
+    assert _git(unpacked, 'remote', 'get-url', 'origin') == str(repo)
+    _git(unpacked, 'rev-list', '--all', 'HEAD')
+    _git(unpacked, 'fsck', '--full')
+
+
+def test_archive_source_submodule_gitlink_ignores_moving_checkout_refs(tmp_path):
+    """A submodule branch moving past the gitlink must not leak into the archive."""
+    from git_well.archive_source import archive_source
+
+    sub_parent = tmp_path / 'sub-parent'
+    super_parent = tmp_path / 'super-parent'
+    sub_parent.mkdir()
+    super_parent.mkdir()
+    sub_repo = _repo(sub_parent)
+    super_repo = _repo(super_parent)
+    _git(super_repo, '-c', 'protocol.file.allow=always', 'submodule', 'add',
+         sub_repo.as_uri(), 'tools/renderer')
+    _git(super_repo, 'commit', '-qm', 'add renderer gitlink')
+    sub_checkout = super_repo / 'tools' / 'renderer'
+    pinned = _git(sub_checkout, 'rev-parse', 'HEAD')
+    _git(sub_checkout, 'config', 'user.name', 'Test User')
+    _git(sub_checkout, 'config', 'user.email', 'test@example.com')
+    moved = _commit(sub_checkout, 'later.txt', 'later content')
+    assert pinned != moved
+    assert _git(super_repo, 'rev-parse', 'HEAD:tools/renderer') == pinned
+
+    archive = archive_source(
+        repo_dpath=super_repo, output=tmp_path / 'pinned-submodule.tar.gz',
+        depth=2, submodule_depth=2, verbose=0,
+    )
+    unpacked = _unpack(archive, tmp_path / 'pinned-submodule-unpacked')
+    archived_sub = unpacked / 'tools' / 'renderer'
+    assert _git(archived_sub, 'rev-parse', 'HEAD') == pinned
+    assert _refs(archived_sub) == set()
+    _git(archived_sub, 'rev-list', '--all', 'HEAD')
+    _git(archived_sub, 'fsck', '--full')
+
+
 def test_archive_source_branches_exact_cli_and_python(tmp_path):
     from git_well.archive_source import archive_source
     from git_well.git_archive_source import ArchiveSourceCLI

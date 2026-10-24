@@ -1114,7 +1114,11 @@ def build_source_patch(
             patch_root=patch_root,
             transport_stem='superproject',
             history_blobs=context.history_blobs,
-            all_refs=bool(context.all_branches or context.branches),
+            # A source patch overlays Git ref metadata regardless of the
+            # requested branch-selection policy (for example, tags already
+            # present in an older HEAD-only archive). Every copied ref must
+            # have its reachable objects transported, not just target HEAD.
+            all_refs=True,
         )
         super_entry['path'] = '.'
         git_entries.append(super_entry)
@@ -1151,6 +1155,12 @@ def build_source_patch(
                     patch_root=patch_root,
                     transport_stem=f'submodule-{sub_index:03d}',
                     history_blobs=context.history_blobs,
+                    # The residual filesystem overlay copies .git/refs as
+                    # well as the checked-out tree. Old base archives can
+                    # still carry clone-created source branch refs, so object
+                    # transport must cover every changed ref even if the
+                    # pinned submodule HEAD is unchanged.
+                    all_refs=True,
                     require_descendant=not sparse_submodule,
                 )
             except SourcePatchError:
