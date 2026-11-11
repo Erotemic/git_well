@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -309,8 +309,9 @@ def archive_source(
             catch-all glob, and ``__default__`` as a non-glob fallback.
 
         submodule_revision:
-            ``'gitlink'`` (default) exports exactly the committed parent
-            gitlink, failing when that commit cannot be obtained. ``'checkout'``
+            ``'gitlink'`` (default) exports the committed parent gitlink;
+            if its commit cannot be obtained, the affected submodule is omitted
+            with a warning and its failure recorded in the manifest. ``'checkout'``
             exports each initialized submodule's checked-out committed HEAD,
             even if its parent gitlink differs. The archive manifest records
             such mismatches, and its superproject HEAD is not rewritten.
@@ -342,7 +343,8 @@ def archive_source(
         no_submodules:
             If true, omit all recursive submodule working trees from the
             archive. When false, initialized submodules are included and
-            uninitialized submodules are omitted with a warning.
+            uninitialized or unexportable submodules are omitted with a warning.
+            The remaining submodules and superproject are still archived.
 
         format:
             Archive format. ``'auto'`` infers from the output extension when
@@ -649,6 +651,8 @@ def stage_source_archive(
             ('', repo, head_sha, archive_root, include_git_history)
         ]
 
+        staged_submodule_decisions: list[SubmoduleArchiveDecision] = []
+        failed_submodule_paths: set[str] = set()
         for decision in submodule_decisions:
             info = decision.info
             path = info.path
@@ -666,61 +670,116 @@ def stage_source_archive(
                         f'[source-archive] omitting submodule {path}: '
                         f'{decision.reason}'
                     )
+                staged_submodule_decisions.append(decision)
                 continue
-            src_dpath = repo_root / path
-            if not src_dpath.exists():
-                raise RuntimeError(
-                    f"submodule path '{path}' is missing; run: "
-                    'git submodule update --init --recursive'
-                )
-            sub_repo = _open_exact_repo(src_dpath)
-            if sub_repo is None:
-                raise RuntimeError(
-                    f"submodule path '{path}' is not an initialized Git "
-                    'working tree; run: git submodule update --init --recursive'
-                )
-            _assert_has_head(sub_repo)
-            sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
-            selected_short = submodule_sha[:12]
-            commit_label = f'commit {selected_short}'
-            if sub_repo.head.commit.hexsha != submodule_sha:
-                commit_label += f' (source checkout HEAD {sub_short})'
-            log(
-                f'[source-archive] exporting submodule {path} {commit_label} '
-                f'depth={_depth_label(decision.depth)} mode={decision.mode}'
+
+            # A nested submodule cannot be included if the parent checkout
+            # failed: doing so would create a tree that never existed in Git.
+            failed_parent = next(
+                (
+                    parent for parent in failed_submodule_paths
+                    if path.startswith(parent.rstrip('/') + '/')
+                ),
+                None,
             )
-            sub_clone_depth = _clone_depth_from_normalized_depth(
-                decision.depth
-            )
-            if decision.depth != 0:
-                _clone_committed_checkout(
-                    src=sub_repo,
-                    dst=archive_root / path,
-                    commit=submodule_sha,
-                    label=f'submodule {path}',
-                    clone_depth=sub_clone_depth,
-                    branch_refs=None,
-                    exact_branch_refs=False,
-                    redact_local_paths=redact_local_paths,
-                    log=log,
+            if failed_parent is not None:
+                reason = f'parent submodule {failed_parent} could not be exported'
+                log.warning(
+                    f'[source-archive] WARNING: omitting submodule {path}: '
+                    f'{reason}; continuing'
                 )
-            else:
-                (archive_root / path).mkdir(parents=True, exist_ok=True)
-                _extract_git_archive(
-                    sub_repo,
-                    submodule_sha,
-                    stage,
-                    f'{resolved_root_name}/{path}',
+                staged_submodule_decisions.append(
+                    replace(decision, omitted=True, mode='omitted', reason=reason)
                 )
+                continue
+
+            submodule_stage = archive_root / path
+            try:
+                src_dpath = repo_root / path
+                if not src_dpath.exists():
+                    raise RuntimeError(
+                        f"submodule path '{path}' is missing; run: "
+                        'git submodule update --init --recursive'
+                    )
+                sub_repo = _open_exact_repo(src_dpath)
+                if sub_repo is None:
+                    raise RuntimeError(
+                        f"submodule path '{path}' is not an initialized Git "
+                        'working tree; run: git submodule update --init --recursive'
+                    )
+                _assert_has_head(sub_repo)
+                sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
+                selected_short = submodule_sha[:12]
+                commit_label = f'commit {selected_short}'
+                if sub_repo.head.commit.hexsha != submodule_sha:
+                    commit_label += f' (source checkout HEAD {sub_short})'
+                log(
+                    f'[source-archive] exporting submodule {path} {commit_label} '
+                    f'depth={_depth_label(decision.depth)} mode={decision.mode}'
+                )
+                sub_clone_depth = _clone_depth_from_normalized_depth(
+                    decision.depth
+                )
+                if decision.depth != 0:
+                    _clone_committed_checkout(
+                        src=sub_repo,
+                        dst=submodule_stage,
+                        commit=submodule_sha,
+                        label=f'submodule {path}',
+                        clone_depth=sub_clone_depth,
+                        branch_refs=None,
+                        exact_branch_refs=False,
+                        redact_local_paths=redact_local_paths,
+                        log=log,
+                    )
+                else:
+                    submodule_stage.mkdir(parents=True, exist_ok=True)
+                    _extract_git_archive(
+                        sub_repo,
+                        submodule_sha,
+                        stage,
+                        f'{resolved_root_name}/{path}',
+                    )
+            except Exception as ex:
+                # A clone/checkout/archive can leave a partial directory. Never
+                # package it as if it were a successfully exported submodule.
+                if submodule_stage.is_symlink() or (
+                    submodule_stage.exists() and not submodule_stage.is_dir()
+                ):
+                    submodule_stage.unlink()
+                elif submodule_stage.exists():
+                    shutil.rmtree(submodule_stage)
+                failed_submodule_paths.add(path)
+                reason = (
+                    f'failed to export commit {submodule_sha} '
+                    f'({type(ex).__name__})'
+                )
+                if str(ex).startswith('cannot materialize submodule '):
+                    reason += (
+                        ': committed gitlink unavailable locally and from '
+                        'source remotes'
+                    )
+                staged_submodule_decisions.append(
+                    replace(decision, omitted=True, mode='omitted', reason=reason)
+                )
+                log.warning(
+                    f'[source-archive] WARNING: omitting submodule {path}: '
+                    f'{ex}; continuing with remaining submodules'
+                )
+                continue
+
+            staged_submodule_decisions.append(decision)
             staged_repo_units.append(
                 (
                     path,
                     sub_repo,
                     submodule_sha,
-                    archive_root / path,
+                    submodule_stage,
                     decision.depth != 0,
                 )
             )
+
+        submodule_decisions = tuple(staged_submodule_decisions)
 
         (
             excluded_worktree_paths,

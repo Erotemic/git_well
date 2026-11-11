@@ -101,8 +101,9 @@ class ArchiveSourceCLI(kwconf.Config):
         alias=['submodule-revision'],
         choices=['gitlink', 'checkout'],
         help=textwrap.dedent("""
-            Select submodule commits: "gitlink" (default) requires the exact
-            commit recorded in each parent Git tree. "checkout" uses each
+            Select submodule commits: "gitlink" (default) exports the exact
+            commit recorded in each parent Git tree, omitting unavailable
+            commits with a warning (recorded in the manifest). "checkout" uses each
             initialized submodule's currently checked-out committed HEAD and
             records parent gitlink mismatches in the archive manifest. The
             superproject commit is unchanged and may not match the exported
@@ -156,7 +157,8 @@ class ArchiveSourceCLI(kwconf.Config):
         isflag=True,
         help=textwrap.dedent("""
             Materialize initialized recursive submodule working trees.
-            Uninitialized submodules are omitted with a warning. Pass
+            Uninitialized or unexportable submodules are omitted with a
+            warning; other submodules are still exported. Pass
             --no-submodules to omit every submodule working tree from the
             archive while keeping superproject gitlinks and .gitmodules.
             """).strip(),

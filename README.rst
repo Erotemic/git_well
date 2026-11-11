@@ -95,6 +95,22 @@ The tools in this module are derived from:
 
 
 
+Incomplete submodules during source archiving
+---------------------------------------------
+
+``git-well archive-source`` preserves each committed submodule gitlink when
+possible. If a submodule is uninitialized, its requested commit is unavailable,
+or its export fails, the command warns and finishes with the remaining source.
+The archive's ``GIT_WELL_ARCHIVE_INFO.txt`` records each omitted submodule and
+the commit that could not be included. A failed clone is removed from staging
+rather than packaged as a partial checkout. Nested submodules are omitted when
+their parent cannot be exported. The superproject commit and its gitlinks stay
+unchanged.
+
+To include a different locally available submodule commit instead, opt in to
+``--submodule-revision checkout``; the manifest identifies any divergence
+from its parent gitlink.
+
 Archiving pull-request review state
 -----------------------------------
 

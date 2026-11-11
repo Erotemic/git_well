@@ -3224,14 +3224,39 @@ def test_archive_source_checkout_revision_with_missing_gitlink(tmp_path, capsys)
         check=True,
     )
 
-    with pytest.raises(RuntimeError, match='cannot materialize submodule'):
-        archive_source(
-            repo_dpath=super_repo,
-            output=tmp_path / 'strict.tar.gz',
-            depth=1,
-            submodule_depth=1,
-            verbose=0,
+    partial_archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'partial.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+    warning = capsys.readouterr().err
+    assert 'WARNING: omitting submodule external/lib' in warning
+    assert 'cannot materialize submodule external/lib commit' in warning
+    assert 'continuing with remaining submodules' in warning
+    partial_manifest = _tar_manifest_text(partial_archive)
+    assert f'  commit: {missing_sha}' in partial_manifest
+    assert 'status: omitted' in partial_manifest
+    assert 'history: omitted' in partial_manifest
+    assert (
+        f'reason: failed to export commit {missing_sha} (RuntimeError)'
+        in partial_manifest
+    )
+    partial_extracted = _extract_tar_root(
+        partial_archive, tmp_path / 'partial_extracted'
+    )
+    assert (partial_extracted / 'root.txt').read_text() == 'root\n'
+    assert not (partial_extracted / 'external/lib/.git').exists()
+    assert not (partial_extracted / 'external/lib/tracked.txt').exists()
+    preserved_gitlink = _stdout_text(
+        ub.cmd(
+            ['git', 'ls-tree', 'HEAD', 'external/lib'],
+            cwd=partial_extracted,
+            check=True,
         )
+    )
+    assert missing_sha in preserved_gitlink
 
     checkout_archive = archive_source(
         repo_dpath=super_repo,
@@ -3273,6 +3298,116 @@ def test_archive_source_checkout_revision_with_missing_gitlink(tmp_path, capsys)
             patch='auto',
             verbose=0,
         )
+
+
+
+def test_archive_source_failed_submodule_does_not_block_siblings(
+    tmp_path, capsys
+):
+    import ubelt as ub
+
+    from git_well.archive_source import archive_source
+
+    good_src = _make_submodule_repo(tmp_path, 'healthy_src')
+    bad_src = _make_submodule_repo(tmp_path, 'broken_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path,
+        {
+            'external/broken': bad_src,
+            'external/healthy': good_src,
+        },
+    )
+    missing_sha = 'f' * 40
+    ub.cmd(
+        [
+            'git', 'update-index', '--cacheinfo',
+            f'160000,{missing_sha},external/broken',
+        ],
+        cwd=super_repo,
+        check=True,
+    )
+    ub.cmd(
+        ['git', 'commit', '-m', 'point to unavailable commit'],
+        cwd=super_repo,
+        check=True,
+    )
+
+    for submodule_depth in (0, 1):
+        archive = archive_source(
+            repo_dpath=super_repo,
+            output=tmp_path / f'partial-depth-{submodule_depth}.tar.gz',
+            depth=1,
+            submodule_depth=submodule_depth,
+            verbose=0,
+        )
+        assert (
+            'WARNING: omitting submodule external/broken'
+            in capsys.readouterr().err
+        )
+        names = _tar_names(archive)
+        assert any(name.endswith('/external/healthy/tracked.txt') for name in names)
+        assert not any(name.endswith('/external/broken/tracked.txt') for name in names)
+        manifest = _tar_manifest_text(archive)
+        assert 'path: external/broken' in manifest
+        assert f'reason: failed to export commit {missing_sha}' in manifest
+        assert 'path: external/healthy' in manifest
+        assert 'status: included' in manifest
+
+
+def test_archive_source_cleans_partial_failed_clone(tmp_path, monkeypatch, capsys):
+    import ubelt as ub
+
+    from git_well.archive_source import api, archive_source
+
+    nested_project_root = tmp_path / 'nested_projects'
+    nested_project_root.mkdir()
+    nested_src = _make_submodule_repo(nested_project_root, 'inner_src')
+    bad_src = _make_repo_with_submodules(
+        nested_project_root, {'inside/child': nested_src}
+    )
+    good_src = _make_submodule_repo(tmp_path, 'good_clone_src')
+    super_repo = _make_repo_with_submodules(
+        tmp_path,
+        {'external/bad': bad_src, 'external/good': good_src},
+    )
+    ub.cmd(
+        ['git', '-c', 'protocol.file.allow=always',
+         'submodule', 'update', '--init', '--recursive'],
+        cwd=super_repo,
+        check=True,
+    )
+    original_clone = api._clone_committed_checkout
+
+    def clone_with_failed_submodule(**kwargs):
+        if kwargs['label'] == 'submodule external/bad':
+            dst = kwargs['dst']
+            dst.mkdir(parents=True, exist_ok=True)
+            (dst / 'partial-marker.txt').write_text('do not include me')
+            raise OSError('simulated submodule clone failure')
+        return original_clone(**kwargs)
+
+    monkeypatch.setattr(
+        api, '_clone_committed_checkout', clone_with_failed_submodule
+    )
+    archive = archive_source(
+        repo_dpath=super_repo,
+        output=tmp_path / 'partial-clone.tar.gz',
+        depth=1,
+        submodule_depth=1,
+        verbose=0,
+    )
+    stderr = capsys.readouterr().err
+    assert 'WARNING: omitting submodule external/bad' in stderr
+    assert 'simulated submodule clone failure' in stderr
+    names = _tar_names(archive)
+    assert not any(name.endswith('partial-marker.txt') for name in names)
+    assert any(name.endswith('/external/good/tracked.txt') for name in names)
+    assert not any('/external/bad/inside/child/' in name for name in names)
+    manifest = _tar_manifest_text(archive)
+    assert 'reason: failed to export commit ' in manifest
+    assert '(OSError)' in manifest
+    assert 'path: external/bad/inside/child' in manifest
+    assert 'reason: parent submodule external/bad could not be exported' in manifest
 
 
 def test_archive_source_checkout_revision_from_cli():
