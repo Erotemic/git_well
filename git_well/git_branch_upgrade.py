@@ -130,9 +130,9 @@ class UpdateDevBranch(kwconf.Config):
 
 
 def dev_branches(repo: Any) -> list[dict[str, Any]]:
-    from packaging.version import parse as Version
+    from packaging.version import Version
 
-    branch_infos = []
+    branch_infos: list[dict[str, Any]] = []
     for line in repo.git.branch('-r').split('\n'):
         line = line.strip().split('->')[-1].strip()
         for remote in repo.remotes:
@@ -153,21 +153,21 @@ def dev_branches(repo: Any) -> list[dict[str, Any]]:
         }
         branch_infos.append(info)
 
-    dev_infos = []
+    versioned_infos: list[tuple[Version, dict[str, Any]]] = []
     for info in branch_infos:
         branch_name = info.get('branch_name')
         if isinstance(branch_name, str) and branch_name.startswith('dev/'):
             vstr = branch_name.split('/')[-1]
             try:
-                info['version'] = Version(vstr)
+                version = Version(vstr)
             except Exception:
                 ...
             else:
-                # if not isinstance(info['version'], LegacyVersion):
-                dev_infos.append(info)
+                info['version'] = version
+                versioned_infos.append((version, info))
 
-    versioned_dev_branches = sorted(dev_infos, key=lambda x: x['version'])
-    return versioned_dev_branches
+    versioned_infos.sort(key=lambda item: item[0])
+    return [info for _version, info in versioned_infos]
 
 
 main = UpdateDevBranch.main

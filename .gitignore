@@ -97,3 +97,5 @@ pip-wheel-metadata/
 
 wheelhouse
 *.tar.gz
+*.zip
+git-of-theseus/

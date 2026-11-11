@@ -33,7 +33,12 @@ class GitUrlComponentsCLI(kwconf.Config):
     protocol = kwconf.Value(
         None, help='If specified, convert to the specified protocol first'
     )
-    verbose = kwconf.Flag(False, help='verbosity level')
+    verbose: int = kwconf.Value(
+        0,
+        isflag='counter',
+        short_alias=['v'],
+        help='Increase verbosity; repeat for more detail',
+    )
 
     @classmethod
     def main(

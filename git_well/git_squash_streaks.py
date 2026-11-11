@@ -144,11 +144,12 @@ class SquashStreakCLI(kwconf.Config):
         help='turn dry mode off',
     )
 
-    verbose: bool = kwconf.Value(
-        True,
+    verbose: int = kwconf.Value(
+        1,
+        isflag='counter',
         mutex_group='verbose',
         short_alias=['v'],
-        help='verbosity flag flag',
+        help='Increase verbosity; repeat for more detail',
     )
 
     # TODO: kwconf needs to be extended to handle these argparse

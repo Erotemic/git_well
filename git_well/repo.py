@@ -22,14 +22,12 @@ class Repo(git.Repo):
         """
         Execute a command in the root of the repo.
         """
-        defaults = ub.udict(
-            {
-                'cwd': self.dpath,
-                'check': True,
-                'verbose': 0,
-            }
-        )
-        final_kwargs = defaults | kwargs
+        final_kwargs: dict[str, Any] = {
+            'cwd': self.dpath,
+            'check': True,
+            'verbose': 0,
+        }
+        final_kwargs.update(kwargs)
         info = ub.cmd(command, **final_kwargs)
         return info
 

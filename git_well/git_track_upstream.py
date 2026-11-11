@@ -35,7 +35,7 @@ class TrackUpstreamCLI(kwconf.Config):
     force: bool = kwconf.Value(
         False,
         isflag=True,
-        short_alias=['-f'],
+        short_alias=['f'],
         help='if True, then choose a new tracking branch even if one is set',
     )
 
