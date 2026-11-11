@@ -277,7 +277,7 @@ def _select_branch_ref_inventory(
     from the remote-tracking ref with the same display name.
     """
     if isinstance(branches, str):
-        requested = (branches,)
+        requested: tuple[str, ...] = (branches,)
     else:
         requested = tuple(branches)
     if not requested:

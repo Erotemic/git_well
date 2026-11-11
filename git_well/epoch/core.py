@@ -148,7 +148,7 @@ def _run(
     # carriage return as data.  Enforcing this at the one process boundary makes
     # every present and future string-input caller LF-stable by construction.
     string_input = isinstance(input, str)
-    subprocess_input = input.encode('utf-8') if string_input else input
+    subprocess_input = input.encode('utf-8') if isinstance(input, str) else input
     subprocess_text = False if string_input else requested_text
 
     # Passing env=None lets subprocess inherit the process environment without
@@ -638,10 +638,10 @@ def _discover_submodules(repo: pathlib.Path, commit: str = 'HEAD') -> list[dict[
     for source_item in items:
         item = dict(source_item)
         path = item['path']
-        oid = gitlinks.get(path)
-        if oid is None:
+        gitlink_oid = gitlinks.get(path)
+        if gitlink_oid is None:
             raise EpochError(f'No tree entry for submodule path {path!r} at {commit}')
-        item['commit'] = oid
+        item['commit'] = gitlink_oid
         item['worktree'] = str((repo / path).resolve())
         occurrences.append(item)
     return occurrences
@@ -908,6 +908,7 @@ def initialize_config(
     else:
         _validate_repository_id(requested_store_id)
         history_store_id = requested_store_id
+    assert history_store_id is not None
     if managed_root and history_store_id != trailer_store_id:
         raise EpochSafetyError(
             'History-store identity conflicts with successor root: '
@@ -935,6 +936,7 @@ def initialize_config(
                 'History-store identity conflicts with successor root: '
                 f'{recorded_store_id!r} != {trailer_store_id!r}'
             )
+        assert trailer_store_id is not None
         history_store_id = trailer_store_id
         repository_record = dict(
             manifest.get('repositories', {}).get(repository_id, {})
@@ -1147,7 +1149,7 @@ class HistoryStore:
     def ls_refs(self, pattern: str | None = None) -> dict[str, str]:
         inspection_path = self.local_path if self.is_local else _file_url_path(self.spec)
         if inspection_path is not None:
-            args = [
+            args: list[str | os.PathLike[str]] = [
                 'git',
                 '--git-dir',
                 inspection_path,
@@ -1394,7 +1396,9 @@ class HistoryStore:
                     progress,
                     f'publishing {len(missing)} browsable archive refs in one batch',
                 )
-                args = ['git', '--git-dir', bare, 'push', '--atomic']
+                args: list[str | os.PathLike[str]] = [
+                    'git', '--git-dir', bare, 'push', '--atomic',
+                ]
                 for view_ref in sorted(missing):
                     args.append(f'--force-with-lease={view_ref}:')
                 args.append(self.spec)
@@ -1433,7 +1437,9 @@ class HistoryStore:
             if old is not None and _tree_oid(bare, old) == tree:
                 return {'ref': 'refs/heads/main', 'oid': old, 'status': 'unchanged'}
             new = _write_history_landing_commit(bare, tree, parent=old)
-            args = ['git', '--git-dir', bare, 'update-ref', 'refs/heads/main', new]
+            args: list[str | os.PathLike[str]] = [
+                'git', '--git-dir', bare, 'update-ref', 'refs/heads/main', new,
+            ]
             args.append(old if old is not None else '0' * 40)
             _run(args)
             _run(
@@ -1586,7 +1592,9 @@ class HistoryStore:
             parent=expected_old,
             message=message,
         )
-        args = ['git', '--git-dir', bare, 'update-ref', 'refs/meta/main', new_oid]
+        args: list[str | os.PathLike[str]] = [
+            'git', '--git-dir', bare, 'update-ref', 'refs/meta/main', new_oid,
+        ]
         if expected_old:
             args.append(expected_old)
         else:
@@ -1806,7 +1814,9 @@ def _write_history_landing_commit(
         'GIT_COMMITTER_NAME': 'git-epoch',
         'GIT_COMMITTER_EMAIL': 'git-epoch@local',
     }
-    args = ['git', '--git-dir', bare, 'commit-tree', tree]
+    args: list[str | os.PathLike[str]] = [
+        'git', '--git-dir', bare, 'commit-tree', tree,
+    ]
     if parent:
         args.extend(['-p', parent])
     args.extend(['-m', 'Update Git epoch history index'])

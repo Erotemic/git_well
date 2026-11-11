@@ -267,16 +267,16 @@ def inspect_source_archive(path: PathLike) -> SourceArchiveInfo:
             with tarfile.open(path, 'r:*') as tar:
                 members = tar.getmembers()
                 names = [member.name for member in members]
-                candidates = [
+                tar_candidates = [
                     member
                     for member in members
                     if len(PurePosixPath(member.name).parts) == 2
                     and PurePosixPath(member.name).name
                     == 'GIT_WELL_ARCHIVE_INFO.txt'
                 ]
-                if len(candidates) == 1:
-                    manifest_name = candidates[0].name
-                    extracted = tar.extractfile(candidates[0])
+                if len(tar_candidates) == 1:
+                    manifest_name = tar_candidates[0].name
+                    extracted = tar.extractfile(tar_candidates[0])
                     if extracted is not None:
                         manifest_bytes = extracted.read()
         except tarfile.TarError as ex:
