@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, cast
 
 from ._common import BranchRefInventory, PathLike, SubmoduleStatus, _Logger
+from .patch_apply import _remove_tree
 
 if TYPE_CHECKING:  # pragma: no cover
     import git
@@ -357,14 +358,12 @@ def _clone_committed_checkout(
     redact_local_paths: bool,
     log: '_Logger',
 ) -> None:
-    import shutil
-
     import git
 
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
-        shutil.rmtree(dst)
+        _remove_tree(dst)
 
     src_root = Path(cast(str, src.working_tree_dir)).resolve()
     clone_command = [

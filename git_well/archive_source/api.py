@@ -49,6 +49,7 @@ from ._prune import (
     _apply_promisor_history_pruning,
     _apply_worktree_path_exclusions,
 )
+from .patch_apply import _remove_tree
 from ._repo import (
     _assert_has_head,
     _branch_ref_inventory,
@@ -614,7 +615,6 @@ def stage_source_archive(
     log(f'[source-archive] history blobs: {normalized_history_blobs}')
     log(f'[source-archive] superproject HEAD: {short_sha}')
 
-    import shutil
     import tempfile
 
     tmpdir = Path(
@@ -748,7 +748,7 @@ def stage_source_archive(
                 ):
                     submodule_stage.unlink()
                 elif submodule_stage.exists():
-                    shutil.rmtree(submodule_stage)
+                    _remove_tree(submodule_stage)
                 failed_submodule_paths.add(path)
                 reason = (
                     f'failed to export commit {submodule_sha} '
@@ -834,7 +834,7 @@ def stage_source_archive(
         if keep_stage:
             log.path('[source-archive] retained stage: ', tmpdir)
         else:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            _remove_tree(tmpdir, ignore_errors=True)
 
 
 def build_source_archive(*args: Any, **kwargs: Any) -> Path:

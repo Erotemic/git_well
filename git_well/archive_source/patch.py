@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from .patch_apply import (
     _git_command,
     _repo_has_commit,
     _repo_head,
+    _remove_tree,
     _run,
     _safe_target,
     _sha256_file,
@@ -1246,4 +1246,4 @@ def build_source_patch(
         )
         return context.archive_path
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        _remove_tree(work, ignore_errors=True)

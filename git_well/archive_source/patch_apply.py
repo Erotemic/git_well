@@ -19,7 +19,8 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from types import TracebackType
+from typing import Callable, Iterable
 
 PathLike = str | os.PathLike[str]
 PATCH_MANIFEST_FNAME = 'GIT_WELL_SOURCE_PATCH.json'
@@ -417,14 +418,49 @@ def _tree_entries(
     return entries
 
 
+def _remove_tree(path: PathLike, *, ignore_errors: bool = False) -> None:
+    """Delete staged Git trees, including read-only Git objects on Windows.
+
+    Git for Windows marks some object files read-only. Python 3.10's
+    ``shutil.rmtree`` cannot unlink those files without first clearing that
+    attribute. Keep this helper in the standalone patch applier so archived
+    ``APPLY_SOURCE_PATCH.py`` scripts inherit the same behavior.
+    """
+
+    def retry_readonly(
+        func: Callable[[str], object],
+        name: str,
+        exc_info: tuple[type[BaseException], BaseException, TracebackType | None],
+    ) -> None:
+        error = exc_info[1]
+        if isinstance(error, PermissionError) and not os.path.islink(name):
+            try:
+                os.chmod(name, os.stat(name).st_mode | stat.S_IWRITE)
+                func(name)
+                return
+            except OSError:
+                if ignore_errors:
+                    return
+                raise
+        if not ignore_errors:
+            raise error
+
+    # Use onerror for Python 3.10 compatibility (onexc requires Python 3.12).
+    shutil.rmtree(path, onerror=retry_readonly)
+
+
 def _remove_path(path: Path) -> None:
     if not os.path.lexists(path):
         return
-    if path.is_symlink() or path.is_file():
+    if path.is_dir() and not path.is_symlink():
+        _remove_tree(path)
+        return
+    try:
         path.unlink()
-    elif path.is_dir():
-        shutil.rmtree(path)
-    else:
+    except PermissionError:
+        if path.is_symlink():
+            raise
+        os.chmod(path, path.stat().st_mode | stat.S_IWRITE)
         path.unlink()
 
 
@@ -626,7 +662,7 @@ def apply_extracted_source_patch(
             _verify_sparse_object_state(repo, item)
         return target_root
     except Exception:
-        shutil.rmtree(output_dpath, ignore_errors=True)
+        _remove_tree(output_dpath, ignore_errors=True)
         raise
 
 
@@ -647,7 +683,7 @@ def apply_source_patch(
         patch_root = _find_patch_root(patch_extract)
         return apply_extracted_source_patch(base_archive, patch_root, output_dpath)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        _remove_tree(work, ignore_errors=True)
 
 
 def _build_parser() -> argparse.ArgumentParser:

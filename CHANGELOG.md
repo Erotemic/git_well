@@ -31,6 +31,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+* Remove read-only Git object files during staged archive cleanup on Windows, including failed submodule clones and patch workspaces.
 * Finish `archive_source` even when an initialized submodule cannot export its committed gitlink, warning and recording the omission, removing partial clones, and leaving healthy sibling submodules available in the archive.
 * Remove the staging clone's synthetic `refs/remotes/origin/HEAD` symref when preserving cached branch refs, preventing `--all-branches` archives from carrying a dangling zero-OID remote HEAD that fails `git fsck`.
 * Build sparse/promisor patch object deltas from reachable locally-present object sets instead of `git cat-file` availability probes, avoiding lazy-fetch/version-dependent failures while still backfilling previously promised objects that become required.
