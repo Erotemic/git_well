@@ -12,8 +12,12 @@ import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    import git
 
 from git_well.archive_source.patch import build_source_patch
 from git_well.archive_source.patch_apply import apply_source_patch
@@ -99,7 +103,9 @@ def test_head_only_clone_cleanup_drops_refs_not_origin(tmp_path, monkeypatch):
     cloned = _clone_at(source, tmp_path / 'cloned', pinned)
     assert _git(cloned, 'for-each-ref', '--format=%(refname)')
 
-    _drop_cloned_branch_refs(SimpleNamespace(git=GitFacade(cloned)))
+    # The facade supplies the subset of GitPython used by ref cleanup.
+    cloned_repo = cast('git.Repo', SimpleNamespace(git=GitFacade(cloned)))
+    _drop_cloned_branch_refs(cloned_repo)
     _finish_clone(cloned)
     assert _git(cloned, 'rev-parse', 'HEAD') == pinned
     assert _git(cloned, 'for-each-ref', '--format=%(refname)') == ''

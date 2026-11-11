@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -481,7 +481,7 @@ def stage_source_archive(
     keep_stage: bool = False,
     branches: str | list[str] | tuple[str, ...] | None = None,
     submodule_revision: Literal['gitlink', 'checkout'] = 'gitlink',
-) -> Iterator[ArchiveSourceContext]:
+) -> Generator[ArchiveSourceContext, None, None]:
     """
     Stage committed source and yield a context before metadata/serialization.
 

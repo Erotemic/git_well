@@ -124,12 +124,14 @@ def _normalize_history_blobs(value: str | None) -> HistoryBlobsArg:
     if value is None:
         return 'full'
     normalized = str(value).strip().lower()
-    if normalized not in {'full', 'sparse'}:
-        raise ValueError(
-            "history_blobs must be 'full' or 'sparse'; "
-            f'got {value!r}'
-        )
-    return cast(HistoryBlobsArg, normalized)
+    if normalized == 'full':
+        return 'full'
+    if normalized == 'sparse':
+        return 'sparse'
+    raise ValueError(
+        "history_blobs must be 'full' or 'sparse'; "
+        f'got {value!r}'
+    )
 
 def _normalize_depth(depth: DepthArg) -> int | None:
     import re

@@ -5,8 +5,12 @@ source-archive roundtrip tests in test_cli.py also exercise real Git clones.
 """
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    import git
 
 
 def test_submodule_revision_checkout_walks_selected_nested_tree(tmp_path, monkeypatch):
@@ -16,10 +20,13 @@ def test_submodule_revision_checkout_walks_selected_nested_tree(tmp_path, monkey
     checkout_parent_sha = 'b' * 40
     old_child_sha = 'c' * 40
     checkout_child_sha = 'd' * 40
-    root = SimpleNamespace(
+    # The stub is intentionally duck-typed; only the accessed Repo fields
+    # are needed to exercise the submodule traversal logic.
+    root_stub = SimpleNamespace(
         working_tree_dir=str(tmp_path),
         head=SimpleNamespace(commit=SimpleNamespace(hexsha='1' * 40)),
     )
+    root = cast('git.Repo', root_stub)
     parent = SimpleNamespace(
         working_tree_dir=str(tmp_path / 'child'),
         head=SimpleNamespace(commit=SimpleNamespace(hexsha=checkout_parent_sha)),
