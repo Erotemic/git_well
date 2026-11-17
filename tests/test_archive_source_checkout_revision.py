@@ -30,10 +30,12 @@ def test_submodule_revision_checkout_walks_selected_nested_tree(tmp_path, monkey
     parent = SimpleNamespace(
         working_tree_dir=str(tmp_path / 'child'),
         head=SimpleNamespace(commit=SimpleNamespace(hexsha=checkout_parent_sha)),
+        close=lambda: None,
     )
     child = SimpleNamespace(
         working_tree_dir=str(tmp_path / 'child' / 'nested'),
         head=SimpleNamespace(commit=SimpleNamespace(hexsha=checkout_child_sha)),
+        close=lambda: None,
     )
     repos = {
         tmp_path / 'child': parent,
@@ -84,8 +86,10 @@ def test_submodule_revision_checkout_walks_selected_nested_tree(tmp_path, monkey
 
 
 def test_manifest_records_mismatched_parent_gitlink(tmp_path):
-    from git_well.archive_source._common import SubmoduleArchiveDecision
-    from git_well.archive_source._common import SubmoduleStatus
+    from git_well.archive_source._common import (
+        SubmoduleArchiveDecision,
+        SubmoduleStatus,
+    )
     from git_well.archive_source._io import _write_manifest
 
     sha = 'b' * 40

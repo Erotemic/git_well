@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Generator, Iterable, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from ._common import (
+    _ARCHIVE_INFO_FNAME,
+    _FORMAT_TO_EXTENSION,
+    _UNINITIALIZED_SUBMODULE_REASON,
     ArchiveFormatArg,
     BranchRefInventory,
     DepthArg,
@@ -19,10 +22,7 @@ from ._common import (
     ResolvedArchiveFormat,
     SubmoduleArchiveDecision,
     SubmoduleDepthSpecArg,
-    _ARCHIVE_INFO_FNAME,
-    _FORMAT_TO_EXTENSION,
     _Logger,
-    _UNINITIALIZED_SUBMODULE_REASON,
 )
 from ._io import (
     _append_generated_excludes,
@@ -49,17 +49,17 @@ from ._prune import (
     _apply_promisor_history_pruning,
     _apply_worktree_path_exclusions,
 )
-from .patch_apply import _remove_tree
 from ._repo import (
     _assert_has_head,
     _branch_ref_inventory,
-    _select_branch_ref_inventory,
     _clone_committed_checkout,
     _coerce_repo,
     _logical_repo_root,
     _open_exact_repo,
+    _select_branch_ref_inventory,
     _submodule_status,
 )
+from .patch_apply import _remove_tree
 
 ArchiveSourceHook = Callable[['ArchiveSourceContext'], None]
 ArchiveSourceHookArg = ArchiveSourceHook | Iterable[ArchiveSourceHook] | None
@@ -490,351 +490,356 @@ def stage_source_archive(
     ``keep_stage=True``. Call :meth:`ArchiveSourceContext.write_archive` to
     serialize when using this lower-level API directly.
     """
-    repo = _coerce_repo(repo_dpath)
-    _assert_has_head(repo)
+    # GitPython keeps cat-file processes alive until explicitly closed.
+    # On Windows their working directories prevent renaming source trees.
+    with ExitStack() as repos:
+        repo = repos.enter_context(_coerce_repo(repo_dpath))
+        _assert_has_head(repo)
 
-    repo_root = Path(cast(str, repo.working_tree_dir)).resolve()
-    logical_repo_root = _logical_repo_root(repo_dpath, repo_root)
-    repo_name = logical_repo_root.name
-    head_sha = repo.head.commit.hexsha
-    short_sha = repo.git.rev_parse('--short=12', 'HEAD').strip()
-    import ubelt as ub
+        repo_root = Path(cast(str, repo.working_tree_dir)).resolve()
+        logical_repo_root = _logical_repo_root(repo_dpath, repo_root)
+        repo_name = logical_repo_root.name
+        head_sha = repo.head.commit.hexsha
+        short_sha = repo.git.rev_parse('--short=12', 'HEAD').strip()
+        import ubelt as ub
 
-    timestamp = ub.timestamp()
-    default_root_name = f'{repo_name}-source-{timestamp}-{short_sha}'
-    if archive_root_name is None:
-        resolved_root_name = default_root_name
-    else:
-        resolved_root_name = _normalize_archive_root_name(archive_root_name)
-
-    normalized_depth = _normalize_depth(depth)
-    include_git_history = normalized_depth != 0
-    if branches is not None and all_branches:
-        raise ValueError('--branches and --all-branches are mutually exclusive')
-    if all_branches and not include_git_history:
-        raise ValueError(
-            '--all-branches requires Git history; use --depth 1 or greater'
-        )
-    if branches is not None and not include_git_history:
-        raise ValueError(
-            '--branches requires Git history; use --depth 1 or greater'
-        )
-    clone_depth = None if normalized_depth in {0, None} else normalized_depth
-    if all_branches:
-        branch_refs = _branch_ref_inventory(repo)
-    elif branches is not None:
-        branch_refs = _select_branch_ref_inventory(repo, branches)
-    else:
-        branch_refs = None
-    selected_branches = (
-        tuple(
-            sorted(
-                [f'refs/heads/{name}' for name in branch_refs.local_branches]
-                + [f'refs/remotes/{name}' for name in branch_refs.remote_tracking_branches]
-            )
-        )
-        if branches is not None and branch_refs is not None
-        else ()
-    )
-    submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
-    exclude_submodule_paths = _normalize_submodule_path_list(
-        exclude_submodule
-    )
-
-    exclude_path_selectors = _normalize_archive_path_list(exclude_path)
-    normalized_history_blobs = _normalize_history_blobs(history_blobs)
-
-    archive_format = _resolve_archive_format(output, format)
-    archive_path = _resolve_output(
-        repo_root, output, resolved_root_name, archive_format
-    )
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-
-    submodule_status = _submodule_status(
-        repo, submodule_revision=submodule_revision
-    )
-    submodule_decisions = tuple(
-        _resolve_submodule_archive_decisions(
-            submodule_status,
-            policy=submodule_depth_policy,
-            inherited_depth=normalized_depth,
-            exclude_submodule=exclude_submodule_paths,
-            no_submodules=bool(no_submodules),
-        )
-    )
-
-    log = _Logger(verbose)
-    log.path('[source-archive] repo: ', repo_root)
-    log.path('[source-archive] output directory: ', archive_path.parent)
-    log(f'[source-archive] prefix: {resolved_root_name}')
-    log(f'[source-archive] archive format: {archive_format}')
-    log(
-        '[source-archive] git history: {}'.format(
-            'included' if include_git_history else 'omitted'
-        )
-    )
-    if include_git_history:
-        depth_label = 'full' if clone_depth is None else str(clone_depth)
-        log(f'[source-archive] history depth: {depth_label}')
-        if branch_refs is not None:
-            scope = 'all locally cached' if all_branches else 'selected'
-            log(
-                f'[source-archive] branches: {scope} '
-                f'({len(branch_refs.local_branches)} local, '
-                f'{len(branch_refs.remote_tracking_branches)} remote-tracking)'
-            )
+        timestamp = ub.timestamp()
+        default_root_name = f'{repo_name}-source-{timestamp}-{short_sha}'
+        if archive_root_name is None:
+            resolved_root_name = default_root_name
         else:
-            log('[source-archive] branches: current HEAD history only')
-    else:
-        log('[source-archive] depth: 0 (source-only git archive mode)')
-    for line in submodule_depth_policy.summary_lines():
-        log(f'[source-archive] {line}')
-    if submodule_revision == 'checkout':
-        log('[source-archive] submodule revision policy: checked-out HEAD')
-        for decision in submodule_decisions:
-            parent_sha = decision.info.parent_gitlink_sha
-            if parent_sha is not None and not decision.omitted:
-                log.warning(
-                    '[source-archive] WARNING: submodule '
-                    f'{decision.info.path} checked-out HEAD '
-                    f'{decision.info.sha[:12]} differs from parent gitlink '
-                    f'{parent_sha[:12]}; retaining parent commit unchanged'
+            resolved_root_name = _normalize_archive_root_name(archive_root_name)
+
+        normalized_depth = _normalize_depth(depth)
+        include_git_history = normalized_depth != 0
+        if branches is not None and all_branches:
+            raise ValueError('--branches and --all-branches are mutually exclusive')
+        if all_branches and not include_git_history:
+            raise ValueError(
+                '--all-branches requires Git history; use --depth 1 or greater'
+            )
+        if branches is not None and not include_git_history:
+            raise ValueError(
+                '--branches requires Git history; use --depth 1 or greater'
+            )
+        clone_depth = None if normalized_depth in {0, None} else normalized_depth
+        if all_branches:
+            branch_refs = _branch_ref_inventory(repo)
+        elif branches is not None:
+            branch_refs = _select_branch_ref_inventory(repo, branches)
+        else:
+            branch_refs = None
+        selected_branches = (
+            tuple(
+                sorted(
+                    [f'refs/heads/{name}' for name in branch_refs.local_branches]
+                    + [f'refs/remotes/{name}' for name in branch_refs.remote_tracking_branches]
                 )
-    if no_submodules:
-        log('[source-archive] submodules: omitted by --no-submodules')
-    elif exclude_submodule_paths:
+            )
+            if branches is not None and branch_refs is not None
+            else ()
+        )
+        submodule_depth_policy = _parse_submodule_depth_spec(submodule_depth)
+        exclude_submodule_paths = _normalize_submodule_path_list(
+            exclude_submodule
+        )
+
+        exclude_path_selectors = _normalize_archive_path_list(exclude_path)
+        normalized_history_blobs = _normalize_history_blobs(history_blobs)
+
+        archive_format = _resolve_archive_format(output, format)
+        archive_path = _resolve_output(
+            repo_root, output, resolved_root_name, archive_format
+        )
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        submodule_status = _submodule_status(
+            repo, submodule_revision=submodule_revision
+        )
+        submodule_decisions = tuple(
+            _resolve_submodule_archive_decisions(
+                submodule_status,
+                policy=submodule_depth_policy,
+                inherited_depth=normalized_depth,
+                exclude_submodule=exclude_submodule_paths,
+                no_submodules=bool(no_submodules),
+            )
+        )
+
+        log = _Logger(verbose)
+        log.path('[source-archive] repo: ', repo_root)
+        log.path('[source-archive] output directory: ', archive_path.parent)
+        log(f'[source-archive] prefix: {resolved_root_name}')
+        log(f'[source-archive] archive format: {archive_format}')
         log(
-            '[source-archive] excluded submodule selectors: '
-            + ', '.join(exclude_submodule_paths)
+            '[source-archive] git history: {}'.format(
+                'included' if include_git_history else 'omitted'
+            )
         )
-    if exclude_path_selectors:
-        log(
-            '[source-archive] worktree exclusion selectors: '
-            + ', '.join(exclude_path_selectors)
-        )
-    log(f'[source-archive] history blobs: {normalized_history_blobs}')
-    log(f'[source-archive] superproject HEAD: {short_sha}')
-
-    import tempfile
-
-    tmpdir = Path(
-        tempfile.mkdtemp(
-            prefix=f'{repo_name}-source-archive.',
-            dir=os.environ.get('TMPDIR', None),
-        )
-    )
-    try:
-        stage = tmpdir / 'stage'
-        stage.mkdir(parents=True, exist_ok=True)
-        archive_root = stage / resolved_root_name
-
         if include_git_history:
-            log('[source-archive] cloning superproject')
-            _clone_committed_checkout(
-                src=repo,
-                dst=archive_root,
-                commit=head_sha,
-                label='superproject',
-                clone_depth=clone_depth,
-                branch_refs=branch_refs,
-                exact_branch_refs=branches is not None,
-                redact_local_paths=redact_local_paths,
-                log=log,
-            )
-        else:
-            log('[source-archive] exporting superproject with git archive')
-            _extract_git_archive(
-                repo, 'HEAD', stage, resolved_root_name
-            )
-
-        staged_repo_units = [
-            ('', repo, head_sha, archive_root, include_git_history)
-        ]
-
-        staged_submodule_decisions: list[SubmoduleArchiveDecision] = []
-        failed_submodule_paths: set[str] = set()
-        for decision in submodule_decisions:
-            info = decision.info
-            path = info.path
-            submodule_sha = info.sha
-            if decision.omitted:
-                if decision.reason == _UNINITIALIZED_SUBMODULE_REASON:
-                    log.warning(
-                        f'[source-archive] WARNING: omitting submodule '
-                        f'{path}: {decision.reason}'
-                        + '; run: git submodule update --init --recursive '
-                        'to include it'
-                    )
-                else:
-                    log(
-                        f'[source-archive] omitting submodule {path}: '
-                        f'{decision.reason}'
-                    )
-                staged_submodule_decisions.append(decision)
-                continue
-
-            # A nested submodule cannot be included if the parent checkout
-            # failed: doing so would create a tree that never existed in Git.
-            failed_parent = next(
-                (
-                    parent for parent in failed_submodule_paths
-                    if path.startswith(parent.rstrip('/') + '/')
-                ),
-                None,
-            )
-            if failed_parent is not None:
-                reason = f'parent submodule {failed_parent} could not be exported'
-                log.warning(
-                    f'[source-archive] WARNING: omitting submodule {path}: '
-                    f'{reason}; continuing'
-                )
-                staged_submodule_decisions.append(
-                    replace(decision, omitted=True, mode='omitted', reason=reason)
-                )
-                continue
-
-            submodule_stage = archive_root / path
-            try:
-                src_dpath = repo_root / path
-                if not src_dpath.exists():
-                    raise RuntimeError(
-                        f"submodule path '{path}' is missing; run: "
-                        'git submodule update --init --recursive'
-                    )
-                sub_repo = _open_exact_repo(src_dpath)
-                if sub_repo is None:
-                    raise RuntimeError(
-                        f"submodule path '{path}' is not an initialized Git "
-                        'working tree; run: git submodule update --init --recursive'
-                    )
-                _assert_has_head(sub_repo)
-                sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
-                selected_short = submodule_sha[:12]
-                commit_label = f'commit {selected_short}'
-                if sub_repo.head.commit.hexsha != submodule_sha:
-                    commit_label += f' (source checkout HEAD {sub_short})'
+            depth_label = 'full' if clone_depth is None else str(clone_depth)
+            log(f'[source-archive] history depth: {depth_label}')
+            if branch_refs is not None:
+                scope = 'all locally cached' if all_branches else 'selected'
                 log(
-                    f'[source-archive] exporting submodule {path} {commit_label} '
-                    f'depth={_depth_label(decision.depth)} mode={decision.mode}'
+                    f'[source-archive] branches: {scope} '
+                    f'({len(branch_refs.local_branches)} local, '
+                    f'{len(branch_refs.remote_tracking_branches)} remote-tracking)'
                 )
-                sub_clone_depth = _clone_depth_from_normalized_depth(
-                    decision.depth
-                )
-                if decision.depth != 0:
-                    _clone_committed_checkout(
-                        src=sub_repo,
-                        dst=submodule_stage,
-                        commit=submodule_sha,
-                        label=f'submodule {path}',
-                        clone_depth=sub_clone_depth,
-                        branch_refs=None,
-                        exact_branch_refs=False,
-                        redact_local_paths=redact_local_paths,
-                        log=log,
+            else:
+                log('[source-archive] branches: current HEAD history only')
+        else:
+            log('[source-archive] depth: 0 (source-only git archive mode)')
+        for line in submodule_depth_policy.summary_lines():
+            log(f'[source-archive] {line}')
+        if submodule_revision == 'checkout':
+            log('[source-archive] submodule revision policy: checked-out HEAD')
+            for decision in submodule_decisions:
+                parent_sha = decision.info.parent_gitlink_sha
+                if parent_sha is not None and not decision.omitted:
+                    log.warning(
+                        '[source-archive] WARNING: submodule '
+                        f'{decision.info.path} checked-out HEAD '
+                        f'{decision.info.sha[:12]} differs from parent gitlink '
+                        f'{parent_sha[:12]}; retaining parent commit unchanged'
                     )
-                else:
-                    submodule_stage.mkdir(parents=True, exist_ok=True)
-                    _extract_git_archive(
+        if no_submodules:
+            log('[source-archive] submodules: omitted by --no-submodules')
+        elif exclude_submodule_paths:
+            log(
+                '[source-archive] excluded submodule selectors: '
+                + ', '.join(exclude_submodule_paths)
+            )
+        if exclude_path_selectors:
+            log(
+                '[source-archive] worktree exclusion selectors: '
+                + ', '.join(exclude_path_selectors)
+            )
+        log(f'[source-archive] history blobs: {normalized_history_blobs}')
+        log(f'[source-archive] superproject HEAD: {short_sha}')
+
+        import tempfile
+
+        tmpdir = Path(
+            tempfile.mkdtemp(
+                prefix=f'{repo_name}-source-archive.',
+                dir=os.environ.get('TMPDIR', None),
+            )
+        )
+        try:
+            stage = tmpdir / 'stage'
+            stage.mkdir(parents=True, exist_ok=True)
+            archive_root = stage / resolved_root_name
+
+            if include_git_history:
+                log('[source-archive] cloning superproject')
+                _clone_committed_checkout(
+                    src=repo,
+                    dst=archive_root,
+                    commit=head_sha,
+                    label='superproject',
+                    clone_depth=clone_depth,
+                    branch_refs=branch_refs,
+                    exact_branch_refs=branches is not None,
+                    redact_local_paths=redact_local_paths,
+                    log=log,
+                )
+            else:
+                log('[source-archive] exporting superproject with git archive')
+                _extract_git_archive(
+                    repo, 'HEAD', stage, resolved_root_name
+                )
+
+            staged_repo_units = [
+                ('', repo, head_sha, archive_root, include_git_history)
+            ]
+
+            staged_submodule_decisions: list[SubmoduleArchiveDecision] = []
+            failed_submodule_paths: set[str] = set()
+            for decision in submodule_decisions:
+                info = decision.info
+                path = info.path
+                submodule_sha = info.sha
+                if decision.omitted:
+                    if decision.reason == _UNINITIALIZED_SUBMODULE_REASON:
+                        log.warning(
+                            f'[source-archive] WARNING: omitting submodule '
+                            f'{path}: {decision.reason}'
+                            + '; run: git submodule update --init --recursive '
+                            'to include it'
+                        )
+                    else:
+                        log(
+                            f'[source-archive] omitting submodule {path}: '
+                            f'{decision.reason}'
+                        )
+                    staged_submodule_decisions.append(decision)
+                    continue
+
+                # A nested submodule cannot be included if the parent checkout
+                # failed: doing so would create a tree that never existed in Git.
+                failed_parent = next(
+                    (
+                        parent for parent in failed_submodule_paths
+                        if path.startswith(parent.rstrip('/') + '/')
+                    ),
+                    None,
+                )
+                if failed_parent is not None:
+                    reason = f'parent submodule {failed_parent} could not be exported'
+                    log.warning(
+                        f'[source-archive] WARNING: omitting submodule {path}: '
+                        f'{reason}; continuing'
+                    )
+                    staged_submodule_decisions.append(
+                        replace(decision, omitted=True, mode='omitted', reason=reason)
+                    )
+                    continue
+
+                submodule_stage = archive_root / path
+                try:
+                    src_dpath = repo_root / path
+                    if not src_dpath.exists():
+                        raise RuntimeError(
+                            f"submodule path '{path}' is missing; run: "
+                            'git submodule update --init --recursive'
+                        )
+                    sub_repo = _open_exact_repo(src_dpath)
+                    if sub_repo is None:
+                        raise RuntimeError(
+                            f"submodule path '{path}' is not an initialized Git "
+                            'working tree; run: git submodule update --init --recursive'
+                        )
+                    repos.enter_context(sub_repo)
+                    _assert_has_head(sub_repo)
+                    sub_short = sub_repo.git.rev_parse('--short=12', 'HEAD').strip()
+                    selected_short = submodule_sha[:12]
+                    commit_label = f'commit {selected_short}'
+                    if sub_repo.head.commit.hexsha != submodule_sha:
+                        commit_label += f' (source checkout HEAD {sub_short})'
+                    log(
+                        f'[source-archive] exporting submodule {path} {commit_label} '
+                        f'depth={_depth_label(decision.depth)} mode={decision.mode}'
+                    )
+                    sub_clone_depth = _clone_depth_from_normalized_depth(
+                        decision.depth
+                    )
+                    if decision.depth != 0:
+                        _clone_committed_checkout(
+                            src=sub_repo,
+                            dst=submodule_stage,
+                            commit=submodule_sha,
+                            label=f'submodule {path}',
+                            clone_depth=sub_clone_depth,
+                            branch_refs=None,
+                            exact_branch_refs=False,
+                            redact_local_paths=redact_local_paths,
+                            log=log,
+                        )
+                    else:
+                        submodule_stage.mkdir(parents=True, exist_ok=True)
+                        _extract_git_archive(
+                            sub_repo,
+                            submodule_sha,
+                            stage,
+                            f'{resolved_root_name}/{path}',
+                        )
+                except Exception as ex:
+                    # A clone/checkout/archive can leave a partial directory. Never
+                    # package it as if it were a successfully exported submodule.
+                    if submodule_stage.is_symlink() or (
+                        submodule_stage.exists() and not submodule_stage.is_dir()
+                    ):
+                        submodule_stage.unlink()
+                    elif submodule_stage.exists():
+                        _remove_tree(submodule_stage)
+                    failed_submodule_paths.add(path)
+                    reason = (
+                        f'failed to export commit {submodule_sha} '
+                        f'({type(ex).__name__})'
+                    )
+                    if str(ex).startswith('cannot materialize submodule '):
+                        reason += (
+                            ': committed gitlink unavailable locally and from '
+                            'source remotes'
+                        )
+                    staged_submodule_decisions.append(
+                        replace(decision, omitted=True, mode='omitted', reason=reason)
+                    )
+                    log.warning(
+                        f'[source-archive] WARNING: omitting submodule {path}: '
+                        f'{ex}; continuing with remaining submodules'
+                    )
+                    continue
+
+                staged_submodule_decisions.append(decision)
+                staged_repo_units.append(
+                    (
+                        path,
                         sub_repo,
                         submodule_sha,
-                        stage,
-                        f'{resolved_root_name}/{path}',
+                        submodule_stage,
+                        decision.depth != 0,
                     )
-            except Exception as ex:
-                # A clone/checkout/archive can leave a partial directory. Never
-                # package it as if it were a successfully exported submodule.
-                if submodule_stage.is_symlink() or (
-                    submodule_stage.exists() and not submodule_stage.is_dir()
-                ):
-                    submodule_stage.unlink()
-                elif submodule_stage.exists():
-                    _remove_tree(submodule_stage)
-                failed_submodule_paths.add(path)
-                reason = (
-                    f'failed to export commit {submodule_sha} '
-                    f'({type(ex).__name__})'
                 )
-                if str(ex).startswith('cannot materialize submodule '):
-                    reason += (
-                        ': committed gitlink unavailable locally and from '
-                        'source remotes'
-                    )
-                staged_submodule_decisions.append(
-                    replace(decision, omitted=True, mode='omitted', reason=reason)
-                )
-                log.warning(
-                    f'[source-archive] WARNING: omitting submodule {path}: '
-                    f'{ex}; continuing with remaining submodules'
-                )
-                continue
 
-            staged_submodule_decisions.append(decision)
-            staged_repo_units.append(
-                (
-                    path,
-                    sub_repo,
-                    submodule_sha,
-                    submodule_stage,
-                    decision.depth != 0,
-                )
+            submodule_decisions = tuple(staged_submodule_decisions)
+
+            (
+                excluded_worktree_paths,
+                unmatched_exclude_path_selectors,
+                excluded_worktree_bytes,
+            ) = _apply_worktree_path_exclusions(
+                staged_repo_units, exclude_path_selectors, log
             )
 
-        submodule_decisions = tuple(staged_submodule_decisions)
+            if normalized_history_blobs == 'sparse':
+                promisor_prune_results = _apply_promisor_history_pruning(
+                    staged_repo_units,
+                    exclude_path_selectors,
+                    redact_local_paths=redact_local_paths,
+                    all_branches=bool(all_branches or selected_branches),
+                    log=log,
+                )
+            else:
+                promisor_prune_results = ()
 
-        (
-            excluded_worktree_paths,
-            unmatched_exclude_path_selectors,
-            excluded_worktree_bytes,
-        ) = _apply_worktree_path_exclusions(
-            staged_repo_units, exclude_path_selectors, log
-        )
-
-        if normalized_history_blobs == 'sparse':
-            promisor_prune_results = _apply_promisor_history_pruning(
-                staged_repo_units,
-                exclude_path_selectors,
+            context = ArchiveSourceContext(
+                repo_root=repo_root,
+                archive_path=archive_path,
+                archive_format=archive_format,
+                stage_dpath=stage,
+                archive_root=archive_root,
+                archive_root_name=resolved_root_name,
+                repo_name=repo_name,
+                timestamp=timestamp,
+                head_sha=head_sha,
+                short_sha=short_sha,
+                normalized_depth=normalized_depth,
+                include_git_history=include_git_history,
+                clone_depth=clone_depth,
+                branch_refs=branch_refs,
+                submodule_decisions=submodule_decisions,
+                submodule_revision=submodule_revision,
+                exclude_path_selectors=tuple(exclude_path_selectors),
+                excluded_worktree_paths=excluded_worktree_paths,
+                unmatched_exclude_path_selectors=unmatched_exclude_path_selectors,
+                excluded_worktree_bytes=excluded_worktree_bytes,
+                history_blobs=normalized_history_blobs,
+                promisor_prune_results=promisor_prune_results,
                 redact_local_paths=redact_local_paths,
-                all_branches=bool(all_branches or selected_branches),
-                log=log,
+                all_branches=all_branches,
+                branches=selected_branches,
+                keep_stage=keep_stage,
+                _log=log,
             )
-        else:
-            promisor_prune_results = ()
-
-        context = ArchiveSourceContext(
-            repo_root=repo_root,
-            archive_path=archive_path,
-            archive_format=archive_format,
-            stage_dpath=stage,
-            archive_root=archive_root,
-            archive_root_name=resolved_root_name,
-            repo_name=repo_name,
-            timestamp=timestamp,
-            head_sha=head_sha,
-            short_sha=short_sha,
-            normalized_depth=normalized_depth,
-            include_git_history=include_git_history,
-            clone_depth=clone_depth,
-            branch_refs=branch_refs,
-            submodule_decisions=submodule_decisions,
-            submodule_revision=submodule_revision,
-            exclude_path_selectors=tuple(exclude_path_selectors),
-            excluded_worktree_paths=excluded_worktree_paths,
-            unmatched_exclude_path_selectors=unmatched_exclude_path_selectors,
-            excluded_worktree_bytes=excluded_worktree_bytes,
-            history_blobs=normalized_history_blobs,
-            promisor_prune_results=promisor_prune_results,
-            redact_local_paths=redact_local_paths,
-            all_branches=all_branches,
-            branches=selected_branches,
-            keep_stage=keep_stage,
-            _log=log,
-        )
-        yield context
-    finally:
-        if keep_stage:
-            log.path('[source-archive] retained stage: ', tmpdir)
-        else:
-            _remove_tree(tmpdir, ignore_errors=True)
+            yield context
+        finally:
+            repos.close()
+            if keep_stage:
+                log.path('[source-archive] retained stage: ', tmpdir)
+            else:
+                _remove_tree(tmpdir, ignore_errors=True)
 
 
 def build_source_archive(*args: Any, **kwargs: Any) -> Path:

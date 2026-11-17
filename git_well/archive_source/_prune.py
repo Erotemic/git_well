@@ -70,13 +70,13 @@ def _configure_sparse_worktree_exclusions(
     """Hide exact tracked paths while preserving a clean, restorable checkout."""
     import git
 
-    repo = git.Repo(repo_root, search_parent_directories=False)
-    repo.git.sparse_checkout('init', '--no-cone')
-    sparse_path = Path(repo.git_dir) / 'info' / 'sparse-checkout'
-    rules = ['/*']
-    rules.extend(_sparse_literal_pattern(path) for path in sorted(local_paths))
-    sparse_path.write_text('\n'.join(rules) + '\n')
-    repo.git.read_tree('-mu', 'HEAD')
+    with git.Repo(repo_root, search_parent_directories=False) as repo:
+        repo.git.sparse_checkout('init', '--no-cone')
+        sparse_path = Path(repo.git_dir) / 'info' / 'sparse-checkout'
+        rules = ['/*']
+        rules.extend(_sparse_literal_pattern(path) for path in sorted(local_paths))
+        sparse_path.write_text('\n'.join(rules) + '\n')
+        repo.git.read_tree('-mu', 'HEAD')
 
 
 def _remove_source_only_paths(repo_root: Path, local_paths: list[str]) -> None:

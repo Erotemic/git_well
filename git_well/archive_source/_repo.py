@@ -24,6 +24,7 @@ def _coerce_repo(repo_dpath: PathLike) -> 'git.Repo':
     except (git.InvalidGitRepositoryError, git.NoSuchPathError) as ex:
         raise RuntimeError(f'not inside a Git repository: {path}') from ex
     if repo.working_tree_dir is None:
+        repo.close()
         raise RuntimeError(f'not a non-bare Git working tree: {path}')
     return repo
 
@@ -132,43 +133,47 @@ def _collect_committed_submodules(
             *PurePosixPath(full_path).parts
         )
         sub_repo = _open_exact_repo(local_dpath)
-        current_sha: str | None = None
-        if sub_repo is not None:
-            try:
-                current_sha = sub_repo.head.commit.hexsha
-            except ValueError:
-                pass
-        if current_sha is None:
-            status = '-'
-        elif current_sha == sha:
-            status = ' '
-        else:
-            status = '+'
-        selected_sha = (
-            current_sha if use_checkout_heads and current_sha is not None
-            else sha
-        )
-        parent_gitlink_sha = sha if selected_sha != sha else None
-        line = f'{status}{selected_sha} {full_path}'
-        infos.append(
-            SubmoduleStatus(
-                status=status,
-                sha=selected_sha,
-                path=full_path,
-                line=line,
-                parent_gitlink_sha=parent_gitlink_sha,
+        try:
+            current_sha: str | None = None
+            if sub_repo is not None:
+                try:
+                    current_sha = sub_repo.head.commit.hexsha
+                except ValueError:
+                    pass
+            if current_sha is None:
+                status = '-'
+            elif current_sha == sha:
+                status = ' '
+            else:
+                status = '+'
+            selected_sha = (
+                current_sha if use_checkout_heads and current_sha is not None
+                else sha
             )
-        )
+            parent_gitlink_sha = sha if selected_sha != sha else None
+            line = f'{status}{selected_sha} {full_path}'
+            infos.append(
+                SubmoduleStatus(
+                    status=status,
+                    sha=selected_sha,
+                    path=full_path,
+                    line=line,
+                    parent_gitlink_sha=parent_gitlink_sha,
+                )
+            )
 
-        if sub_repo is not None and _repo_has_commit(sub_repo, selected_sha):
-            _collect_committed_submodules(
-                repo=sub_repo,
-                treeish=selected_sha,
-                superproject_root=superproject_root,
-                prefix=full_path,
-                infos=infos,
-                use_checkout_heads=use_checkout_heads,
-            )
+            if sub_repo is not None and _repo_has_commit(sub_repo, selected_sha):
+                _collect_committed_submodules(
+                    repo=sub_repo,
+                    treeish=selected_sha,
+                    superproject_root=superproject_root,
+                    prefix=full_path,
+                    infos=infos,
+                    use_checkout_heads=use_checkout_heads,
+                )
+        finally:
+            if sub_repo is not None:
+                sub_repo.close()
 
 
 def _committed_gitlinks(
@@ -242,6 +247,7 @@ def _open_exact_repo(path: Path) -> 'git.Repo | None':
     except (git.InvalidGitRepositoryError, git.NoSuchPathError):
         return None
     if repo.working_tree_dir is None:
+        repo.close()
         return None
     return repo
 
@@ -374,67 +380,67 @@ def _clone_committed_checkout(
         str(dst),
     ]
     git.Git(str(src_root.parent)).execute(clone_command)
-    cloned = git.Repo(dst)
-    _configure_archive_git_portability(cloned)
-    _checkout_commit(
-        cloned,
-        commit,
-        label,
-        clone_depth,
-        log,
-        source_repo=src,
-    )
-
-    if branch_refs is None:
-        # A single-branch clone creates local main and origin/main refs at the
-        # *source checkout* tip. The archived commit can be an older gitlink,
-        # especially for submodules, and the source branch can advance between
-        # archives even when that gitlink has not changed. Those implicit refs
-        # do not belong to the requested HEAD-only archive: retaining them
-        # leaks checkout-dependent history and makes incremental patches copy
-        # branch refs whose objects were not otherwise needed.
-        #
-        # Drop only the synthetic refs. Keep the origin URL/configuration for
-        # the existing non-redacted archive behavior.
-        _drop_cloned_branch_refs(cloned)
-
-    # Compact only the initial clone. Cached branch refs and any additional
-    # shallow boundaries are final archive state, so install them after Git
-    # maintenance. In particular, this prevents ``git gc`` / ``pack-refs``
-    # from changing the representation of refs that archive_source promises
-    # to preserve.
-    try:
-        cloned.git.reflog(
-            'expire', '--expire=now', '--expire-unreachable=now', '--all'
-        )
-    except git.GitCommandError:
-        pass
-    try:
-        cloned.git.gc('--prune=now', '--quiet')
-    except git.GitCommandError:
-        pass
-
-    if branch_refs is not None:
-        _copy_cached_branch_refs(
-            src=src,
-            cloned=cloned,
-            clone_depth=clone_depth,
-            branch_refs=branch_refs,
-            exact_branch_refs=exact_branch_refs,
-            log=log,
+    with git.Repo(dst) as cloned:
+        _configure_archive_git_portability(cloned)
+        _checkout_commit(
+            cloned,
+            commit,
+            label,
+            clone_depth,
+            log,
+            source_repo=src,
         )
 
-    if redact_local_paths:
-        _remove_remote_configs_preserving_refs(cloned)
+        if branch_refs is None:
+            # A single-branch clone creates local main and origin/main refs at the
+            # *source checkout* tip. The archived commit can be an older gitlink,
+            # especially for submodules, and the source branch can advance between
+            # archives even when that gitlink has not changed. Those implicit refs
+            # do not belong to the requested HEAD-only archive: retaining them
+            # leaks checkout-dependent history and makes incremental patches copy
+            # branch refs whose objects were not otherwise needed.
+            #
+            # Drop only the synthetic refs. Keep the origin URL/configuration for
+            # the existing non-redacted archive behavior.
+            _drop_cloned_branch_refs(cloned)
 
-    if branch_refs is not None:
-        _verify_cached_branch_refs(
-            src=src,
-            cloned=cloned,
-            clone_depth=clone_depth,
-            branch_refs=branch_refs,
-            exact_branch_refs=exact_branch_refs,
-        )
+        # Compact only the initial clone. Cached branch refs and any additional
+        # shallow boundaries are final archive state, so install them after Git
+        # maintenance. In particular, this prevents ``git gc`` / ``pack-refs``
+        # from changing the representation of refs that archive_source promises
+        # to preserve.
+        try:
+            cloned.git.reflog(
+                'expire', '--expire=now', '--expire-unreachable=now', '--all'
+            )
+        except git.GitCommandError:
+            pass
+        try:
+            cloned.git.gc('--prune=now', '--quiet')
+        except git.GitCommandError:
+            pass
+
+        if branch_refs is not None:
+            _copy_cached_branch_refs(
+                src=src,
+                cloned=cloned,
+                clone_depth=clone_depth,
+                branch_refs=branch_refs,
+                exact_branch_refs=exact_branch_refs,
+                log=log,
+            )
+
+        if redact_local_paths:
+            _remove_remote_configs_preserving_refs(cloned)
+
+        if branch_refs is not None:
+            _verify_cached_branch_refs(
+                src=src,
+                cloned=cloned,
+                clone_depth=clone_depth,
+                branch_refs=branch_refs,
+                exact_branch_refs=exact_branch_refs,
+            )
 
 
 def _drop_cloned_branch_refs(cloned: 'git.Repo') -> None:
