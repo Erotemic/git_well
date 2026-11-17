@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 from ._common import PromisorPruneResult, _Logger
 from ._repo import _source_remote_urls
+from .patch_apply import _remove_path
 
 if TYPE_CHECKING:  # pragma: no cover
     import git
@@ -366,7 +367,7 @@ def _remove_loose_object(repo_root: Path, oid: str) -> None:
     git_dir = Path(git_dir_text)
     if not git_dir.is_absolute():
         git_dir = repo_root / git_dir
-    (git_dir / 'objects' / oid[:2] / oid[2:]).unlink(missing_ok=True)
+    _remove_path(git_dir / 'objects' / oid[:2] / oid[2:])
 
 
 def _mark_reachable_packs_promisor(repo_root: Path) -> None:
