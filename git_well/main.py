@@ -2,10 +2,21 @@
 # PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
+from typing import Any
+
 import kwconf
 
 
 class GitWellModalCLI(kwconf.ModalCLI):
+    def argparse(self, *args: Any, **kwargs: Any) -> Any:
+        parser = super().argparse(*args, **kwargs)
+        option_actions = parser._option_string_actions
+        version_action = option_actions.get('--version')
+        if version_action is not None and '-V' not in option_actions:
+            version_action.option_strings.insert(0, '-V')
+            option_actions['-V'] = version_action
+        return parser
+
     # When adding a new top-level CLI, need to update:
     # ~/code/git_well/pyproject.toml
     from git_well.git_squash_streaks import __cli__ as squash_streaks
@@ -21,6 +32,7 @@ class GitWellModalCLI(kwconf.ModalCLI):
     from git_well.git_url_components import __cli__ as url
     from git_well.git_archive_source import __cli__ as archive_source
     from git_well.ipfs import __cli__ as ipfs
+    from git_well.git_epoch import __cli__ as epoch
     from git_well.patchdir.patchdir_modal import __cli__ as patchdir
 
 

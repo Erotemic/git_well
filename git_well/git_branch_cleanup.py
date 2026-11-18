@@ -25,7 +25,7 @@ class CleanDevBranchConfig(kwconf.Config):
     yes: bool = kwconf.Value(
         False,
         isflag=True,
-        short_alias=['-y'],
+        short_alias=['y'],
         help='if True, say yes to propmts',
     )
 

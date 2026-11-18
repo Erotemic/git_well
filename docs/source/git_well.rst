@@ -8,6 +8,7 @@ Subpackages
    :maxdepth: 4
 
    git_well.demo
+   git_well.epoch
 
 Submodules
 ----------
@@ -22,6 +23,7 @@ Submodules
    git_well.git_branch_cleanup
    git_well.git_branch_upgrade
    git_well.git_discover_remote
+   git_well.git_epoch
    git_well.git_rebase_add_continue
    git_well.git_remote_protocol
    git_well.git_squash_streaks
