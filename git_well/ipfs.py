@@ -29,6 +29,7 @@ Export pin commands for all sidecars under the current repo:
 """
 from __future__ import annotations
 
+import argparse
 import glob
 import hashlib
 import json
@@ -254,6 +255,26 @@ def _git_search_dir(path: os.PathLike | str) -> Path:
     while not search_dir.exists() and search_dir != search_dir.parent:
         search_dir = search_dir.parent
     return search_dir
+
+
+def _git_path_is_ignored(path: Path, *, for_add: bool = False) -> bool:
+    """Check Git's ignore rules for a path in its enclosing worktree."""
+    parent = path.parent.resolve()
+    cwd = _git_search_dir(parent)
+    try:
+        info = _run(
+            ['git', 'check-ignore', '--quiet', '--', os.fspath(parent / path.name)],
+            cwd=cwd, verbose=0, check=False,
+        )
+        if for_add and info.returncode == 1:
+            # Git add also rejects an ignored ancestor of a tracked file.
+            info = _run(
+                ['git', 'check-ignore', '--quiet', '--no-index', '--', '.'],
+                cwd=cwd, verbose=0, check=False,
+            )
+    except FileNotFoundError:
+        return False
+    return info.returncode == 0
 
 
 def _git_origin_url(repo_root: os.PathLike | str) -> str | None:
@@ -707,6 +728,14 @@ def _print_status_table(rows: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
+class _IPFSForceAction(argparse.BooleanOptionalAction):
+    def __call__(self, parser, namespace, values, option_string=None):
+        from kwconf.argparse_ext import mark_explicit
+
+        super().__call__(parser, namespace, values, option_string)
+        mark_explicit(parser, namespace, self.dest)
+
+
 @IPFSCLI.register
 class IPFSAdd(kwconf.Config):
     """Add a file/directory to IPFS and optionally write a sidecar."""
@@ -727,7 +756,8 @@ class IPFSAdd(kwconf.Config):
     pin = kwconf.Flag(True, help='pin locally to protect added files from garbage collection')
     sidecar = kwconf.Value(True, help='true, false, or explicit sidecar path')
     update_gitignore = kwconf.Flag(True, help='add the tracked path to a nearby .gitignore')
-    git_add_sidecar = kwconf.Flag(True, help='git-add the sidecar when inside a git worktree')
+    git_add_sidecar = kwconf.Flag(True, help='stage the sidecar when inside a git worktree')
+    force = kwconf.Flag(False, short_alias=['f'])
     dry_run = kwconf.Flag(
         False,
         short_alias=['n'],
@@ -735,6 +765,16 @@ class IPFSAdd(kwconf.Config):
     )
 
     _build_add_command = _build_add_argv
+
+    def _populate_argparse_parser(self, parser, **kwargs):
+        parser = super()._populate_argparse_parser(parser, **kwargs)
+        # Use a zero-argument flag so `-f PATH` leaves PATH positional.
+        group = parser.add_argument_group('Git staging', conflict_handler='resolve')
+        group.add_argument(
+            '-f', '--force', action=_IPFSForceAction, default=self.force,
+            help='stage the sidecar even if Git ignores it',
+        )
+        return parser
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -771,6 +811,16 @@ class IPFSAdd(kwconf.Config):
                 print(f'would write sidecar: {sidecar_fpath}')
             return
 
+        stage_sidecar = False
+        if sidecar_fpath is not None and config.git_add_sidecar and not config.only_hash:
+            stage_sidecar = _git_toplevel(sidecar_fpath.parent) is not None
+            if stage_sidecar and not config.force and _git_path_is_ignored(
+                sidecar_fpath, for_add=True,
+            ):
+                raise SystemExit(
+                    f'Git ignores the sidecar {sidecar_fpath}. Use -f or --force to stage it.'
+                )
+
         with ub.Timer() as timer:
             info = _run(add_argv, verbose=3)
 
@@ -806,18 +856,24 @@ class IPFSAdd(kwconf.Config):
             print(f'write to: sidecar_fpath={sidecar_fpath}')
             sidecar_fpath.write_text(sidecar_text)
 
+            # Stage before adding a rule that may also match the sidecar.
+            if stage_sidecar:
+                git_add_argv = ['git', '--literal-pathspecs', 'add']
+                if config.force:
+                    git_add_argv.append('--force')
+                git_add_argv.extend(['--', sidecar_fpath.name])
+                _run(git_add_argv, cwd=sidecar_dpath, verbose=2)
+            elif config.git_add_sidecar:
+                print('not in a git worktree; skipping git add of sidecar')
+
             if config.update_gitignore:
                 ignore_fpath = sidecar_dpath / '.gitignore'
-                if _append_unique_line(ignore_fpath, rel_path):
+                if _git_path_is_ignored(path):
+                    print(f'already ignored by git: {path}')
+                elif _append_unique_line(ignore_fpath, rel_path):
                     print(f'updated: {ignore_fpath}')
                 else:
                     print(f'gitignore already contains: {rel_path}')
-
-            if config.git_add_sidecar:
-                if _git_toplevel(sidecar_dpath) is not None:
-                    _run(['git', 'add', sidecar_fpath.name], cwd=sidecar_dpath, verbose=2)
-                else:
-                    print('not in a git worktree; skipping git add of sidecar')
 
             print(sidecar_text)
             print(f'Wrote to: sidecar_fpath={sidecar_fpath}')

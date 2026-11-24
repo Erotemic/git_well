@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 
 def test_argv_to_str_quotes_paths():
     from git_well.ipfs import argv_to_str
@@ -282,6 +284,85 @@ def test_ipfs_add_writes_effective_pin_name_to_sidecar(tmp_path, monkeypatch, ca
     assert sidecar['pin_name'] == 'pkg:generic/repo#data.txt'
     assert sidecar['pin_name_source'] == 'generated'
     assert sidecar['add_config']['name'] is None
+
+
+@pytest.mark.parametrize('tracked_sidecar', [False, True])
+def test_ipfs_add_rejects_ignored_sidecar_before_import(tmp_path, monkeypatch, tracked_sidecar):
+    import ubelt as ub
+
+    from git_well import ipfs
+
+    ub.cmd(['git', 'init'], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
+    ignore_fpath = tmp_path / '.gitignore'
+    ignore_fpath.write_text('/ignored/\n')
+    data = tmp_path / 'ignored' / 'data'
+    data.mkdir(parents=True)
+    (data / 'payload.txt').write_text('payload')
+    sidecar = data.with_suffix('.ipfs')
+    if tracked_sidecar:
+        sidecar.write_text('original sidecar')
+        ub.cmd(['git', 'add', '--force', '--', 'ignored/data.ipfs'], cwd=tmp_path, check=True)
+    real_run = ipfs._run
+
+    def run_without_import(argv, **kwargs):
+        if argv[:2] == ['ipfs', 'add']:
+            pytest.fail('IPFS import ran before the ignore check')
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(ipfs, '_run', run_without_import)
+    with pytest.raises(SystemExit, match=r'Git ignores the sidecar .*--force'):
+        ipfs.IPFSAdd.main(argv=['ignored/data'])
+
+    if tracked_sidecar:
+        assert sidecar.read_text() == 'original sidecar'
+    else:
+        assert not sidecar.exists()
+    assert ignore_fpath.read_text() == '/ignored/\n'
+    assert not (data.parent / '.gitignore').exists()
+
+
+@pytest.mark.parametrize(('data_rel', 'ignore_text', 'argv'), [
+    ('data[1]', '/data*\n', ['data[1]', '--force']),
+    ('ignored/data', '/ignored/\n', ['-f', 'ignored/data']),
+    ('data[1]', '/data*\n', ['data[1]', '--no-git-add-sidecar']),
+    ('data', '/data/\n', ['data']),
+])
+def test_ipfs_add_with_ignored_payload(
+    tmp_path, monkeypatch, data_rel, ignore_text, argv,
+):
+    from types import SimpleNamespace
+
+    import ubelt as ub
+
+    from git_well import ipfs
+
+    ub.cmd(['git', 'init'], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
+    ignore_fpath = tmp_path / '.gitignore'
+    ignore_fpath.write_text(ignore_text)
+    data = Path(data_rel)
+    data.mkdir(parents=True)
+    (data / 'payload.txt').write_text('payload')
+    # A glob interpretation of data[1].ipfs could stage this file too.
+    (tmp_path / 'data1.ipfs').write_text('other sidecar')
+
+    real_run = ipfs._run
+
+    def run_with_fake_ipfs(argv, **kwargs):
+        if argv[:2] == ['ipfs', 'add']:
+            return SimpleNamespace(stdout=f'added bafyfakecid {data.name}\n', stderr='')
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(ipfs, '_run', run_with_fake_ipfs)
+    ipfs.IPFSAdd.main(argv=argv)
+
+    sidecar = data.with_name(data.name + '.ipfs')
+    assert ipfs._read_sidecar(sidecar)['cid'] == 'bafyfakecid'
+    assert ignore_fpath.read_text() == ignore_text
+    assert not (tmp_path / 'ignored' / '.gitignore').exists()
+    staged = ub.cmd(['git', 'ls-files'], cwd=tmp_path, check=True).stdout.splitlines()
+    assert staged == ([] if '--no-git-add-sidecar' in argv else [sidecar.as_posix()])
 
 
 def test_ipfs_export_uses_generated_name_without_origin(tmp_path, capsys):
